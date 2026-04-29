@@ -1,0 +1,53 @@
+"""Broker port — order execution and account state.
+
+CLAUDE.md §1.3: domain depends only on this Protocol; concrete brokers
+(KIS, MockBroker, ...) live in src/adapters/.
+"""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from src.domain.models import Balance, OrderRequest, OrderResult, Position
+
+
+class BrokerPort(Protocol):
+    """Order execution and account state.
+
+    Implementations MUST:
+    - Be idempotent on `place_order`: a second call with the same
+      idempotency_key must NOT create a duplicate order. The original result
+      should be returned (or re-fetched). See CLAUDE.md §4.1.
+    - Be synchronous. CLAUDE.md §10.1 disallows asyncio in Phase 0.
+
+    Method-level errors are raised via the exception hierarchy in
+    src.domain.exceptions:
+    - BrokerConnectionError: transport-level failure (e.g. network, timeout)
+    - BrokerOrderError: broker rejected the order (validation, balance, etc.)
+    """
+
+    def get_balance(self) -> Balance:
+        """Return current available cash balance."""
+        ...
+
+    def get_positions(self) -> list[Position]:
+        """Return non-empty holdings (quantity > 0)."""
+        ...
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        """Submit an order. Idempotent on `request.idempotency_key`."""
+        ...
+
+    def get_order_status(self, idempotency_key: str) -> OrderResult | None:
+        """Look up an order by idempotency_key.
+
+        Returns None if no order with that key exists at the broker. Used after
+        a place_order timeout to determine whether the order actually went
+        through (CLAUDE.md §4.3).
+        """
+        ...
+
+    def cancel_order(self, broker_order_id: str) -> bool:
+        """Request cancellation. Returns True if accepted (not necessarily
+        completed)."""
+        ...

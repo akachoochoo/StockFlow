@@ -65,9 +65,12 @@ omit = [
 exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "class .*\\bProtocol\\):",
     "@(abc\\.)?abstractmethod",
+    # Protocol method body that is just `...`
+    "^\\s*\\.\\.\\.\\s*$",
 ]
 
 # ---------------------------------------------------------------------------
