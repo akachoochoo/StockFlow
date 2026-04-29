@@ -8,7 +8,7 @@ only — never float (§2.3). All datetimes are timezone-aware UTC (§3.1).
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -147,6 +147,30 @@ class OrderStatus(StrEnum):
     UNKNOWN = "UNKNOWN"  # indeterminate (e.g. timeout) — reconciliation required
 
 
+class SignalLevel(StrEnum):
+    """Circuit breaker level (design doc §3.4).
+
+    NORMAL    — proceed normally
+    CAUTION   — reduce new entries (typically 50%)
+    HALT      — block new entries; keep existing positions
+    EMERGENCY — reduce existing positions
+    """
+
+    NORMAL = "NORMAL"
+    CAUTION = "CAUTION"
+    HALT = "HALT"
+    EMERGENCY = "EMERGENCY"
+
+
+class SignalSource(StrEnum):
+    """Origin of a circuit breaker signal."""
+
+    NULL = "NULL"  # NullSignal adapter (Phase 0)
+    RULE_BASED = "RULE_BASED"  # threshold rules (Phase 2)
+    AI_BASED = "AI_BASED"  # LLM evaluator (Phase 2)
+    MANUAL = "MANUAL"  # operator override
+
+
 # ---------------------------------------------------------------------------
 # Value objects
 # ---------------------------------------------------------------------------
@@ -238,6 +262,46 @@ class Balance(ValueObject):
     """Available trading capital."""
 
     cash: Money
+
+
+class OHLCV(ValueObject):
+    """Daily Open/High/Low/Close/Volume bar.
+
+    `trade_date` is the local market business date (no timezone) since trading
+    days are a market concept, not a UTC instant. Adapters convert market-local
+    dates to UTC instants when needed (e.g. for the `as_of` parameter on
+    intraday queries).
+
+    Integrity invariants enforced here implement CLAUDE.md §5.1: high >= low,
+    open and close in [low, high]. Volume may be 0 (e.g. trading halt day).
+    """
+
+    asset: Asset
+    trade_date: date
+    open: Decimal = Field(gt=Decimal(0))
+    high: Decimal = Field(gt=Decimal(0))
+    low: Decimal = Field(gt=Decimal(0))
+    close: Decimal = Field(gt=Decimal(0))
+    volume: Decimal = Field(ge=Decimal(0))
+
+    @field_validator("open", "high", "low", "close", "volume", mode="before")
+    @classmethod
+    def _coerce_decimal(cls, v: object) -> Decimal:
+        return _to_decimal(v)
+
+    @model_validator(mode="after")
+    def _check_ohlc_consistency(self) -> OHLCV:
+        if self.high < self.low:
+            raise ValueError(f"high ({self.high}) < low ({self.low})")
+        if not (self.low <= self.open <= self.high):
+            raise ValueError(
+                f"open ({self.open}) outside [low={self.low}, high={self.high}]"
+            )
+        if not (self.low <= self.close <= self.high):
+            raise ValueError(
+                f"close ({self.close}) outside [low={self.low}, high={self.high}]"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -517,3 +581,43 @@ class Decision(DomainModel):
     @classmethod
     def _utc_only(cls, v: datetime) -> datetime:
         return _ensure_utc(v)
+
+
+class CircuitBreakerSignal(DomainModel):
+    """Circuit breaker decision for one asset class at one point in time.
+
+    Per design doc §3.4, the decision aggregates rule-based and AI judgments
+    when present; the stricter level wins. Phase 0 only uses NullSignal which
+    always returns level=NORMAL, source=NULL with no triggers.
+
+    Fields:
+    - level         : computed severity (NORMAL/CAUTION/HALT/EMERGENCY)
+    - source        : where the decision came from (NULL/RULE/AI/MANUAL)
+    - asset_class   : which asset class this signal applies to
+    - evaluated_at  : UTC; when the signal was computed
+    - triggered_by  : list of rule/input names that contributed (may be empty)
+    - reasoning     : input values used (stringified for JSON storage)
+    - valid_until   : UTC; instant after which this signal must be re-evaluated
+    """
+
+    level: SignalLevel
+    source: SignalSource
+    asset_class: AssetClass
+    evaluated_at: datetime
+    triggered_by: list[str]
+    reasoning: dict[str, str]
+    valid_until: datetime
+
+    @field_validator("evaluated_at", "valid_until")
+    @classmethod
+    def _utc_only(cls, v: datetime) -> datetime:
+        return _ensure_utc(v)
+
+    @model_validator(mode="after")
+    def _check_validity_window(self) -> CircuitBreakerSignal:
+        if self.valid_until <= self.evaluated_at:
+            raise ValueError(
+                f"valid_until ({self.valid_until}) must be > "
+                f"evaluated_at ({self.evaluated_at})"
+            )
+        return self

@@ -4,16 +4,18 @@ Per CLAUDE.md §7, domain logic targets 100% coverage. Pure logic — no mocks.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
 from src.domain.models import (
+    OHLCV,
     Asset,
     AssetClass,
     Balance,
+    CircuitBreakerSignal,
     Currency,
     Decision,
     Exchange,
@@ -26,6 +28,8 @@ from src.domain.models import (
     OrderType,
     Position,
     Price,
+    SignalLevel,
+    SignalSource,
 )
 
 # ---------------------------------------------------------------------------
@@ -313,6 +317,97 @@ class TestBalance:
         b = Balance(cash=Money(amount=Decimal("100"), currency=Currency.KRW))
         assert a == b
         assert hash(a) == hash(b)
+
+
+# ---------------------------------------------------------------------------
+# OHLCV
+# ---------------------------------------------------------------------------
+class TestOHLCV:
+    def _bar(self, **overrides):
+        base = {
+            "asset": make_asset(),
+            "trade_date": date(2026, 4, 29),
+            "open": Decimal("35000"),
+            "high": Decimal("35500"),
+            "low": Decimal("34500"),
+            "close": Decimal("35200"),
+            "volume": Decimal("1000000"),
+        }
+        base.update(overrides)
+        return OHLCV(**base)
+
+    def test_construct_happy_path(self):
+        bar = self._bar()
+        assert bar.open == Decimal("35000")
+        assert bar.high == Decimal("35500")
+        assert bar.low == Decimal("34500")
+        assert bar.close == Decimal("35200")
+        assert bar.volume == Decimal("1000000")
+        assert bar.trade_date == date(2026, 4, 29)
+
+    def test_zero_volume_allowed(self):
+        bar = self._bar(volume=Decimal(0))
+        assert bar.volume == Decimal(0)
+
+    def test_negative_volume_rejected(self):
+        with pytest.raises(ValidationError):
+            self._bar(volume=Decimal("-1"))
+
+    def test_zero_open_rejected(self):
+        with pytest.raises(ValidationError):
+            self._bar(open=Decimal(0))
+
+    def test_zero_high_rejected(self):
+        with pytest.raises(ValidationError):
+            self._bar(high=Decimal(0))
+
+    def test_zero_low_rejected(self):
+        with pytest.raises(ValidationError):
+            self._bar(low=Decimal(0))
+
+    def test_zero_close_rejected(self):
+        with pytest.raises(ValidationError):
+            self._bar(close=Decimal(0))
+
+    def test_high_below_low_rejected(self):
+        with pytest.raises(ValidationError, match="high"):
+            self._bar(high=Decimal("34000"), low=Decimal("34500"))
+
+    def test_open_below_low_rejected(self):
+        with pytest.raises(ValidationError, match="open"):
+            self._bar(open=Decimal("34000"), low=Decimal("34500"))
+
+    def test_open_above_high_rejected(self):
+        with pytest.raises(ValidationError, match="open"):
+            self._bar(open=Decimal("36000"), high=Decimal("35500"))
+
+    def test_close_below_low_rejected(self):
+        with pytest.raises(ValidationError, match="close"):
+            self._bar(close=Decimal("34000"), low=Decimal("34500"))
+
+    def test_close_above_high_rejected(self):
+        with pytest.raises(ValidationError, match="close"):
+            self._bar(close=Decimal("36000"), high=Decimal("35500"))
+
+    def test_open_high_low_close_at_boundary(self):
+        # open == low, close == high -> valid
+        bar = self._bar(
+            open=Decimal("34500"),
+            close=Decimal("35500"),
+            low=Decimal("34500"),
+            high=Decimal("35500"),
+        )
+        assert bar.open == bar.low
+        assert bar.close == bar.high
+
+    def test_float_price_rejected(self):
+        with pytest.raises(ValidationError):
+            self._bar(open=35000.5)
+
+    def test_immutable(self):
+        bar = self._bar()
+        with pytest.raises(ValidationError):
+            bar.close = Decimal("36000")
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +954,64 @@ class TestDecision:
 
 
 # ---------------------------------------------------------------------------
+# CircuitBreakerSignal
+# ---------------------------------------------------------------------------
+class TestCircuitBreakerSignal:
+    def _signal(self, **overrides):
+        base = {
+            "level": SignalLevel.NORMAL,
+            "source": SignalSource.NULL,
+            "asset_class": AssetClass.KR_ETF,
+            "evaluated_at": UTC_NOW,
+            "triggered_by": [],
+            "reasoning": {},
+            "valid_until": UTC_LATER,
+        }
+        base.update(overrides)
+        return CircuitBreakerSignal(**base)
+
+    def test_normal_null_signal(self):
+        sig = self._signal()
+        assert sig.level is SignalLevel.NORMAL
+        assert sig.source is SignalSource.NULL
+        assert sig.triggered_by == []
+        assert sig.reasoning == {}
+
+    def test_halt_with_triggers(self):
+        sig = self._signal(
+            level=SignalLevel.HALT,
+            source=SignalSource.RULE_BASED,
+            triggered_by=["vix_above_40", "fx_spike"],
+            reasoning={"vix": "42.5", "fx_change_pct": "3.2"},
+        )
+        assert sig.level is SignalLevel.HALT
+        assert sig.triggered_by == ["vix_above_40", "fx_spike"]
+
+    def test_valid_until_must_exceed_evaluated_at(self):
+        with pytest.raises(ValidationError, match="valid_until"):
+            self._signal(evaluated_at=UTC_LATER, valid_until=UTC_NOW)
+
+    def test_valid_until_equal_to_evaluated_at_rejected(self):
+        with pytest.raises(ValidationError, match="valid_until"):
+            self._signal(evaluated_at=UTC_NOW, valid_until=UTC_NOW)
+
+    def test_naive_evaluated_at_rejected(self):
+        naive = datetime(2026, 4, 30, 6, 0, 0)
+        with pytest.raises(ValidationError):
+            self._signal(evaluated_at=naive)
+
+    def test_naive_valid_until_rejected(self):
+        naive = datetime(2026, 4, 30, 7, 0, 0)
+        with pytest.raises(ValidationError):
+            self._signal(valid_until=naive)
+
+    def test_immutable(self):
+        sig = self._signal()
+        with pytest.raises(ValidationError):
+            sig.level = SignalLevel.HALT
+
+
+# ---------------------------------------------------------------------------
 # Enums (sanity checks for required values)
 # ---------------------------------------------------------------------------
 class TestEnums:
@@ -875,3 +1028,19 @@ class TestEnums:
 
     def test_exchange_has_krx(self):
         assert "KRX" in {m.value for m in Exchange}
+
+    def test_signal_level_has_all_severities(self):
+        assert {m.value for m in SignalLevel} == {
+            "NORMAL",
+            "CAUTION",
+            "HALT",
+            "EMERGENCY",
+        }
+
+    def test_signal_source_has_null_rule_ai_manual(self):
+        assert {m.value for m in SignalSource} == {
+            "NULL",
+            "RULE_BASED",
+            "AI_BASED",
+            "MANUAL",
+        }
