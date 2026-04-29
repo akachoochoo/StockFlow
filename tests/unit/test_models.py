@@ -478,16 +478,19 @@ class TestPosition:
                 last_buy_at=UTC_NOW,
             )
 
-    def test_qty_positive_requires_split_level_at_least_one(self):
+    def test_qty_positive_with_split_level_zero_allowed(self):
+        # Partial-only position: quantity > 0 but no split has fully filled yet.
+        # Per CLAUDE.md §4.4, partial fills do not increment split_level.
         a = make_asset()
-        with pytest.raises(ValidationError, match="split_level"):
-            Position(
-                asset=a,
-                quantity=Decimal("10"),
-                avg_price=Decimal("35000"),
-                split_level=0,
-                last_buy_at=UTC_NOW,
-            )
+        p = Position(
+            asset=a,
+            quantity=Decimal("10"),
+            avg_price=Decimal("35000"),
+            split_level=0,
+            last_buy_at=UTC_NOW,
+        )
+        assert p.quantity == Decimal("10")
+        assert p.split_level == 0
 
     def test_qty_positive_requires_avg_price_positive(self):
         a = make_asset()
@@ -620,6 +623,7 @@ class TestOrderResult:
     def test_pending_no_fill(self):
         r = OrderResult(
             idempotency_key="k",
+            asset=make_asset(),
             broker_order_id="bid-1",
             status=OrderStatus.PENDING,
             filled_quantity=Decimal(0),
@@ -632,6 +636,7 @@ class TestOrderResult:
     def test_filled_state(self):
         r = OrderResult(
             idempotency_key="k",
+            asset=make_asset(),
             broker_order_id="bid-1",
             status=OrderStatus.FILLED,
             filled_quantity=Decimal("10"),
@@ -645,6 +650,7 @@ class TestOrderResult:
     def test_rejected_no_broker_id(self):
         r = OrderResult(
             idempotency_key="k",
+            asset=make_asset(),
             broker_order_id=None,
             status=OrderStatus.REJECTED,
             filled_quantity=Decimal(0),
@@ -658,6 +664,7 @@ class TestOrderResult:
         with pytest.raises(ValidationError):
             OrderResult(
                 idempotency_key="k",
+                asset=make_asset(),
                 broker_order_id="bid-1",
                 status=OrderStatus.PENDING,
                 filled_quantity=Decimal("-1"),
@@ -670,6 +677,7 @@ class TestOrderResult:
         with pytest.raises(ValidationError):
             OrderResult(
                 idempotency_key="k",
+                asset=make_asset(),
                 broker_order_id="bid-1",
                 status=OrderStatus.FILLED,
                 filled_quantity=Decimal("10"),
@@ -683,6 +691,7 @@ class TestOrderResult:
         with pytest.raises(ValidationError):
             OrderResult(
                 idempotency_key="k",
+                asset=make_asset(),
                 broker_order_id="bid-1",
                 status=OrderStatus.PENDING,
                 filled_quantity=Decimal(0),
@@ -696,6 +705,7 @@ class TestOrderResult:
         with pytest.raises(ValidationError):
             OrderResult(
                 idempotency_key="k",
+                asset=make_asset(),
                 broker_order_id="bid-1",
                 status=OrderStatus.FILLED,
                 filled_quantity=Decimal("10"),
@@ -855,6 +865,7 @@ class TestOrder:
         )
         res = OrderResult(
             idempotency_key="k",
+            asset=a,
             broker_order_id="bid-1",
             status=OrderStatus.FILLED,
             filled_quantity=Decimal("10"),
@@ -887,6 +898,7 @@ class TestOrder:
         )
         res = OrderResult(
             idempotency_key="k2",
+            asset=make_asset(),
             broker_order_id="bid-1",
             status=OrderStatus.FILLED,
             filled_quantity=Decimal("10"),
@@ -895,6 +907,30 @@ class TestOrder:
             filled_at=UTC_LATER,
         )
         with pytest.raises(ValueError, match="idempotency_key mismatch"):
+            Order.from_request_result(req, res)
+
+    def test_from_request_result_asset_mismatch(self):
+        a = make_asset(code="069500")
+        b = make_asset(code="105190")
+        req = OrderRequest(
+            idempotency_key="k",
+            asset=a,
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=Decimal("10"),
+            target_price=Decimal("35000"),
+        )
+        res = OrderResult(
+            idempotency_key="k",
+            asset=b,
+            broker_order_id="bid-1",
+            status=OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            submitted_at=UTC_NOW,
+            filled_at=UTC_LATER,
+        )
+        with pytest.raises(ValueError, match="asset mismatch"):
             Order.from_request_result(req, res)
 
 

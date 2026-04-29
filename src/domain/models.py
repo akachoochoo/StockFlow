@@ -310,9 +310,13 @@ class OHLCV(ValueObject):
 class Position(DomainModel):
     """Current holding for one asset.
 
-    `split_level` tracks how many split-buys have completed (0 = empty,
-    1~7 = 1st through 7th split filled). Per CLAUDE.md §4.4, only fully
-    filled orders increment split_level; partial fills do not count.
+    `split_level` tracks how many split-buys have *fully* completed (0 = no
+    completed splits, 1~7 = 1st through 7th split filled). Per CLAUDE.md §4.4,
+    only fully filled orders increment split_level; partial fills do NOT.
+
+    Therefore the invariant `quantity > 0 -> split_level >= 1` does NOT hold:
+    a position may have quantity > 0 with split_level == 0 if it consists
+    entirely of partial fills that have not yet reached a full split.
     """
 
     asset: Asset
@@ -351,8 +355,6 @@ class Position(DomainModel):
     def _check_consistency(self) -> Position:
         has_qty = self.quantity > 0
         if has_qty:
-            if self.split_level < 1:
-                raise ValueError("split_level must be >= 1 when quantity > 0")
             if self.avg_price <= 0:
                 raise ValueError("avg_price must be > 0 when quantity > 0")
             if self.last_buy_at is None:
@@ -395,13 +397,16 @@ class OrderRequest(DomainModel):
 class OrderResult(DomainModel):
     """Broker response for an OrderRequest.
 
-    `idempotency_key` matches the request. `broker_order_id` may be None when
-    the order is rejected before reaching the broker. `status == UNKNOWN`
-    indicates indeterminate state (e.g. timeout) — reconciliation required
-    (CLAUDE.md §4.3).
+    `idempotency_key` matches the request. `asset` is the same asset as the
+    originating OrderRequest; carrying it on the result avoids round-trips
+    through a request-side store when the orchestrator updates positions.
+    `broker_order_id` may be None when the order is rejected before reaching
+    the broker. `status == UNKNOWN` indicates indeterminate state (e.g.
+    timeout) — reconciliation required (CLAUDE.md §4.3).
     """
 
     idempotency_key: str = Field(min_length=1, max_length=64)
+    asset: Asset
     broker_order_id: str | None
     status: OrderStatus
     filled_quantity: Decimal
@@ -546,6 +551,11 @@ class Order(DomainModel):
             raise ValueError(
                 "idempotency_key mismatch: "
                 f"request={request.idempotency_key}, result={result.idempotency_key}"
+            )
+        if request.asset != result.asset:
+            raise ValueError(
+                "asset mismatch: "
+                f"request={request.asset.fqn}, result={result.asset.fqn}"
             )
         return cls(
             idempotency_key=request.idempotency_key,
