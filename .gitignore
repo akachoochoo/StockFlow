@@ -92,10 +92,7 @@ results/
 reports/
 
 # ---------------------------------------------------------------------------
-# Claude Code / OMC (volatile state only — keep configs)
+# Claude Code / OMC — entire directory is volatile / machine-local state
 # ---------------------------------------------------------------------------
 .claude/
-.omc/state/
-.omc/sessions/
-.omc/logs/
-.omc/research/
+.omc/
