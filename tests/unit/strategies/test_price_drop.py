@@ -1,7 +1,8 @@
 """Unit tests for src.domain.strategies.price_drop.
 
 Domain logic — pure functions, no mocks. Targets 100% coverage of the
-PriceDropStrategy.evaluate() decision tree.
+PriceDropStrategy.evaluate() decision tree. Circuit breaker handling now
+lives in DailyOrchestrator and is tested there.
 """
 from __future__ import annotations
 
@@ -15,14 +16,11 @@ from src.domain.models import (
     Asset,
     AssetClass,
     Balance,
-    CircuitBreakerSignal,
     Currency,
     Exchange,
     Money,
     Position,
     Price,
-    SignalLevel,
-    SignalSource,
 )
 from src.domain.strategies.price_drop import (
     PriceDropStrategy,
@@ -31,7 +29,6 @@ from src.domain.strategies.price_drop import (
 )
 
 UTC_NOW = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
-UTC_LATER = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
 TODAY = date(2026, 4, 30)
 
 
@@ -49,22 +46,6 @@ def _asset(
         name="KODEX 200",
         tick_size=Decimal("5"),
         lot_size=Decimal(lot_size),
-    )
-
-
-def _signal(
-    level: SignalLevel = SignalLevel.NORMAL,
-    source: SignalSource = SignalSource.NULL,
-    asset_class: AssetClass = AssetClass.KR_ETF,
-) -> CircuitBreakerSignal:
-    return CircuitBreakerSignal(
-        level=level,
-        source=source,
-        asset_class=asset_class,
-        evaluated_at=UTC_NOW,
-        triggered_by=[],
-        reasoning={},
-        valid_until=UTC_LATER,
     )
 
 
@@ -132,56 +113,6 @@ class TestStrategyEvaluation:
 
 
 # ---------------------------------------------------------------------------
-# Circuit breaker handling
-# ---------------------------------------------------------------------------
-class TestCircuitBreaker:
-    def setup_method(self):
-        self.strategy = PriceDropStrategy()
-        self.asset = _asset()
-
-    def test_halt_skips_buy(self):
-        result = self.strategy.evaluate(
-            position=None,
-            current_price=_price("35000", self.asset),
-            balance=_balance(),
-            config=_config(),
-            today=TODAY,
-            signal=_signal(level=SignalLevel.HALT),
-        )
-        assert result.should_buy is False
-        assert result.reason == "skip:circuit_breaker_halt"
-
-    def test_emergency_skips_buy(self):
-        result = self.strategy.evaluate(
-            position=None,
-            current_price=_price("35000", self.asset),
-            balance=_balance(),
-            config=_config(),
-            today=TODAY,
-            signal=_signal(level=SignalLevel.EMERGENCY),
-        )
-        assert result.should_buy is False
-        assert result.reason == "skip:circuit_breaker_emergency"
-
-    def test_caution_halves_spend_amount(self):
-        # per_split_amount = 1,000,000 KRW. CAUTION halves to 500,000.
-        # price = 35,000. quantity = floor(500,000 / 35,000) = 14.
-        result = self.strategy.evaluate(
-            position=None,
-            current_price=_price("35000", self.asset),
-            balance=_balance(),
-            config=_config(per_split_amount_krw="1000000"),
-            today=TODAY,
-            signal=_signal(level=SignalLevel.CAUTION),
-        )
-        assert result.should_buy is True
-        assert result.target_quantity == Decimal("14")
-        assert result.target_price == Decimal("35000")
-        assert result.reasoning["caution_reduction_applied"] == "True"
-        assert result.reasoning["spend_amount"] == "500000.0"
-
-
-# ---------------------------------------------------------------------------
 # First-split (no position) buy path
 # ---------------------------------------------------------------------------
 class TestFirstSplit:
@@ -197,7 +128,6 @@ class TestFirstSplit:
             balance=_balance(),
             config=_config(),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is True
         assert result.reason == "buy_split_1"
@@ -215,7 +145,6 @@ class TestFirstSplit:
             balance=_balance(),
             config=_config(),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is True
         assert result.reason == "buy_split_1"
@@ -243,7 +172,6 @@ class TestSubsequentSplit:
             balance=_balance(),
             config=_config(drop_threshold_pct="7.0"),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is True
         assert result.reason == "buy_split_2"
@@ -262,7 +190,6 @@ class TestSubsequentSplit:
             balance=_balance(),
             config=_config(drop_threshold_pct="7.0"),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is True
 
@@ -274,7 +201,6 @@ class TestSubsequentSplit:
             balance=_balance(),
             config=_config(drop_threshold_pct="7.0"),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is False
         assert result.reason == "skip:drop_insufficient"
@@ -289,7 +215,6 @@ class TestSubsequentSplit:
             balance=_balance(),
             config=_config(),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is False
         assert result.reason == "skip:drop_insufficient"
@@ -307,7 +232,6 @@ class TestSubsequentSplit:
             balance=_balance(),
             config=_config(max_split_count=7),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is False
         assert result.reason == "skip:max_split_reached"
@@ -331,7 +255,6 @@ class TestQuantityConstraints:
             balance=_balance(),
             config=_config(),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is False
         assert result.reason == "skip:quantity_below_lot_size"
@@ -347,7 +270,6 @@ class TestQuantityConstraints:
             balance=_balance(),
             config=_config(),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is True
         assert result.target_quantity == Decimal("20")
@@ -361,7 +283,6 @@ class TestQuantityConstraints:
             balance=_balance(amount_krw="500000"),
             config=_config(per_split_amount_krw="1000000"),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is False
         assert result.reason == "skip:insufficient_balance"
@@ -376,7 +297,6 @@ class TestQuantityConstraints:
             balance=_balance(amount_krw="980000"),
             config=_config(per_split_amount_krw="1000000"),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is True
 
@@ -401,19 +321,6 @@ class TestPreconditions:
                 balance=_balance(),
                 config=_config(),
                 today=TODAY,
-                signal=_signal(),
-            )
-
-    def test_signal_asset_class_mismatch_raises(self):
-        asset = _asset(asset_class=AssetClass.KR_ETF)
-        with pytest.raises(ValueError, match=r"signal\.asset_class"):
-            self.strategy.evaluate(
-                position=None,
-                current_price=_price("35000", asset),
-                balance=_balance(),
-                config=_config(),
-                today=TODAY,
-                signal=_signal(asset_class=AssetClass.KR_STOCK),
             )
 
     def test_config_currency_mismatch_raises(self):
@@ -430,7 +337,6 @@ class TestPreconditions:
                 balance=_balance(),
                 config=config,
                 today=TODAY,
-                signal=_signal(),
             )
 
     def test_balance_currency_mismatch_raises(self):
@@ -445,7 +351,6 @@ class TestPreconditions:
                 balance=balance,
                 config=_config(),
                 today=TODAY,
-                signal=_signal(),
             )
 
 
@@ -464,14 +369,11 @@ class TestReasoning:
             balance=_balance(),
             config=_config(),
             today=TODAY,
-            signal=_signal(),
         )
         for key in (
             "today",
             "asset",
             "current_price",
-            "signal_level",
-            "signal_source",
             "drop_threshold_pct",
             "max_split_count",
             "per_split_amount",
@@ -485,6 +387,10 @@ class TestReasoning:
             assert key in result.reasoning, f"missing key: {key}"
         assert result.reasoning["today"] == TODAY.isoformat()
         assert result.reasoning["asset"] == "KRX:069500"
+        # Signal-related keys must NOT appear (orchestrator owns signals now)
+        assert "signal_level" not in result.reasoning
+        assert "signal_source" not in result.reasoning
+        assert "caution_reduction_applied" not in result.reasoning
 
     def test_skip_reasoning_contains_decision_inputs(self):
         asset = _asset()
@@ -497,7 +403,6 @@ class TestReasoning:
             balance=_balance(),
             config=_config(drop_threshold_pct="7.0"),
             today=TODAY,
-            signal=_signal(),
         )
         assert result.should_buy is False
         for key in ("avg_price", "drop_pct", "current_split_level"):
