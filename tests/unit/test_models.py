@@ -1611,6 +1611,28 @@ class TestPositionValuation:
         with pytest.raises(ValueError, match="non-positive"):
             PositionValuation.from_position(empty, market_price=Decimal("36000"))
 
+    def test_from_position_uses_full_quantity_including_pending_partial(self):
+        # ADR §8.6 option A: PositionValuation uses position.quantity even
+        # when there's a pending partial fill above the entries' sum. The
+        # full quantity is the single source of truth for valuation.
+        a = make_asset()
+        position = Position(
+            asset=a,
+            quantity=Decimal("20"),  # 10 in entries + 10 pending partial
+            avg_price=Decimal("35000"),
+            split_level=1,
+            last_buy_at=UTC_NOW,
+            entries=make_entries(("10", "35000")),  # sum = 10
+        )
+        # Sanity: position has the partial leftover
+        assert position.has_pending_partial() is True
+        assert position.pending_partial_quantity == Decimal("10")
+
+        v = PositionValuation.from_position(position, market_price=Decimal("36000"))
+        assert v.quantity == Decimal("20")  # full Position.quantity, not entries-sum
+        assert v.market_value.amount == Decimal("720000")  # 20 * 36000
+        assert v.unrealized_pnl.amount == Decimal("20000")  # (36000-35000)*20
+
 
 # ---------------------------------------------------------------------------
 # PortfolioSnapshot
@@ -1818,6 +1840,32 @@ class TestPortfolioSnapshot:
         snap = self._build(valuations=[])
         with pytest.raises(ValidationError):
             snap.snapshot_date = date(2026, 5, 1)
+
+    def test_partial_fill_position_reflected_in_snapshot_totals(self):
+        # ADR §8.6 option A in PortfolioSnapshot context: a Position with
+        # pending_partial flows through PositionValuation (full Position.quantity)
+        # into snapshot totals.
+        a = make_asset()
+        # Use a valuation with a "partial-bearing" quantity (20 = 10 entries + 10 pending)
+        v = PositionValuation(
+            asset=a,
+            quantity=Decimal("20"),
+            avg_price=Decimal("35000"),
+            market_price=Decimal("36000"),
+            market_value=Money(amount=Decimal("720000"), currency=Currency.KRW),
+            unrealized_pnl=Money(amount=Decimal("20000"), currency=Currency.KRW),
+            split_level=1,
+        )
+        snap = PortfolioSnapshot.build(
+            snapshot_date=date(2026, 4, 30),
+            snapshot_at=UTC_NOW,
+            initial_capital=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+            cash=Money(amount=Decimal("3280000"), currency=Currency.KRW),
+            valuations=[v],
+        )
+        assert snap.total_market_value.amount == Decimal("720000")
+        assert snap.total_value.amount == Decimal("4000000")  # 3280000 + 720000
+        # Partial fill is therefore valued; ADR §8.6 option A confirmed.
 
 
 # ---------------------------------------------------------------------------

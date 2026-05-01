@@ -574,17 +574,19 @@ CREATE TABLE portfolio_snapshots (
 - **이유**: Phase 0 단일 프로세스 메모리, 부분 실패 가정 없음. 백테스트 결정성 + 단순성.
 - **Phase 1+ 실거래**: SqliteUoW가 진짜 트랜잭션 보장.
 
-### 8.10 작업 순서 (Step 7 sub-steps)
-- **8.a** ADR + CLAUDE.md 업데이트 (이번 commit)
-- **8.b** 도메인 모델 신규/확장: `PositionValuation`, `PortfolioSnapshot` + 단위 테스트
-- **8.c** Repository Port 4개 + `UnitOfWorkPort` (Protocol 정의)
-- **8.d** `src/infrastructure/db.py` (스키마 부트스트랩 + connection 팩토리)
-- **8.e** 4개 SQLite Repository 어댑터 + 라운드트립 테스트 (in-memory SQLite)
-- **8.f** `SqliteUnitOfWork` + 트랜잭션 무결성 테스트
-- **8.g** `InMemoryUnitOfWork` (Phase 0 백테스트용)
-- **8.h** `DailyOrchestrator` 리팩터링 — `uow_factory` 주입, 영속화 흐름 추가 + 테스트
-- **8.i** `DailySnapshotBuilder` + 단위/통합 테스트
-- **8.j** ADR 마무리 (구현 완료 표기) + push
+### 8.10 작업 순서 (Step 7 sub-steps) — [구현 완료, 2026-05-01]
+- **8.a** ✅ ADR + CLAUDE.md 업데이트 (`f59cf43`)
+- **8.b** ✅ 도메인 모델 신규/확장: `PositionValuation`, `PortfolioSnapshot` + 단위 테스트 (`bbe38d2`)
+- **8.c** ✅ Repository Port 4개 + `UnitOfWorkPort` (`3cb13ba`)
+- **8.d** ✅ `src/infrastructure/db.py` 스키마 부트스트랩 + connection 팩토리 (`90aca98`)
+- **8.e** ✅ 4개 SQLite Repository 어댑터 + 라운드트립 테스트 (`a47f92b`)
+  - 부수 변경: `Asset.fqn`을 `@computed_field`에서 plain `@property`로 변경 (model_dump 출력 제외 → JSON 라운드트립 시 `extra="forbid"` 회피).
+- **8.f** ✅ `SqliteUnitOfWork` + 트랜잭션 무결성 테스트 (`52f566f`)
+- **8.g** ✅ `InMemoryUnitOfWork` (Phase 0 백테스트용) (`d673781`)
+- **8.h** ✅ `DailyOrchestrator` 리팩터링 — `uow_factory` 주입, 영속화 흐름 추가 + 테스트 (`a0db785`)
+  - `_Outcome` dataclass 도입; persistence 분리; 두 UoW 어댑터 모두 attribute를 Port 타입으로 명시(mypy 구조 적합성).
+- **8.i** ✅ `DailySnapshotBuilder` + 단위/통합 테스트 (`a5c9907`)
+- **8.j** ✅ ADR 마무리 + push
 
 ---
 
