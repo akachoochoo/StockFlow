@@ -1,7 +1,7 @@
 # ADR 0001: Phase 0 Design Decisions
 
 > 누적 기록 문서. 새 결정은 아래에 섹션으로 추가.
-> 마지막 업데이트: 2026-04-30
+> 마지막 업데이트: 2026-05-01
 
 ---
 
@@ -244,6 +244,86 @@
   - 매수 PARTIALLY_FILLED: `"buy_split_N_partial"`
   - 그 외 모든 skip: `f"skip:{SkipReason.value}"`
 - **이유**: action 한 필드만 봐도 결과 파악 가능. detail은 reasoning.
+
+---
+
+## 7. Position 분할별 추적 (Step 7 직전 추가 변경 요청)
+
+### 7.0 [누락 인정] entry_dates 미구현
+- **사용자 원래 요청 (Step 5 Q5)**: `place_order` 체결 시 `entry_dates`도 FILLED일 때만 추가.
+- **실제 구현 결과**: Position에 `last_buy_at: datetime | None`만 추가하고 `entry_dates: list[date]`는 누락.
+- **누락 인정 시점**: 2026-05-01 (Step 7 진행 전 사용자 검토 시 발견).
+- **재처리**: Step 5 요청을 그대로 복구하지 않고, Step 7.1~7.3의 더 풍부한 구조(`SplitEntry` + `entries`)로 흡수.
+- **재발 방지**: 사용자 답변에 명시된 항목은 다음 단계 시작 전 ADR에 즉시 항목화. 이번 ADR 갱신부터 적용.
+
+### 7.1 SplitEntry 신규 도메인 모델
+- **결정**: 새 `ValueObject` `SplitEntry(split_number, entry_date, quantity, entry_price, idempotency_key)` 추가.
+- **이유**: 세븐 스플릿의 7계좌 운영을 1계좌 + 가상 분할로 재현하면서, 7계좌의 시각적 이점(분할별 손익 추적)을 코드로 보존하려면 단순 날짜 리스트로는 부족. 차수/가격/수량/주문 추적 키까지 함께 묶어야 분할별 PnL 계산이 가능.
+- **검증**: `split_number >= 1`, `quantity > 0`, `entry_price > 0`.
+
+### 7.2 Position.entries: list[SplitEntry]
+- **결정**: Position에서 `entry_dates`(미구현) 대신 `entries: list[SplitEntry]` 채택. `last_buy_at`은 유지(가장 최근 시점 빠른 조회).
+- **불변식 (model_validator)**:
+  - `split_level == len(entries)`
+  - `entries`의 `split_number`는 1, 2, …, `split_level` 순차적 (gap/중복 금지)
+  - `quantity == sum(e.quantity for e in entries)` (Decimal 정확 일치)
+  - `avg_price == sum(e.qty * e.entry_price) / sum(e.qty)` (Decimal 정확 일치)
+  - 위반 시 `ValueError` (pydantic이 `ValidationError`로 감쌈)
+- **이유**: 분할별 진입 정보를 잃지 않으면서 Position의 `quantity`/`avg_price`/`split_level`은 entries의 합산/가중평균/길이로 유도되도록 강제. 데이터 부정합 발생 시 도메인 layer에서 즉시 거부.
+- **트레이드오프**: Position 생성 비용 증가. 그러나 Phase 0은 1자산 1일1회 매수라 무시 가능.
+
+### 7.3 Position 분할별 조회/계산 메서드
+- **결정**: `get_entry(split_number) -> SplitEntry | None`, `split_pnl(current_price) -> dict[int, Decimal]`, `split_pnl_pct(current_price) -> dict[int, Decimal]` 추가.
+- **이유**: 7계좌 운영의 "분할별 손익을 한눈에" 시각적 이점을 1계좌 코드에서 그대로 재현. CLI/리포트가 직접 재계산할 필요 없음.
+- **Phase 0 범위 외**: 분할별 부분 매도, 분할별 손절 트리거, 분할별 보유기간 분석 (매도 자체가 Phase 0 외).
+
+### 7.4 Position frozen 유지 + 불변 갱신
+- **결정**: Position은 `frozen=True` 그대로. 갱신은 `MockBroker._update_position`이 새 Position 인스턴스를 만들어 `_positions[asset.fqn]`에 교체하는 기존 패턴 유지.
+- **이유**: 도메인 모델은 불변(`DomainModel` 계약). 부분 체결/전체 체결 로직이 새 entries 추가 시 새 Position을 만드는 것이 자연스러움.
+
+### 7.5 부분 체결 처리 — entries에 미반영
+- **결정**: `MockBroker._update_position`은 PARTIALLY_FILLED 시 `quantity`, `avg_price`, `last_buy_at`만 갱신하고 `entries`/`split_level`은 변동 없음. FILLED일 때만 새 `SplitEntry` append + `split_level += 1`.
+- **이유**: CLAUDE.md §4.4 — 부분 체결은 split로 인정 안 함. entries는 "완료된 분할 기록"이므로 부분 체결을 추가하면 의미 왜곡.
+- **트레이드오프**: 부분 체결만 누적된 상태에서는 `quantity > 0`이지만 `len(entries) == 0` (`split_level == 0`). 7.2의 합산 불변식과 충돌 가능 → **불변식 보강**: 부분 체결분은 `entries` 합산과 별도로 추적하지 않고 `quantity`/`avg_price`에만 반영. 따라서 7.2 합산 불변식은 "FILLED된 entries만 합산하면 안 되므로", **재정의**:
+  - "split_level == len(entries)"는 유지
+  - quantity/avg_price 합산 불변식은 적용 안 함 (부분 체결분이 entries에 없을 수 있으므로). 대신 보조 속성 `quantity_from_entries`, `avg_price_from_entries`만 제공하고, "Position.quantity >= quantity_from_entries"만 검증.
+- **재검토**: Phase 1+에서 부분 체결을 별도 PartialEntry로 추적할지 결정.
+
+### 7.6 SQLite 스키마 사전 합의 (Step 7 구현 시 적용)
+- **결정**:
+  ```sql
+  CREATE TABLE positions (
+      id INTEGER PRIMARY KEY,
+      asset_fqn TEXT NOT NULL UNIQUE,
+      quantity TEXT NOT NULL,        -- Decimal as string
+      avg_price TEXT NOT NULL,
+      split_level INTEGER NOT NULL,
+      last_buy_at DATETIME,
+      updated_at DATETIME NOT NULL
+  );
+  CREATE TABLE split_entries (
+      id INTEGER PRIMARY KEY,
+      position_id INTEGER NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
+      split_number INTEGER NOT NULL,
+      entry_date DATE NOT NULL,
+      quantity TEXT NOT NULL,
+      entry_price TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      UNIQUE (position_id, split_number)
+  );
+  CREATE INDEX idx_split_entries_position ON split_entries(position_id);
+  ```
+- **이유**: 분할별 영속화 + position 삭제 시 cascade. Decimal은 모두 TEXT(string)로 저장(부동소수점 오차 방지, CLAUDE.md §2).
+
+### 7.7 영향 범위 (Step 7.x 구현 시 적용)
+- **수정 필요**:
+  - `src/domain/models.py`: SplitEntry 신규, Position 갱신, 검증/메서드 추가
+  - `src/adapters/mock/broker.py::_update_position`: entries 기반 갱신 로직
+  - `tests/unit/test_models.py`: Position 신규 invariants/메서드 테스트
+  - `tests/integration/adapters/mock/test_broker.py`: entries 기반 검증
+- **변경 없음**:
+  - `PriceDropStrategy`: position.split_level/avg_price/quantity만 사용. entries 직접 참조 안 함.
+  - `DailyOrchestrator`: 동일 (Position을 broker에서 받아 strategy에 전달만).
 
 ---
 
