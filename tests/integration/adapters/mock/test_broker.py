@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 
 from src.adapters.mock.broker import MockBroker
+from src.domain.constants import KST
 from src.domain.exceptions import BrokerConnectionError
 from src.domain.models import (
     Asset,
@@ -321,3 +322,139 @@ class TestCashSafety:
         req = _request(a, quantity="10", target_price="35000")  # cost = 350,000
         with pytest.raises(BrokerConnectionError, match="insufficient"):
             broker.place_order(req)
+
+
+# ---------------------------------------------------------------------------
+# SplitEntry recording on Position (ADR §7.5/§7.9)
+# ---------------------------------------------------------------------------
+class TestSplitEntryRecording:
+    def test_first_fill_records_split_entry(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        broker.place_order(
+            _request(a, idempotency_key="k1", quantity="10", target_price="35000")
+        )
+        p = broker.get_positions()[0]
+        assert len(p.entries) == 1
+        e = p.entries[0]
+        assert e.split_number == 1
+        assert e.quantity == Decimal("10")
+        assert e.entry_price == Decimal("35000")
+        assert e.idempotency_key == "k1"
+
+    def test_subsequent_fill_appends_split_entry(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        broker.place_order(
+            _request(a, idempotency_key="k1", quantity="10", target_price="35000")
+        )
+        broker.place_order(
+            _request(a, idempotency_key="k2", quantity="5", target_price="32000")
+        )
+        p = broker.get_positions()[0]
+        assert [e.split_number for e in p.entries] == [1, 2]
+        assert p.entries[1].quantity == Decimal("5")
+        assert p.entries[1].entry_price == Decimal("32000")
+        assert p.entries[1].idempotency_key == "k2"
+        assert p.has_pending_partial() is False
+
+    def test_partial_fill_does_not_create_split_entry(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+            simulate_partial_fill_rate=1.0,
+        )
+        broker.place_order(
+            _request(a, idempotency_key="p1", quantity="10", target_price="35000")
+        )
+        p = broker.get_positions()[0]
+        # No split entry created on partial; entries stay empty
+        assert p.entries == []
+        assert p.split_level == 0
+        # The partial 5-share fill is exposed via pending_partial_quantity
+        assert p.pending_partial_quantity == Decimal("5")
+        assert p.has_pending_partial() is True
+
+    def test_partial_then_full_only_full_appears_in_entries(self):
+        # Partial leaves pending_partial; subsequent full only adds 1 entry
+        # (CLAUDE.md §4.4 / ADR §7.5 — partial is never retroactively promoted).
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+            simulate_partial_fill_rate=1.0,
+        )
+        broker.place_order(
+            _request(a, idempotency_key="p1", quantity="10", target_price="35000")
+        )
+        broker._partial_fill_rate = 0.0
+        broker.place_order(
+            _request(a, idempotency_key="p2", quantity="10", target_price="34000")
+        )
+        p = broker.get_positions()[0]
+        # Only the full fill became a SplitEntry
+        assert len(p.entries) == 1
+        assert p.entries[0].split_number == 1
+        assert p.entries[0].quantity == Decimal("10")
+        assert p.entries[0].entry_price == Decimal("34000")
+        assert p.entries[0].idempotency_key == "p2"
+        # Partial 5 still pending on top of 10 in entries → quantity = 15
+        assert p.quantity == Decimal("15")
+        assert p.pending_partial_quantity == Decimal("5")
+
+    def test_split_entry_idempotency_key_matches_request(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        broker.place_order(
+            _request(a, idempotency_key="unique-key-99", quantity="10", target_price="35000")
+        )
+        p = broker.get_positions()[0]
+        assert p.entries[0].idempotency_key == "unique-key-99"
+
+    def test_split_entry_entry_date_uses_kst_business_date(self):
+        # 06:00 UTC = 15:00 KST (within KRX hours; same calendar date both ways).
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=_FixedClock(UTC_NOW),  # 2026-04-30 06:00 UTC = 15:00 KST
+            rng=random.Random(42),
+        )
+        broker.place_order(
+            _request(a, quantity="10", target_price="35000")
+        )
+        p = broker.get_positions()[0]
+        assert p.entries[0].entry_date == UTC_NOW.astimezone(KST).date()
+
+    def test_seven_full_fills_reach_max_split(self):
+        # Position invariant caps split_level at 7 (Field le=7). Seven full
+        # fills land at split_level=7 with seven entries.
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("100000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        for i in range(1, 8):
+            broker.place_order(
+                _request(a, idempotency_key=f"s{i}", quantity="1", target_price="1000")
+            )
+        p = broker.get_positions()[0]
+        assert p.split_level == 7
+        assert [e.split_number for e in p.entries] == [1, 2, 3, 4, 5, 6, 7]
+        # No pending partial
+        assert p.pending_partial_quantity == Decimal(0)
