@@ -450,18 +450,29 @@ KIS_API_KEY = os.environ["KIS_API_KEY"]
 
 시작 시 PID 파일 또는 DB 락 체크. 이미 실행 중이면 즉시 종료.
 
-### 10.3 DB 트랜잭션
+### 10.3 DB 트랜잭션 — UnitOfWork 패턴
 
-여러 테이블 동시 변경 시 트랜잭션 사용:
+여러 Repository에 걸친 변경은 `UnitOfWork`로 묶는다. Use Case는 connection을
+모르고 UoW의 `commit`/`rollback`만 호출한다. **자동 rollback** (commit 미호출
+시 `__exit__`에서)이 안전한 기본값.
 
 ```python
-# ✅ 올바름
-with db.transaction():
-    order_repo.save(order)
-    position_repo.update(position)
-    decision_repo.save(decision)
-# 하나라도 실패하면 모두 롤백
+# ✅ 올바름 — UoW 컨텍스트
+with uow_factory() as uow:
+    uow.orders.save(order)
+    uow.positions.save(position)
+    uow.decisions.save(decision)
+    uow.commit()  # 명시 commit. 빠뜨리면 자동 rollback
+# 하나라도 실패하면 모두 롤백 (commit 도달 안 함)
+
+# ❌ 금지 — 개별 Repository에 별도 트랜잭션
+order_repo.save(order)        # 트랜잭션 1
+position_repo.update(position) # 트랜잭션 2 (실패 시 1번은 살아남음)
+decision_repo.save(decision)
 ```
+
+Repository는 단일 SQL 실행만 책임. 트랜잭션 경계는 UoW가 담당한다.
+ADR §8.2 참조.
 
 ---
 

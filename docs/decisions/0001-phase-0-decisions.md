@@ -193,6 +193,7 @@
 ### 6.1 Decision 영속화: Step 6 vs Step 7
 - **결정**: Step 6은 `Decision`을 단순히 `return`. Step 7(SQLite Repository)에서 호출자가 영속화.
 - **이유**: 책임 분리. step 6은 흐름·결정, step 7은 영속화.
+- **[정정 §8.5 참조]**: Step 7 진행 중 정정. Orchestrator가 `uow_factory`로 영속화까지 담당하도록 변경. 이유는 §8.5 참조.
 
 ### 6.2 SkipReason enum
 - **결정**: 9개 값 — `MARKET_CLOSED`, `CIRCUIT_BREAKER_HALT`, `MARKET_DATA_UNAVAILABLE`, `STRATEGY_NO_BUY`, `QUANTITY_TOO_SMALL`, `INSUFFICIENT_BALANCE`, `BROKER_REJECTED`, `BROKER_TIMEOUT`, `DATA_INTEGRITY_ISSUE`. `Decision.action`에 `f"skip:{reason.value}"` 형식.
@@ -397,6 +398,193 @@
 - **부분 체결 처리**: ADR §7.5와 일관 — partial fills는 `entries`에 들어가지 않으므로 `today_buys` 카운트에 포함 안 됨. 결과적으로 partial-only 상태에서는 같은 날 추가 매수 시도가 가능 (Phase 0 cron-once-per-day 가정에서 발생 안 하지만, 다회 호출 시 노출).
   - 운영자가 `pending_partial_warning`(§7.9)으로 감지해야 함.
   - 자동 차단을 원하면 Phase 1+에서 partial 카운트 포함하는 옵션 추가 검토.
+
+---
+
+## 8. SQLite Repository + UnitOfWork (Step 7)
+
+### 8.1 Port 분리: aggregate별 4개 + UnitOfWork
+- **결정**: 단일 통합 Port가 아닌 aggregate별 4개 Repository Port + UnitOfWorkPort.
+- **Port 시그니처**:
+  - `PositionRepoPort`: `get(asset_fqn) -> Position | None`, `save(position)`, `list_all() -> list[Position]`, `delete(asset_fqn) -> bool`
+  - `OrderRepoPort`: `save(order)`, `get_by_idempotency_key(key) -> Order | None`, `list_pending() -> list[Order]`, `list_by_date(d: date) -> list[Order]`
+  - `DecisionRepoPort`: `save(decision)`, `list_by_date_range(start, end) -> list[Decision]`, `get_last_for_asset(asset_fqn) -> Decision | None`
+  - `PortfolioSnapshotRepoPort`: `save(snapshot)`, `get_by_date(d: date) -> PortfolioSnapshot | None`, `list_by_date_range(start, end) -> list[PortfolioSnapshot]`
+- **이유**: 책임 분리, Mock 단순화, 테스트 격리. 통합 Port면 미구현 메서드까지 mock해야 함.
+
+### 8.2 UnitOfWork 패턴 (Phase 0부터 도입)
+- **결정**: `UnitOfWorkPort`가 4개 Repository를 attribute로 노출하고 컨텍스트 매니저로 동작 (`__enter__`, `__exit__`, `commit`, `rollback`). Use Case는 connection을 모름.
+- **자동 rollback**: `commit()` 미호출 채로 `__exit__` 진입 시 자동 ROLLBACK. 안전한 기본값.
+- **Repository 책임**: 단일 SQL 실행만. 트랜잭션은 UoW 책임.
+- **In-memory 변형**: `InMemoryUnitOfWork`(테스트/백테스트용)는 트랜잭션 시뮬레이션 안 함 (단일 프로세스 메모리, 부분 실패 가정 없음). Phase 1+ 실거래는 `SqliteUnitOfWork`의 진짜 트랜잭션이 보장.
+- **트랜잭션 정책**: 매수 체결 = orders + positions + decisions 한 트랜잭션. Skip = decisions 단독. Reconciliation = positions + orders 한 트랜잭션. Snapshot = 별도 트랜잭션.
+
+### 8.3 Asset Denormalization — asset_fqn + asset_json 함께 저장
+- **결정**: 모든 거래/기록 테이블(positions, split_entries, orders, decisions, portfolio_snapshots)에 `asset_fqn`(인덱스 키) + `asset_json`(시점 박제) 둘 다 저장.
+- **불변성**: `asset_json`은 첫 저장 시점에 박제, UPDATE 시 갱신 안 함. positions는 첫 매수 시점, split_entries는 각 분할 시점, orders/decisions는 각 발생 시점.
+- **이유**: 거래 기록은 그 시점의 사실. 자산 메타데이터(`tick_size`, `lot_size`, `name` 등) 변경 시 과거 기록 보존 필요. Phase 0~1 단일/소수 자산 환경에서 정규화 이득 없음.
+- **트레이드오프**: 저장 공간 약간 증가 (5년 운영 시 ~수 MB). 자산 메타데이터 일괄 변경 어려움 (의도된 동작).
+- **직렬화/역직렬화**: 어댑터 내부에서만. 도메인 모델은 항상 `Asset` 객체로만 다룸 (CLAUDE.md §1.1). 저장: `asset.model_dump_json()`. 복원: `Asset.model_validate_json(row)`.
+- **Position 복원**: `position_repo.get()`이 반환하는 Position의 asset은 저장 시점 Asset. 호출자가 현재 Asset 정의와 비교 필요 시 별도 로직 (Phase 0 미구현).
+- **Phase 1+ 자산 마스터 테이블 도입 검토 시점**: 종목 50개 이상, 자산 분류/태깅 메타 필요, 메타데이터 일괄 업데이트 빈번. 단, 도입하더라도 거래 기록의 `asset_json`은 그대로 유지(시점 무결성).
+
+### 8.4 SQLite 스키마
+```sql
+CREATE TABLE positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_fqn TEXT NOT NULL UNIQUE,
+    asset_json TEXT NOT NULL,        -- 시점 박제
+    quantity TEXT NOT NULL,           -- Decimal as TEXT
+    avg_price TEXT NOT NULL,
+    split_level INTEGER NOT NULL,
+    last_buy_at TEXT,                 -- ISO 8601 UTC
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_positions_asset_fqn ON positions(asset_fqn);
+
+CREATE TABLE split_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id INTEGER NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
+    split_number INTEGER NOT NULL,
+    entry_date TEXT NOT NULL,         -- YYYY-MM-DD
+    quantity TEXT NOT NULL,
+    entry_price TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    UNIQUE (position_id, split_number)
+);
+CREATE INDEX idx_split_entries_position ON split_entries(position_id);
+
+CREATE TABLE orders (
+    idempotency_key TEXT PRIMARY KEY,
+    asset_fqn TEXT NOT NULL,
+    asset_json TEXT NOT NULL,         -- 시점 박제
+    side TEXT NOT NULL,
+    order_type TEXT NOT NULL,
+    quantity TEXT NOT NULL,
+    target_price TEXT NOT NULL,
+    status TEXT NOT NULL,
+    broker_order_id TEXT,
+    filled_quantity TEXT NOT NULL,
+    filled_price TEXT,
+    submitted_at TEXT NOT NULL,
+    filled_at TEXT
+);
+CREATE INDEX idx_orders_submitted_at ON orders(submitted_at);
+CREATE INDEX idx_orders_status ON orders(status);
+
+CREATE TABLE decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,          -- ISO 8601 UTC
+    asset_fqn TEXT NOT NULL,
+    asset_json TEXT NOT NULL,         -- 시점 박제
+    action TEXT NOT NULL,
+    reasoning TEXT NOT NULL,          -- JSON (json.dumps with sort_keys=True)
+    resulting_order_id TEXT
+);
+CREATE INDEX idx_decisions_timestamp ON decisions(timestamp);
+CREATE INDEX idx_decisions_asset_fqn ON decisions(asset_fqn);
+
+CREATE TABLE portfolio_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date TEXT NOT NULL UNIQUE,
+    snapshot_at TEXT NOT NULL,        -- ISO 8601 UTC
+    initial_capital_amount TEXT NOT NULL,
+    initial_capital_currency TEXT NOT NULL,
+    cash_amount TEXT NOT NULL,
+    cash_currency TEXT NOT NULL,
+    valuations_json TEXT NOT NULL,    -- list[PositionValuation] 직렬화 (시점 박제)
+    total_market_value_amount TEXT NOT NULL,
+    total_market_value_currency TEXT NOT NULL,
+    total_value_amount TEXT NOT NULL,
+    total_value_currency TEXT NOT NULL,
+    total_cost_basis_amount TEXT NOT NULL,
+    total_cost_basis_currency TEXT NOT NULL,
+    total_unrealized_pnl_amount TEXT NOT NULL,
+    total_unrealized_pnl_currency TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+```
+- **Decimal**: 항상 TEXT (정밀도 보존, CLAUDE.md §2). 어댑터 내부에서 `str(decimal)` ↔ `Decimal(text)`.
+- **datetime**: ISO 8601 UTC TEXT (예: `"2026-04-30T06:00:00+00:00"`).
+- **date**: `YYYY-MM-DD` TEXT.
+- **Money**: amount + currency 별도 컬럼 (JSON 대비 쿼리 가능, 단순).
+- **JSON 직렬화**: `json.dumps(sort_keys=True)`로 결정적 출력.
+
+### 8.5 [정정] §6.1 — Orchestrator가 UoW로 영속화
+- **원래 결정 (Step 6)**: Step 6은 `Decision`을 단순 return, Step 7에서 호출자가 영속화.
+- **정정 (Step 7, 2026-05-01)**: `DailyOrchestrator`가 생성자에 `uow_factory: Callable[[], UnitOfWorkPort]`를 받아 `run_for_date` 내부에서 영속화 수행. Use Case는 connection을 모르고 UoW의 `commit/rollback`만 호출.
+- **이유 (정정)**: Use Case가 결정 + 영속화를 한 트랜잭션 단위로 묶어야 일관성 보장. 외부 호출자(CLI)가 따로 영속화하면 결정과 저장 사이에 race/실수 가능. UoW 패턴은 connection 추상화 + 자동 rollback 제공.
+- **흐름**:
+  ```python
+  def run_for_date(self, today: date) -> Decision:
+      outcome = self._make_decision(today, self._clock())  # DB 안 건드림
+      with self._uow_factory() as uow:
+          if outcome.order is not None:
+              uow.orders.save(outcome.order)
+          if outcome.updated_position is not None:
+              uow.positions.save(outcome.updated_position)
+          uow.decisions.save(outcome.decision)
+          uow.commit()
+      return outcome.decision
+  ```
+
+### 8.6 PortfolioSnapshot 확장 + PositionValuation 신규
+- **결정**: `PortfolioSnapshot`에 시장가 평가 메타데이터 포함. `PositionValuation` 신규 도메인 모델 추가.
+- **PositionValuation 필드**:
+  - `asset: Asset`, `quantity: Decimal`, `avg_price: Decimal`, `market_price: Decimal`
+  - `market_value: Money` (= `quantity * market_price`)
+  - `unrealized_pnl: Money` (= `(market_price - avg_price) * quantity`)
+  - `unrealized_pnl_pct: Decimal` (= `(market_price - avg_price) / avg_price * 100`)
+  - `split_level: int`
+  - 무결성: `market_value == quantity * market_price` (model_validator)
+- **PortfolioSnapshot 필드**:
+  - `snapshot_date: date`, `snapshot_at: datetime` (UTC)
+  - `initial_capital: Money` (시스템 시작 시 자본, 매 snapshot 박제)
+  - `cash: Money`
+  - `valuations: list[PositionValuation]`
+  - `total_market_value: Money`, `total_value: Money`, `total_cost_basis: Money`, `total_unrealized_pnl: Money`
+  - `total_return_pct: Decimal` (`@property`, 파생)
+  - 무결성:
+    * `total_market_value == sum(v.market_value for v in valuations)`
+    * `total_value == cash + total_market_value`
+    * 모든 Money currency 일치
+    * 불일치 시 ValueError → ValidationError (도메인 invariant)
+- **부분 체결분 평가 (옵션 A)**: `position.quantity` 전체로 valuation 계산. `pending_partial_quantity`는 `Position`에서 별도 surfaceable, valuation 자체는 통합값 사용. 이유: Position.quantity가 진실의 단일 출처.
+- **통화**: Phase 0 KRW 단일. `model_validator`가 currency 불일치 거부.
+- **이유**: CAGR/MDD/Sharpe 등 백테스트 지표 계산에 필수. 시세 조회 비용은 의사결정 시 이미 발생.
+
+### 8.7 DailySnapshotBuilder 분리 (Application 레이어)
+- **결정**: `src/application/snapshot_builder.py::DailySnapshotBuilder`. 의사결정 트랜잭션과 분리된 별도 워크플로우.
+- **흐름**:
+  1. `uow.positions.list_all()` 조회
+  2. `broker.get_balance()`로 cash 조회
+  3. `market_data.get_price(asset, as_of)`로 각 포지션 현재가 조회
+  4. `PositionValuation` 생성
+  5. `PortfolioSnapshot` 조립
+  6. `uow.snapshots.save(snapshot)` + `uow.commit()`
+- **이유**: snapshot은 장 마감 후 종합 평가. 의사결정과 결합도 낮춤. 호출 순서: `orchestrator.run_for_date()` → `snapshot_builder.build_and_save()`.
+- **CLI 책임**: 두 단계를 cron 또는 스크립트에서 직렬 호출.
+
+### 8.8 [CLAUDE.md §10.3 보강] UoW 트랜잭션 정책
+- **추가 명시**: "여러 Repository에 걸친 변경은 UnitOfWork로 묶는다. Use Case는 connection을 모르고 UoW의 commit/rollback만 호출. 자동 rollback (commit 미호출 시 __exit__에서)이 안전 기본값."
+- **CLAUDE.md §10.3 갱신 예정**: 이번 ADR commit과 함께 CLAUDE.md 동시 업데이트.
+
+### 8.9 InMemoryUnitOfWork (백테스트/페이퍼 트레이딩 용)
+- **결정**: `src/adapters/mock/in_memory_unit_of_work.py::InMemoryUnitOfWork`. 4개 in-memory Repository를 보유. 트랜잭션 시뮬레이션 안 함 (commit/rollback이 no-op).
+- **이유**: Phase 0 단일 프로세스 메모리, 부분 실패 가정 없음. 백테스트 결정성 + 단순성.
+- **Phase 1+ 실거래**: SqliteUoW가 진짜 트랜잭션 보장.
+
+### 8.10 작업 순서 (Step 7 sub-steps)
+- **8.a** ADR + CLAUDE.md 업데이트 (이번 commit)
+- **8.b** 도메인 모델 신규/확장: `PositionValuation`, `PortfolioSnapshot` + 단위 테스트
+- **8.c** Repository Port 4개 + `UnitOfWorkPort` (Protocol 정의)
+- **8.d** `src/infrastructure/db.py` (스키마 부트스트랩 + connection 팩토리)
+- **8.e** 4개 SQLite Repository 어댑터 + 라운드트립 테스트 (in-memory SQLite)
+- **8.f** `SqliteUnitOfWork` + 트랜잭션 무결성 테스트
+- **8.g** `InMemoryUnitOfWork` (Phase 0 백테스트용)
+- **8.h** `DailyOrchestrator` 리팩터링 — `uow_factory` 주입, 영속화 흐름 추가 + 테스트
+- **8.i** `DailySnapshotBuilder` + 단위/통합 테스트
+- **8.j** ADR 마무리 (구현 완료 표기) + push
 
 ---
 
