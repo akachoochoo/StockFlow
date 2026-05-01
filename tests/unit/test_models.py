@@ -26,7 +26,9 @@ from src.domain.models import (
     OrderSide,
     OrderStatus,
     OrderType,
+    PortfolioSnapshot,
     Position,
+    PositionValuation,
     Price,
     SignalLevel,
     SignalSource,
@@ -1486,6 +1488,330 @@ class TestCircuitBreakerSignal:
         sig = self._signal()
         with pytest.raises(ValidationError):
             sig.level = SignalLevel.HALT
+
+
+# ---------------------------------------------------------------------------
+# PositionValuation
+# ---------------------------------------------------------------------------
+class TestPositionValuation:
+    def _valuation(self, **overrides):
+        a = make_asset()
+        base = {
+            "asset": a,
+            "quantity": Decimal("10"),
+            "avg_price": Decimal("35000"),
+            "market_price": Decimal("36000"),
+            "market_value": Money(amount=Decimal("360000"), currency=Currency.KRW),
+            "unrealized_pnl": Money(amount=Decimal("10000"), currency=Currency.KRW),
+            "split_level": 1,
+        }
+        base.update(overrides)
+        return PositionValuation(**base)
+
+    def test_construct_happy_path(self):
+        v = self._valuation()
+        assert v.asset.fqn == "KRX:069500"
+        assert v.market_value.amount == Decimal("360000")
+        assert v.unrealized_pnl.amount == Decimal("10000")
+
+    def test_market_value_must_match_quantity_times_market_price(self):
+        with pytest.raises(ValidationError, match="market_value"):
+            self._valuation(
+                market_value=Money(amount=Decimal("999"), currency=Currency.KRW),
+            )
+
+    def test_unrealized_pnl_must_match_formula(self):
+        with pytest.raises(ValidationError, match="unrealized_pnl"):
+            self._valuation(
+                unrealized_pnl=Money(amount=Decimal("999"), currency=Currency.KRW),
+            )
+
+    def test_market_value_currency_mismatch_rejected(self):
+        with pytest.raises(ValidationError, match="market_value"):
+            self._valuation(
+                market_value=Money(amount=Decimal("360000"), currency=Currency.USD),
+            )
+
+    def test_unrealized_pnl_currency_mismatch_rejected(self):
+        with pytest.raises(ValidationError, match="unrealized_pnl"):
+            self._valuation(
+                unrealized_pnl=Money(amount=Decimal("10000"), currency=Currency.USD),
+            )
+
+    def test_zero_quantity_rejected(self):
+        with pytest.raises(ValidationError):
+            self._valuation(
+                quantity=Decimal("0"),
+                market_value=Money(amount=Decimal("0"), currency=Currency.KRW),
+                unrealized_pnl=Money(amount=Decimal("0"), currency=Currency.KRW),
+            )
+
+    def test_zero_market_price_rejected(self):
+        with pytest.raises(ValidationError):
+            self._valuation(market_price=Decimal("0"))
+
+    def test_split_level_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            self._valuation(split_level=-1)
+
+    def test_split_level_above_seven_rejected(self):
+        with pytest.raises(ValidationError):
+            self._valuation(split_level=8)
+
+    def test_split_level_zero_allowed_partial_only(self):
+        # partial-only Position has split_level=0 yet quantity>0; valuation OK
+        v = self._valuation(split_level=0)
+        assert v.split_level == 0
+
+    def test_unrealized_pnl_pct_property(self):
+        v = self._valuation()
+        # (36000 - 35000) / 35000 * 100 = 2.857142...
+        expected = (Decimal("36000") - Decimal("35000")) / Decimal("35000") * Decimal(100)
+        assert v.unrealized_pnl_pct == expected
+
+    def test_unrealized_pnl_pct_negative_when_market_below_avg(self):
+        v = self._valuation(
+            market_price=Decimal("34000"),
+            market_value=Money(amount=Decimal("340000"), currency=Currency.KRW),
+            unrealized_pnl=Money(amount=Decimal("-10000"), currency=Currency.KRW),
+        )
+        assert v.unrealized_pnl_pct < 0
+
+    def test_immutable(self):
+        v = self._valuation()
+        with pytest.raises(ValidationError):
+            v.market_price = Decimal("37000")
+
+    # ---- from_position factory ----
+    def test_from_position_factory(self):
+        a = make_asset()
+        position = Position(
+            asset=a,
+            quantity=Decimal("10"),
+            avg_price=Decimal("35000"),
+            split_level=1,
+            last_buy_at=UTC_NOW,
+            entries=make_entries(("10", "35000")),
+        )
+        v = PositionValuation.from_position(position, market_price=Decimal("36000"))
+        assert v.market_price == Decimal("36000")
+        assert v.market_value.amount == Decimal("360000")
+        assert v.unrealized_pnl.amount == Decimal("10000")
+        assert v.split_level == 1
+
+    def test_from_position_rejects_empty_quantity(self):
+        a = make_asset()
+        empty = Position.empty(a)
+        with pytest.raises(ValueError, match="non-positive"):
+            PositionValuation.from_position(empty, market_price=Decimal("36000"))
+
+
+# ---------------------------------------------------------------------------
+# PortfolioSnapshot
+# ---------------------------------------------------------------------------
+class TestPortfolioSnapshot:
+    def _val(
+        self,
+        *,
+        code: str = "069500",
+        quantity: str = "10",
+        avg_price: str = "35000",
+        market_price: str = "36000",
+        split_level: int = 1,
+    ) -> PositionValuation:
+        a = make_asset(code=code)
+        qty = Decimal(quantity)
+        avg = Decimal(avg_price)
+        mp = Decimal(market_price)
+        return PositionValuation(
+            asset=a,
+            quantity=qty,
+            avg_price=avg,
+            market_price=mp,
+            market_value=Money(amount=qty * mp, currency=Currency.KRW),
+            unrealized_pnl=Money(
+                amount=(mp - avg) * qty, currency=Currency.KRW
+            ),
+            split_level=split_level,
+        )
+
+    def _build(self, **overrides):
+        defaults = {
+            "snapshot_date": date(2026, 4, 30),
+            "snapshot_at": UTC_NOW,
+            "initial_capital": Money(amount=Decimal("4000000"), currency=Currency.KRW),
+            "cash": Money(amount=Decimal("3640000"), currency=Currency.KRW),
+            "valuations": [self._val()],  # market_value 360000
+        }
+        defaults.update(overrides)
+        return PortfolioSnapshot.build(**defaults)
+
+    # ---- happy paths ----
+    def test_build_with_one_valuation(self):
+        snap = self._build()
+        assert snap.total_market_value.amount == Decimal("360000")
+        assert snap.total_value.amount == Decimal("4000000")  # 3640000 + 360000
+        assert snap.total_cost_basis.amount == Decimal("350000")  # 10 * 35000
+        assert snap.total_unrealized_pnl.amount == Decimal("10000")
+
+    def test_build_with_no_valuations_cash_only(self):
+        snap = self._build(
+            cash=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+            valuations=[],
+        )
+        assert snap.total_market_value.amount == Decimal("0")
+        assert snap.total_value.amount == Decimal("4000000")
+        assert snap.total_cost_basis.amount == Decimal("0")
+        assert snap.total_unrealized_pnl.amount == Decimal("0")
+
+    def test_build_with_multiple_valuations(self):
+        v1 = self._val(code="069500", quantity="10", avg_price="35000", market_price="36000")
+        v2 = self._val(code="105190", quantity="5", avg_price="20000", market_price="22000")
+        snap = self._build(
+            cash=Money(amount=Decimal("3530000"), currency=Currency.KRW),
+            valuations=[v1, v2],
+        )
+        # total_market_value = 360000 + 110000 = 470000
+        assert snap.total_market_value.amount == Decimal("470000")
+        # total_cost_basis = 350000 + 100000 = 450000
+        assert snap.total_cost_basis.amount == Decimal("450000")
+        # total_unrealized_pnl = 10000 + 10000 = 20000
+        assert snap.total_unrealized_pnl.amount == Decimal("20000")
+
+    # ---- invariants ----
+    def test_total_market_value_mismatch_rejected(self):
+        v = self._val()
+        with pytest.raises(ValidationError, match="total_market_value"):
+            PortfolioSnapshot(
+                snapshot_date=date(2026, 4, 30),
+                snapshot_at=UTC_NOW,
+                initial_capital=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+                cash=Money(amount=Decimal("3640000"), currency=Currency.KRW),
+                valuations=[v],
+                total_market_value=Money(amount=Decimal("999"), currency=Currency.KRW),
+                total_value=Money(amount=Decimal("3640999"), currency=Currency.KRW),
+                total_cost_basis=Money(amount=Decimal("350000"), currency=Currency.KRW),
+                total_unrealized_pnl=Money(amount=Decimal("-349001"), currency=Currency.KRW),
+            )
+
+    def test_total_value_mismatch_rejected(self):
+        v = self._val()
+        with pytest.raises(ValidationError, match="total_value"):
+            PortfolioSnapshot(
+                snapshot_date=date(2026, 4, 30),
+                snapshot_at=UTC_NOW,
+                initial_capital=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+                cash=Money(amount=Decimal("3640000"), currency=Currency.KRW),
+                valuations=[v],
+                total_market_value=Money(amount=Decimal("360000"), currency=Currency.KRW),
+                total_value=Money(amount=Decimal("999"), currency=Currency.KRW),  # wrong
+                total_cost_basis=Money(amount=Decimal("350000"), currency=Currency.KRW),
+                total_unrealized_pnl=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            )
+
+    def test_total_cost_basis_mismatch_rejected(self):
+        v = self._val()
+        with pytest.raises(ValidationError, match="total_cost_basis"):
+            PortfolioSnapshot(
+                snapshot_date=date(2026, 4, 30),
+                snapshot_at=UTC_NOW,
+                initial_capital=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+                cash=Money(amount=Decimal("3640000"), currency=Currency.KRW),
+                valuations=[v],
+                total_market_value=Money(amount=Decimal("360000"), currency=Currency.KRW),
+                total_value=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+                total_cost_basis=Money(amount=Decimal("999"), currency=Currency.KRW),
+                total_unrealized_pnl=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            )
+
+    def test_total_unrealized_pnl_mismatch_rejected(self):
+        v = self._val()
+        with pytest.raises(ValidationError, match="total_unrealized_pnl"):
+            PortfolioSnapshot(
+                snapshot_date=date(2026, 4, 30),
+                snapshot_at=UTC_NOW,
+                initial_capital=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+                cash=Money(amount=Decimal("3640000"), currency=Currency.KRW),
+                valuations=[v],
+                total_market_value=Money(amount=Decimal("360000"), currency=Currency.KRW),
+                total_value=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+                total_cost_basis=Money(amount=Decimal("350000"), currency=Currency.KRW),
+                total_unrealized_pnl=Money(amount=Decimal("999"), currency=Currency.KRW),
+            )
+
+    def test_currency_mismatch_rejected_initial_capital(self):
+        with pytest.raises(ValidationError, match="initial_capital"):
+            self._build(
+                initial_capital=Money(amount=Decimal("4000000"), currency=Currency.USD),
+            )
+
+    def test_currency_mismatch_rejected_valuation_asset(self):
+        a_usd = Asset(
+            code="SPY",
+            exchange=Exchange.KRX,
+            asset_class=AssetClass.KR_ETF,
+            currency=Currency.USD,
+            name="SPY",
+            tick_size=Decimal("1"),
+            lot_size=Decimal("1"),
+        )
+        v_usd = PositionValuation(
+            asset=a_usd,
+            quantity=Decimal("10"),
+            avg_price=Decimal("400"),
+            market_price=Decimal("420"),
+            market_value=Money(amount=Decimal("4200"), currency=Currency.USD),
+            unrealized_pnl=Money(amount=Decimal("200"), currency=Currency.USD),
+            split_level=1,
+        )
+        with pytest.raises(ValidationError, match="valuation"):
+            self._build(valuations=[v_usd])
+
+    def test_initial_capital_zero_rejected(self):
+        with pytest.raises(ValidationError, match="initial_capital"):
+            self._build(
+                initial_capital=Money(amount=Decimal("0"), currency=Currency.KRW),
+            )
+
+    def test_naive_snapshot_at_rejected(self):
+        with pytest.raises(ValidationError):
+            self._build(snapshot_at=datetime(2026, 4, 30, 6, 0, 0))
+
+    # ---- total_return_pct property ----
+    def test_total_return_pct_zero_when_value_equals_capital(self):
+        snap = self._build(
+            cash=Money(amount=Decimal("4000000"), currency=Currency.KRW),
+            valuations=[],
+        )
+        assert snap.total_return_pct == Decimal("0")
+
+    def test_total_return_pct_positive(self):
+        snap = self._build(
+            cash=Money(amount=Decimal("3690000"), currency=Currency.KRW),
+            valuations=[
+                self._val(quantity="10", avg_price="35000", market_price="40000"),
+            ],
+        )
+        # total_value = 3690000 + 10*40000 = 4090000
+        # initial_capital = 4000000
+        # return_pct = 90000 / 4000000 * 100 = 2.25
+        assert snap.total_return_pct == Decimal("2.25")
+
+    def test_total_return_pct_negative(self):
+        snap = self._build(
+            cash=Money(amount=Decimal("3500000"), currency=Currency.KRW),
+            valuations=[
+                self._val(quantity="10", avg_price="35000", market_price="30000"),
+            ],
+        )
+        # total_value = 3500000 + 300000 = 3800000
+        # return_pct = (3800000 - 4000000) / 4000000 * 100 = -5
+        assert snap.total_return_pct == Decimal("-5")
+
+    def test_immutable(self):
+        snap = self._build(valuations=[])
+        with pytest.raises(ValidationError):
+            snap.snapshot_date = date(2026, 5, 1)
 
 
 # ---------------------------------------------------------------------------

@@ -344,6 +344,100 @@ class SplitEntry(ValueObject):
         return _to_decimal(v)
 
 
+class PositionValuation(ValueObject):
+    """Mark-to-market snapshot of a single Position.
+
+    Captures (asset, quantity, avg_price, market_price) at a moment in time
+    plus the derived market_value and unrealized PnL. Per ADR §8.6 the
+    quantity is the Position.quantity total — partial fills above entries
+    are valued together with completed splits (option A: Position.quantity
+    is the single source of truth).
+
+    Invariants:
+        - market_value.amount == quantity * market_price
+        - unrealized_pnl.amount == (market_price - avg_price) * quantity
+        - market_value.currency == unrealized_pnl.currency == asset.currency
+        - quantity > 0  (you don't value an empty position)
+    """
+
+    asset: Asset
+    quantity: Decimal = Field(gt=Decimal(0))
+    avg_price: Decimal = Field(gt=Decimal(0))
+    market_price: Decimal = Field(gt=Decimal(0))
+    market_value: Money
+    unrealized_pnl: Money
+    split_level: int = Field(ge=0, le=7)
+
+    @field_validator("quantity", "avg_price", "market_price", mode="before")
+    @classmethod
+    def _coerce_decimal(cls, v: object) -> Decimal:
+        return _to_decimal(v)
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> PositionValuation:
+        expected_market_value = self.quantity * self.market_price
+        if self.market_value.amount != expected_market_value:
+            raise ValueError(
+                f"market_value.amount ({self.market_value.amount}) must equal "
+                f"quantity * market_price ({expected_market_value})"
+            )
+        expected_pnl = (self.market_price - self.avg_price) * self.quantity
+        if self.unrealized_pnl.amount != expected_pnl:
+            raise ValueError(
+                f"unrealized_pnl.amount ({self.unrealized_pnl.amount}) must "
+                f"equal (market_price - avg_price) * quantity ({expected_pnl})"
+            )
+        if self.market_value.currency is not self.asset.currency:
+            raise ValueError(
+                f"market_value.currency ({self.market_value.currency.value}) "
+                f"!= asset.currency ({self.asset.currency.value})"
+            )
+        if self.unrealized_pnl.currency is not self.asset.currency:
+            raise ValueError(
+                f"unrealized_pnl.currency ({self.unrealized_pnl.currency.value})"
+                f" != asset.currency ({self.asset.currency.value})"
+            )
+        return self
+
+    @property
+    def unrealized_pnl_pct(self) -> Decimal:
+        """Unrealized return percent (price-only). Excludes fees/taxes."""
+        return (
+            (self.market_price - self.avg_price) / self.avg_price * Decimal(100)
+        )
+
+    @classmethod
+    def from_position(
+        cls, position: Position, market_price: Decimal
+    ) -> PositionValuation:
+        """Build a valuation for `position` at `market_price`.
+
+        The factory does the math; the model_validator double-checks.
+        Caller is responsible for ensuring market_price comes from a
+        trusted MarketDataPort source.
+        """
+        if position.quantity <= 0:
+            raise ValueError(
+                "Cannot value a position with non-positive quantity "
+                f"({position.quantity})"
+            )
+        currency = position.asset.currency
+        return cls(
+            asset=position.asset,
+            quantity=position.quantity,
+            avg_price=position.avg_price,
+            market_price=market_price,
+            market_value=Money(
+                amount=position.quantity * market_price, currency=currency
+            ),
+            unrealized_pnl=Money(
+                amount=(market_price - position.avg_price) * position.quantity,
+                currency=currency,
+            ),
+            split_level=position.split_level,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Entities
 # ---------------------------------------------------------------------------
@@ -776,3 +870,157 @@ class CircuitBreakerSignal(DomainModel):
                 f"evaluated_at ({self.evaluated_at})"
             )
         return self
+
+
+class PortfolioSnapshot(DomainModel):
+    """End-of-day portfolio state for backtest/paper-trading metrics.
+
+    Captures cash, per-position valuations, and roll-up totals at one
+    moment. Per ADR §8.6 / §8.7 this is built by DailySnapshotBuilder
+    after the orchestrator's decision flow completes.
+
+    Phase 0: single currency (KRW). Phase 3+ multi-currency may extend.
+
+    Invariants:
+        - all Money fields share currency with `cash`
+        - `valuations[*].asset.currency == cash.currency`
+        - total_market_value == sum(v.market_value for v in valuations)
+        - total_value == cash + total_market_value
+        - total_cost_basis == sum(v.quantity * v.avg_price for v in valuations)
+        - total_unrealized_pnl == sum(v.unrealized_pnl for v in valuations)
+        - initial_capital.amount > 0  (for return calculation)
+        - snapshot_at is UTC
+    """
+
+    snapshot_date: date
+    snapshot_at: datetime
+    initial_capital: Money
+    cash: Money
+    valuations: list[PositionValuation] = Field(default_factory=list)
+    total_market_value: Money
+    total_value: Money
+    total_cost_basis: Money
+    total_unrealized_pnl: Money
+
+    @field_validator("snapshot_at")
+    @classmethod
+    def _utc_only(cls, v: datetime) -> datetime:
+        return _ensure_utc(v)
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> PortfolioSnapshot:
+        # initial_capital strictly positive (return-pct denominator)
+        if self.initial_capital.amount <= 0:
+            raise ValueError(
+                f"initial_capital.amount must be > 0, "
+                f"got {self.initial_capital.amount}"
+            )
+
+        # currency consistency: every Money + every valuation.asset must
+        # match cash.currency
+        currency = self.cash.currency
+        for label, m in (
+            ("initial_capital", self.initial_capital),
+            ("total_market_value", self.total_market_value),
+            ("total_value", self.total_value),
+            ("total_cost_basis", self.total_cost_basis),
+            ("total_unrealized_pnl", self.total_unrealized_pnl),
+        ):
+            if m.currency is not currency:
+                raise ValueError(
+                    f"{label}.currency ({m.currency.value}) != "
+                    f"cash.currency ({currency.value})"
+                )
+        for v in self.valuations:
+            if v.asset.currency is not currency:
+                raise ValueError(
+                    f"valuation for {v.asset.fqn} has currency "
+                    f"{v.asset.currency.value}, expected {currency.value}"
+                )
+
+        # sum invariants
+        expected_market_value = sum(
+            (v.market_value.amount for v in self.valuations), Decimal(0)
+        )
+        if self.total_market_value.amount != expected_market_value:
+            raise ValueError(
+                f"total_market_value ({self.total_market_value.amount}) != "
+                f"sum of valuations.market_value ({expected_market_value})"
+            )
+        expected_total_value = self.cash.amount + self.total_market_value.amount
+        if self.total_value.amount != expected_total_value:
+            raise ValueError(
+                f"total_value ({self.total_value.amount}) != "
+                f"cash + total_market_value ({expected_total_value})"
+            )
+        expected_cost_basis = sum(
+            (v.quantity * v.avg_price for v in self.valuations), Decimal(0)
+        )
+        if self.total_cost_basis.amount != expected_cost_basis:
+            raise ValueError(
+                f"total_cost_basis ({self.total_cost_basis.amount}) != "
+                f"sum of cost basis ({expected_cost_basis})"
+            )
+        expected_pnl = sum(
+            (v.unrealized_pnl.amount for v in self.valuations), Decimal(0)
+        )
+        if self.total_unrealized_pnl.amount != expected_pnl:
+            raise ValueError(
+                f"total_unrealized_pnl ({self.total_unrealized_pnl.amount}) != "
+                f"sum of valuations.unrealized_pnl ({expected_pnl})"
+            )
+        return self
+
+    @property
+    def total_return_pct(self) -> Decimal:
+        """Total return percent vs initial_capital. Excludes deposits/withdrawals."""
+        return (
+            (self.total_value.amount - self.initial_capital.amount)
+            / self.initial_capital.amount
+            * Decimal(100)
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        snapshot_date: date,
+        snapshot_at: datetime,
+        initial_capital: Money,
+        cash: Money,
+        valuations: list[PositionValuation],
+    ) -> PortfolioSnapshot:
+        """Build a snapshot computing totals from cash + valuations.
+
+        Convenience factory. The model_validator double-checks the math.
+        """
+        currency = cash.currency
+        total_market_value_amount = sum(
+            (v.market_value.amount for v in valuations), Decimal(0)
+        )
+        total_cost_basis_amount = sum(
+            (v.quantity * v.avg_price for v in valuations), Decimal(0)
+        )
+        total_unrealized_pnl_amount = sum(
+            (v.unrealized_pnl.amount for v in valuations), Decimal(0)
+        )
+        return cls(
+            snapshot_date=snapshot_date,
+            snapshot_at=snapshot_at,
+            initial_capital=initial_capital,
+            cash=cash,
+            valuations=valuations,
+            total_market_value=Money(
+                amount=total_market_value_amount, currency=currency
+            ),
+            total_value=Money(
+                amount=cash.amount + total_market_value_amount,
+                currency=currency,
+            ),
+            total_cost_basis=Money(
+                amount=total_cost_basis_amount, currency=currency
+            ),
+            total_unrealized_pnl=Money(
+                amount=total_unrealized_pnl_amount, currency=currency
+            ),
+        )
