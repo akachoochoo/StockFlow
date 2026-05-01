@@ -185,6 +185,19 @@ class TestFirstSplit:
         assert result.should_buy is True
         assert result.reason == "buy_split_1"
 
+    def test_target_price_rounded_to_tick(self):
+        # current_price 35003 with tick_size 5 → target_price floors to 35000
+        result = self.strategy.evaluate(
+            position=None,
+            current_price=_price("35003", self.asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.should_buy is True
+        assert result.target_price == Decimal("35000")
+        assert result.reasoning["target_price"] == "35000"
+
 
 # ---------------------------------------------------------------------------
 # Subsequent-split buy / skip path

@@ -183,8 +183,10 @@ class PriceDropStrategy:
 
         # ------------------------------------------------------------------
         # 4. We want to buy. Compute quantity and cost.
+        # target_price is floored to the asset's tick_size so the LIMIT order
+        # always sits on a valid exchange price (CLAUDE.md §4.2, ADR §7.10).
         # ------------------------------------------------------------------
-        target_price = current_price.value
+        target_price = asset.round_to_tick(current_price.value)
         spend_amount = config.per_split_amount.amount
         raw_qty = spend_amount / target_price
         lot_size = asset.lot_size

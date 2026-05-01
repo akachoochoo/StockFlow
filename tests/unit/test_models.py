@@ -282,6 +282,39 @@ class TestAsset:
         with pytest.raises(ValidationError):
             a.code = "999999"
 
+    # ---- round_to_tick (ADR §7.10) ----
+    def test_round_to_tick_exact_multiple(self):
+        a = make_asset()  # tick_size = 5
+        assert a.round_to_tick(Decimal("35000")) == Decimal("35000")
+
+    def test_round_to_tick_floors_above_multiple(self):
+        a = make_asset()
+        # 35003 / 5 = 7000.6 → floor 7000 → 35000
+        assert a.round_to_tick(Decimal("35003")) == Decimal("35000")
+
+    def test_round_to_tick_just_below_next_multiple(self):
+        a = make_asset()
+        # 34999 / 5 = 6999.8 → floor 6999 → 34995
+        assert a.round_to_tick(Decimal("34999")) == Decimal("34995")
+
+    def test_round_to_tick_with_decimal_tick(self):
+        a = Asset(
+            code="X",
+            exchange=Exchange.KRX,
+            asset_class=AssetClass.KR_ETF,
+            currency=Currency.KRW,
+            name="X",
+            tick_size=Decimal("0.01"),
+            lot_size=Decimal("1"),
+        )
+        assert a.round_to_tick(Decimal("35.034")) == Decimal("35.03")
+
+    def test_round_to_tick_returns_zero_when_below_tick(self):
+        # Edge case: price < tick_size → result == 0. Won't happen for KODEX 200
+        # in practice (price ~35,000 vs tick 5), but documents the behavior.
+        a = make_asset()  # tick_size = 5
+        assert a.round_to_tick(Decimal("3")) == Decimal("0")
+
 
 # ---------------------------------------------------------------------------
 # Price

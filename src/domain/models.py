@@ -239,6 +239,15 @@ class Asset(DomainModel):
         """Fully qualified name: 'EXCHANGE:CODE' (e.g. 'KRX:069500')."""
         return f"{self.exchange.value}:{self.code}"
 
+    def round_to_tick(self, price: Decimal) -> Decimal:
+        """Floor `price` to the nearest `tick_size` multiple.
+
+        Used for LIMIT order pricing per CLAUDE.md §4.2: a buy LIMIT placed
+        at-or-below the conceptual target is conservative — flooring to a
+        valid tick guarantees the price is acceptable to the exchange.
+        """
+        return (price // self.tick_size) * self.tick_size
+
 
 class Price(ValueObject):
     """Spot price for an asset at a given UTC instant."""
