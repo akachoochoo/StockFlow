@@ -339,15 +339,31 @@ class SplitEntry(ValueObject):
 # Entities
 # ---------------------------------------------------------------------------
 class Position(DomainModel):
-    """Current holding for one asset.
+    """Current holding for one asset, with per-split entry records.
 
-    `split_level` tracks how many split-buys have *fully* completed (0 = no
-    completed splits, 1~7 = 1st through 7th split filled). Per CLAUDE.md §4.4,
-    only fully filled orders increment split_level; partial fills do NOT.
+    `split_level` tracks how many split-buys have *fully* completed (0 = none,
+    1~7 = 1st through 7th split filled). Per CLAUDE.md §4.4, only fully FILLED
+    orders increment split_level and append a SplitEntry; PARTIALLY_FILLED
+    fills do NOT.
 
-    Therefore the invariant `quantity > 0 -> split_level >= 1` does NOT hold:
-    a position may have quantity > 0 with split_level == 0 if it consists
-    entirely of partial fills that have not yet reached a full split.
+    Partial-fill policy (ADR §7.5/§7.9):
+        - PARTIALLY_FILLED updates `quantity`, `avg_price`, `last_buy_at` only.
+        - `entries` and `split_level` remain unchanged on partial fills.
+        - The leftover (`pending_partial_quantity`) shows as `quantity` in
+          excess of `sum(e.quantity for e in entries)`. The orchestrator
+          surfaces this via Decision.reasoning when present.
+        - Partial fills are NEVER retroactively promoted into a SplitEntry.
+
+    Invariants enforced (model_validator):
+        - split_level == len(entries)
+        - entries' split_numbers form the sequence 1, 2, ..., split_level
+        - quantity >= sum(e.quantity for e in entries)   (lower bound only)
+        - quantity > 0 ⇒ avg_price > 0 and last_buy_at is set
+        - quantity == 0 ⇒ split_level == 0 and avg_price == 0 and entries == []
+
+    NOT enforced (intentional, ADR §7.8 option-A limit):
+        - avg_price weighted-average match against entries
+          (because partial fills affect avg_price but never appear in entries).
     """
 
     asset: Asset
@@ -355,6 +371,7 @@ class Position(DomainModel):
     avg_price: Decimal
     split_level: int = Field(ge=0, le=7)
     last_buy_at: datetime | None = None
+    entries: list[SplitEntry] = Field(default_factory=list)
 
     @field_validator("quantity", "avg_price", mode="before")
     @classmethod
@@ -384,17 +401,42 @@ class Position(DomainModel):
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Position:
+        # split_level <-> entries length
+        if self.split_level != len(self.entries):
+            raise ValueError(
+                f"split_level ({self.split_level}) must equal "
+                f"len(entries) ({len(self.entries)})"
+            )
+
+        # entries' split_numbers must be 1..split_level sequential
+        expected = list(range(1, self.split_level + 1))
+        actual = [e.split_number for e in self.entries]
+        if actual != expected:
+            raise ValueError(
+                f"entries split_numbers must be {expected}, got {actual}"
+            )
+
+        # quantity must be >= sum of entries quantity (partial fills sit above)
+        total_from_entries = self.total_quantity_from_entries
+        if self.quantity < total_from_entries:
+            raise ValueError(
+                f"quantity ({self.quantity}) must be >= sum of entries "
+                f"quantity ({total_from_entries})"
+            )
+
+        # legacy invariants for the qty>0 case (avg_price/last_buy_at). The
+        # symmetric "qty==0 ⇒ split_level==0" rule is subsumed by the new
+        # entries invariants: entries each have qty > 0, so sum > 0 whenever
+        # split_level > 0, which would already fail the quantity-vs-sum check
+        # above. So only the avg_price=0 check remains for the qty==0 branch.
         has_qty = self.quantity > 0
         if has_qty:
             if self.avg_price <= 0:
                 raise ValueError("avg_price must be > 0 when quantity > 0")
             if self.last_buy_at is None:
                 raise ValueError("last_buy_at required when quantity > 0")
-        else:
-            if self.split_level != 0:
-                raise ValueError("split_level must be 0 when quantity == 0")
-            if self.avg_price != 0:
-                raise ValueError("avg_price must be 0 when quantity == 0")
+        elif self.avg_price != 0:
+            raise ValueError("avg_price must be 0 when quantity == 0")
         return self
 
     @classmethod
@@ -406,7 +448,70 @@ class Position(DomainModel):
             avg_price=Decimal(0),
             split_level=0,
             last_buy_at=None,
+            entries=[],
         )
+
+    # ------------------------------------------------------------------
+    # Derived quantities
+    # ------------------------------------------------------------------
+    @property
+    def total_quantity_from_entries(self) -> Decimal:
+        """Sum of `entries.quantity`. Excludes any pending partial fill."""
+        return sum((e.quantity for e in self.entries), Decimal(0))
+
+    @property
+    def avg_price_from_entries(self) -> Decimal:
+        """Weighted-average price based only on `entries`. 0 when entries empty.
+
+        Differs from `avg_price` when there is a pending partial fill, since
+        partial fills update `avg_price` but do NOT appear in `entries`.
+        """
+        if not self.entries:
+            return Decimal(0)
+        total_cost = sum(
+            (e.quantity * e.entry_price for e in self.entries), Decimal(0)
+        )
+        return total_cost / self.total_quantity_from_entries
+
+    @property
+    def pending_partial_quantity(self) -> Decimal:
+        """Quantity present on the position but not yet captured in a SplitEntry.
+
+        Equals `quantity - total_quantity_from_entries`. Always >= 0 by the
+        Position invariant.
+        """
+        return self.quantity - self.total_quantity_from_entries
+
+    def has_pending_partial(self) -> bool:
+        """True iff a partial fill remains outside `entries`."""
+        return self.pending_partial_quantity > 0
+
+    def get_entry(self, split_number: int) -> SplitEntry | None:
+        """Return the SplitEntry for a given split_number, or None if absent."""
+        for entry in self.entries:
+            if entry.split_number == split_number:
+                return entry
+        return None
+
+    def split_pnl(self, current_price: Decimal) -> dict[int, Decimal]:
+        """Per-split unrealized PnL in price units.
+
+        Visualizes the seven-account view of 세븐 스플릿 within the
+        single-account model. Caller passes the current spot price.
+        """
+        return {
+            e.split_number: (current_price - e.entry_price) * e.quantity
+            for e in self.entries
+        }
+
+    def split_pnl_pct(self, current_price: Decimal) -> dict[int, Decimal]:
+        """Per-split unrealized return percent (price-only, no fees)."""
+        return {
+            e.split_number: (
+                (current_price - e.entry_price) / e.entry_price * Decimal(100)
+            )
+            for e in self.entries
+        }
 
 
 class OrderRequest(DomainModel):

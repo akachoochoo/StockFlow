@@ -24,6 +24,7 @@ import random
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from src.domain.constants import KST
 from src.domain.exceptions import BrokerConnectionError
 from src.domain.models import (
     Balance,
@@ -32,6 +33,7 @@ from src.domain.models import (
     OrderResult,
     OrderStatus,
     Position,
+    SplitEntry,
 )
 
 if TYPE_CHECKING:
@@ -216,6 +218,7 @@ class MockBroker:
             result.filled_quantity,
             result.filled_price,
             result.filled_at,
+            idempotency_key=request.idempotency_key,
             full_fill=(result.status == OrderStatus.FILLED),
         )
 
@@ -237,29 +240,50 @@ class MockBroker:
         filled_price: Decimal,
         now: datetime,
         *,
+        idempotency_key: str,
         full_fill: bool,
     ) -> None:
         existing = self._positions.get(asset.fqn)
         if existing is None or existing.quantity == 0:
             new_qty = filled_qty
             new_avg = filled_price
-            new_split = 1 if full_fill else 0
+            existing_entries: list[SplitEntry] = []
         else:
             new_qty = existing.quantity + filled_qty
             total_cost = (
                 existing.quantity * existing.avg_price + filled_qty * filled_price
             )
             new_avg = total_cost / new_qty
-            new_split = (
-                existing.split_level + 1 if full_fill else existing.split_level
+            existing_entries = list(existing.entries)
+
+        # Per CLAUDE.md §4.4 / ADR §7.5: only FILLED creates a SplitEntry.
+        # PARTIALLY_FILLED updates quantity/avg_price/last_buy_at only.
+        if full_fill:
+            new_split_number = len(existing_entries) + 1
+            # KRX session is fully inside one UTC date (KST=UTC+9, hours
+            # 09:00-15:30 KST = 00:00-06:30 UTC), so KST date == UTC date
+            # for any in-session timestamp. Convert explicitly to keep the
+            # business-date semantic intact for off-hours fixtures.
+            new_entry = SplitEntry(
+                split_number=new_split_number,
+                entry_date=now.astimezone(KST).date(),
+                quantity=filled_qty,
+                entry_price=filled_price,
+                idempotency_key=idempotency_key,
             )
+            new_entries = [*existing_entries, new_entry]
+            new_split_level = new_split_number
+        else:
+            new_entries = existing_entries
+            new_split_level = len(existing_entries)
 
         self._positions[asset.fqn] = Position(
             asset=asset,
             quantity=new_qty,
             avg_price=new_avg,
-            split_level=new_split,
+            split_level=new_split_level,
             last_buy_at=now,
+            entries=new_entries,
         )
 
     # ------------------------------------------------------------------

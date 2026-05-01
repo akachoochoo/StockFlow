@@ -52,6 +52,28 @@ def make_asset(code: str = "069500", name: str = "KODEX 200") -> Asset:
     )
 
 
+def make_entries(
+    *quantities_prices: tuple[str, str],
+    entry_date: date | None = None,
+) -> list[SplitEntry]:
+    """Build sequential SplitEntry list from (qty, price) tuples.
+
+    `make_entries(("10", "35000"), ("5", "32000"))` -> 2 entries with
+    split_number 1 and 2.
+    """
+    d = entry_date or UTC_NOW.date()
+    return [
+        SplitEntry(
+            split_number=i + 1,
+            entry_date=d,
+            quantity=Decimal(q),
+            entry_price=Decimal(p),
+            idempotency_key=f"k{i + 1}",
+        )
+        for i, (q, p) in enumerate(quantities_prices)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Money
 # ---------------------------------------------------------------------------
@@ -418,7 +440,7 @@ TRADE_DATE = datetime(2026, 4, 29, 6, 0, 0, tzinfo=UTC).date()
 
 
 class TestSplitEntry:
-    def _entry(self, **overrides) -> SplitEntry:
+    def _entry(self, **overrides):
         base = {
             "split_number": 1,
             "entry_date": TRADE_DATE,
@@ -494,7 +516,7 @@ class TestSplitEntry:
 
     def test_extra_fields_forbidden(self):
         with pytest.raises(ValidationError):
-            SplitEntry(  # type: ignore[call-arg]
+            SplitEntry(
                 split_number=1,
                 entry_date=TRADE_DATE,
                 quantity=Decimal("28"),
@@ -539,9 +561,11 @@ class TestPosition:
             avg_price=Decimal("35000"),
             split_level=2,
             last_buy_at=UTC_NOW,
+            entries=make_entries(("4", "36000"), ("6", "34000")),
         )
         assert p.quantity == Decimal("10")
         assert p.split_level == 2
+        assert len(p.entries) == 2
 
     def test_split_level_negative_rejected(self):
         a = make_asset()
@@ -609,6 +633,7 @@ class TestPosition:
                 avg_price=Decimal(0),
                 split_level=1,
                 last_buy_at=UTC_NOW,
+                entries=make_entries(("10", "35000")),
             )
 
     def test_qty_positive_requires_last_buy_at(self):
@@ -620,6 +645,7 @@ class TestPosition:
                 avg_price=Decimal("35000"),
                 split_level=1,
                 last_buy_at=None,
+                entries=make_entries(("10", "35000")),
             )
 
     def test_qty_zero_must_have_zero_split_level(self):
@@ -652,6 +678,7 @@ class TestPosition:
                 avg_price=Decimal("35000"),
                 split_level=1,
                 last_buy_at=naive,
+                entries=make_entries(("10", "35000")),
             )
 
     def test_immutable(self):
@@ -659,6 +686,279 @@ class TestPosition:
         p = Position.empty(a)
         with pytest.raises(ValidationError):
             p.split_level = 1
+
+
+# ---------------------------------------------------------------------------
+# Position — new entries-related invariants and helpers (ADR §7.8)
+# ---------------------------------------------------------------------------
+class TestPositionEntries:
+    def _filled(
+        self,
+        *,
+        quantity: str,
+        avg_price: str,
+        split_level: int,
+        entries: list[SplitEntry] | None = None,
+    ) -> Position:
+        a = make_asset()
+        if entries is None and split_level > 0:
+            qty = Decimal(quantity)
+            base = qty // Decimal(split_level)
+            remainder = qty - base * Decimal(split_level - 1)
+            entries = [
+                SplitEntry(
+                    split_number=i,
+                    entry_date=UTC_NOW.date(),
+                    quantity=base,
+                    entry_price=Decimal(avg_price),
+                    idempotency_key=f"k{i}",
+                )
+                for i in range(1, split_level)
+            ]
+            entries.append(
+                SplitEntry(
+                    split_number=split_level,
+                    entry_date=UTC_NOW.date(),
+                    quantity=remainder,
+                    entry_price=Decimal(avg_price),
+                    idempotency_key=f"k{split_level}",
+                )
+            )
+        return Position(
+            asset=a,
+            quantity=Decimal(quantity),
+            avg_price=Decimal(avg_price),
+            split_level=split_level,
+            last_buy_at=UTC_NOW if Decimal(quantity) > 0 else None,
+            entries=entries or [],
+        )
+
+    # ----------- invariant: split_level == len(entries) -----------
+    def test_split_level_below_entries_count_rejected(self):
+        a = make_asset()
+        with pytest.raises(ValidationError, match=r"split_level"):
+            Position(
+                asset=a,
+                quantity=Decimal("28"),
+                avg_price=Decimal("35000"),
+                split_level=1,
+                last_buy_at=UTC_NOW,
+                entries=make_entries(("14", "35000"), ("14", "35000")),
+            )
+
+    def test_split_level_above_entries_count_rejected(self):
+        a = make_asset()
+        with pytest.raises(ValidationError, match=r"split_level"):
+            Position(
+                asset=a,
+                quantity=Decimal("28"),
+                avg_price=Decimal("35000"),
+                split_level=2,
+                last_buy_at=UTC_NOW,
+                entries=make_entries(("28", "35000")),
+            )
+
+    # ----------- invariant: split_numbers sequential -----------
+    def test_entries_split_numbers_with_gap_rejected(self):
+        a = make_asset()
+        bad_entries = [
+            SplitEntry(
+                split_number=1,
+                entry_date=UTC_NOW.date(),
+                quantity=Decimal("10"),
+                entry_price=Decimal("35000"),
+                idempotency_key="k1",
+            ),
+            SplitEntry(
+                split_number=3,  # gap — should be 2
+                entry_date=UTC_NOW.date(),
+                quantity=Decimal("10"),
+                entry_price=Decimal("35000"),
+                idempotency_key="k3",
+            ),
+        ]
+        with pytest.raises(ValidationError, match=r"split_numbers must be"):
+            Position(
+                asset=a,
+                quantity=Decimal("20"),
+                avg_price=Decimal("35000"),
+                split_level=2,
+                last_buy_at=UTC_NOW,
+                entries=bad_entries,
+            )
+
+    def test_entries_split_numbers_out_of_order_rejected(self):
+        a = make_asset()
+        out_of_order = [
+            SplitEntry(
+                split_number=2,
+                entry_date=UTC_NOW.date(),
+                quantity=Decimal("10"),
+                entry_price=Decimal("35000"),
+                idempotency_key="k2",
+            ),
+            SplitEntry(
+                split_number=1,
+                entry_date=UTC_NOW.date(),
+                quantity=Decimal("10"),
+                entry_price=Decimal("35000"),
+                idempotency_key="k1",
+            ),
+        ]
+        with pytest.raises(ValidationError, match=r"split_numbers must be"):
+            Position(
+                asset=a,
+                quantity=Decimal("20"),
+                avg_price=Decimal("35000"),
+                split_level=2,
+                last_buy_at=UTC_NOW,
+                entries=out_of_order,
+            )
+
+    # ----------- invariant: quantity >= sum(entries.quantity) -----------
+    def test_quantity_below_entries_sum_rejected(self):
+        a = make_asset()
+        with pytest.raises(ValidationError, match=r"sum of entries"):
+            Position(
+                asset=a,
+                quantity=Decimal("10"),
+                avg_price=Decimal("35000"),
+                split_level=1,
+                last_buy_at=UTC_NOW,
+                entries=make_entries(("20", "35000")),  # entries sum > quantity
+            )
+
+    def test_quantity_above_entries_sum_allowed_as_pending_partial(self):
+        # quantity=15, entries sum=10 → pending_partial = 5 (partial fill above)
+        p = self._filled(
+            quantity="15",
+            avg_price="35000",
+            split_level=1,
+            entries=make_entries(("10", "35000")),
+        )
+        assert p.pending_partial_quantity == Decimal("5")
+        assert p.has_pending_partial() is True
+
+    # ----------- invariant: qty == 0 implies split_level == 0 -----------
+    def test_qty_zero_with_split_level_above_zero_rejected(self):
+        a = make_asset()
+        # split_level=2 with no entries to make split_level mismatch fire first
+        with pytest.raises(ValidationError, match=r"split_level"):
+            Position(
+                asset=a,
+                quantity=Decimal(0),
+                avg_price=Decimal(0),
+                split_level=2,
+                last_buy_at=None,
+                entries=[],  # mismatched split_level vs len(entries)
+            )
+
+    # ----------- properties -----------
+    def test_total_quantity_from_entries_empty(self):
+        a = make_asset()
+        p = Position.empty(a)
+        assert p.total_quantity_from_entries == Decimal(0)
+
+    def test_total_quantity_from_entries_with_entries(self):
+        p = self._filled(
+            quantity="28",
+            avg_price="35000",
+            split_level=2,
+            entries=make_entries(("14", "36000"), ("14", "34000")),
+        )
+        assert p.total_quantity_from_entries == Decimal("28")
+
+    def test_avg_price_from_entries_empty_returns_zero(self):
+        a = make_asset()
+        p = Position.empty(a)
+        assert p.avg_price_from_entries == Decimal(0)
+
+    def test_avg_price_from_entries_weighted_average(self):
+        # 14 @ 36000 + 14 @ 34000 = total cost 980000, total qty 28 → avg 35000
+        p = self._filled(
+            quantity="28",
+            avg_price="35000",
+            split_level=2,
+            entries=make_entries(("14", "36000"), ("14", "34000")),
+        )
+        assert p.avg_price_from_entries == Decimal("35000")
+
+    def test_pending_partial_quantity_zero_when_no_partial(self):
+        p = self._filled(
+            quantity="28",
+            avg_price="35000",
+            split_level=1,
+            entries=make_entries(("28", "35000")),
+        )
+        assert p.pending_partial_quantity == Decimal(0)
+        assert p.has_pending_partial() is False
+
+    def test_pending_partial_quantity_positive_with_partial(self):
+        p = self._filled(
+            quantity="20",
+            avg_price="35000",
+            split_level=1,
+            entries=make_entries(("15", "35000")),
+        )
+        assert p.pending_partial_quantity == Decimal("5")
+        assert p.has_pending_partial() is True
+
+    # ----------- get_entry -----------
+    def test_get_entry_returns_match(self):
+        p = self._filled(
+            quantity="28",
+            avg_price="35000",
+            split_level=2,
+            entries=make_entries(("14", "36000"), ("14", "34000")),
+        )
+        e1 = p.get_entry(1)
+        assert e1 is not None
+        assert e1.split_number == 1
+        assert e1.entry_price == Decimal("36000")
+
+    def test_get_entry_returns_none_for_missing(self):
+        p = self._filled(
+            quantity="28",
+            avg_price="35000",
+            split_level=1,
+            entries=make_entries(("28", "35000")),
+        )
+        assert p.get_entry(7) is None
+
+    # ----------- split_pnl / split_pnl_pct -----------
+    def test_split_pnl_empty_entries(self):
+        a = make_asset()
+        p = Position.empty(a)
+        assert p.split_pnl(Decimal("35000")) == {}
+        assert p.split_pnl_pct(Decimal("35000")) == {}
+
+    def test_split_pnl_with_entries(self):
+        # split 1: 14 @ 36000, current 35000 → (35000-36000)*14 = -14000
+        # split 2: 14 @ 34000, current 35000 → (35000-34000)*14 = +14000
+        p = self._filled(
+            quantity="28",
+            avg_price="35000",
+            split_level=2,
+            entries=make_entries(("14", "36000"), ("14", "34000")),
+        )
+        pnl = p.split_pnl(Decimal("35000"))
+        assert pnl == {1: Decimal("-14000"), 2: Decimal("14000")}
+
+    def test_split_pnl_pct_with_entries(self):
+        # split 1: (35000-36000)/36000*100 = -2.7777...
+        # split 2: (35000-34000)/34000*100 = +2.9411...
+        p = self._filled(
+            quantity="28",
+            avg_price="35000",
+            split_level=2,
+            entries=make_entries(("14", "36000"), ("14", "34000")),
+        )
+        pct = p.split_pnl_pct(Decimal("35000"))
+        # check signs and approximate magnitude
+        assert pct[1] < 0
+        assert pct[2] > 0
+        assert pct[1] == (Decimal("35000") - Decimal("36000")) / Decimal("36000") * Decimal(100)
+        assert pct[2] == (Decimal("35000") - Decimal("34000")) / Decimal("34000") * Decimal(100)
 
 
 # ---------------------------------------------------------------------------

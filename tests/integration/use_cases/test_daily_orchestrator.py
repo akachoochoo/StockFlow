@@ -40,6 +40,7 @@ from src.domain.models import (
     Position,
     SignalLevel,
     SignalSource,
+    SplitEntry,
 )
 from src.domain.strategies.price_drop import PriceDropStrategy, SplitStrategyConfig
 from src.use_cases.daily_orchestrator import DailyOrchestrator, SkipReason
@@ -81,6 +82,51 @@ def _config() -> SplitStrategyConfig:
         drop_threshold_pct=Decimal("7.0"),
         max_split_count=7,
         per_split_amount=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+    )
+
+
+def _seeded_position(
+    asset: Asset,
+    *,
+    quantity: str,
+    avg_price: str,
+    split_level: int,
+    last_buy_at: datetime,
+) -> Position:
+    """Build a Position with auto-generated entries summing to `quantity`."""
+    qty = Decimal(quantity)
+    avg = Decimal(avg_price)
+    if split_level == 0:
+        entries: list[SplitEntry] = []
+    else:
+        base = qty // Decimal(split_level)
+        remainder = qty - base * Decimal(split_level - 1)
+        entries = [
+            SplitEntry(
+                split_number=i,
+                entry_date=last_buy_at.date(),
+                quantity=base,
+                entry_price=avg,
+                idempotency_key=f"seed-{i}",
+            )
+            for i in range(1, split_level)
+        ]
+        entries.append(
+            SplitEntry(
+                split_number=split_level,
+                entry_date=last_buy_at.date(),
+                quantity=remainder,
+                entry_price=avg,
+                idempotency_key=f"seed-{split_level}",
+            )
+        )
+    return Position(
+        asset=asset,
+        quantity=qty,
+        avg_price=avg,
+        split_level=split_level,
+        last_buy_at=last_buy_at,
+        entries=entries,
     )
 
 
@@ -264,9 +310,10 @@ class TestNormalBuyFlow:
             ],
         )
         # seed an initial position
-        broker._positions[asset.fqn] = Position(            asset=asset,
-            quantity=Decimal("28"),
-            avg_price=Decimal("35000"),
+        broker._positions[asset.fqn] = _seeded_position(
+            asset,
+            quantity="28",
+            avg_price="35000",
             split_level=1,
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
@@ -367,9 +414,10 @@ class TestStrategySkipMapping:
         asset = _asset()
         bars = [_bar(asset, date(2026, 4, 29), "20000")]
         orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
-        broker._positions[asset.fqn] = Position(            asset=asset,
-            quantity=Decimal("100"),
-            avg_price=Decimal("30000"),
+        broker._positions[asset.fqn] = _seeded_position(
+            asset,
+            quantity="100",
+            avg_price="30000",
             split_level=7,
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
@@ -381,9 +429,10 @@ class TestStrategySkipMapping:
         asset = _asset()
         bars = [_bar(asset, date(2026, 4, 29), "33500")]  # only 4.28% drop
         orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
-        broker._positions[asset.fqn] = Position(            asset=asset,
-            quantity=Decimal("28"),
-            avg_price=Decimal("35000"),
+        broker._positions[asset.fqn] = _seeded_position(
+            asset,
+            quantity="28",
+            avg_price="35000",
             split_level=1,
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
