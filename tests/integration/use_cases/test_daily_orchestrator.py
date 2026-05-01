@@ -738,3 +738,108 @@ class TestIntegrityErrorPropagation:
         )
         with pytest.raises(IntegrityError):
             orch.run_for_date(TODAY)
+
+
+# ---------------------------------------------------------------------------
+# Pending partial fill (ADR §7.9)
+# ---------------------------------------------------------------------------
+class TestPendingPartial:
+    def test_partial_fill_does_not_become_split_entry_next_day(self):
+        # Day T: partial fill produces a partial-only Position
+        # (entries=[], pending_partial_quantity > 0).
+        # Day T+1: orchestrator runs again; entries must remain empty
+        # because partials are never retroactively promoted (CLAUDE.md §4.4).
+        asset = _asset()
+        bars_t = [_bar(asset, date(2026, 4, 29), "35000")]
+        balance = Balance(
+            cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+        )
+        clock_t = _utc_after_close(TODAY)
+        broker = MockBroker(
+            initial_balance=balance,
+            clock=lambda: clock_t,
+            rng=random.Random(42),
+            simulate_partial_fill_rate=1.0,  # force partial
+        )
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars_t}),
+            signal=NullSignal(),
+            strategy=PriceDropStrategy(),
+            config=_config(),
+            asset=asset,
+            clock=lambda: clock_t,
+        )
+        decision_t = orch.run_for_date(TODAY)
+        # Partial fill action and warning surfaced
+        assert decision_t.action.endswith("_partial")
+        position_after_t = broker.get_positions()[0]
+        assert position_after_t.entries == []
+        assert position_after_t.has_pending_partial() is True
+
+        # Day T+1: turn off partial-fill rate; price drops further (no buy
+        # because drop check uses avg_price, but even if buy fires, partial
+        # entries from T MUST NOT appear).
+        next_day = date(2026, 5, 1)
+        bars_tplus1 = [
+            *bars_t,
+            _bar(asset, next_day, "35100"),  # tiny up-move; no buy expected
+        ]
+        clock_tplus1 = _utc_after_close(next_day)
+        broker._partial_fill_rate = 0.0
+        # Re-wire orchestrator with the same broker (state persists) and
+        # the new clock + extended market data.
+        orch2 = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars_tplus1}),
+            signal=NullSignal(),
+            strategy=PriceDropStrategy(),
+            config=_config(),
+            asset=asset,
+            clock=lambda: clock_tplus1,
+        )
+        orch2.run_for_date(next_day)
+        position_after_tplus1 = broker.get_positions()[0]
+        # Entries STILL empty — partial from T was never promoted
+        assert position_after_tplus1.entries == []
+        assert position_after_tplus1.has_pending_partial() is True
+
+    def test_decision_logs_pending_partial_warning(self):
+        # Seed a Position with pending_partial > 0 (entries summing < quantity)
+        # and verify the orchestrator's Decision.reasoning carries the warning.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "35000")]
+        clock_at = _utc_after_close(TODAY)
+        balance = Balance(
+            cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+        )
+        broker = MockBroker(
+            initial_balance=balance,
+            clock=lambda: clock_at,
+            rng=random.Random(42),
+        )
+        # Seed a partial-only position (entries empty; quantity > 0):
+        seed = Position(
+            asset=asset,
+            quantity=Decimal("5"),
+            avg_price=Decimal("35000"),
+            split_level=0,
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+            entries=[],
+        )
+        broker._positions[asset.fqn] = seed
+        # Need to also pre-debit cash to keep balance consistent
+        # (5 shares @ 35000 = 175,000 cost). Skipping for test simplicity —
+        # balance still ample for next attempted order.
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=NullSignal(),
+            strategy=PriceDropStrategy(),
+            config=_config(),
+            asset=asset,
+            clock=lambda: clock_at,
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.reasoning.get("pending_partial_warning") == "True"
+        assert decision.reasoning.get("pending_partial_quantity") == "5"

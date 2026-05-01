@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         Asset,
         CircuitBreakerSignal,
         OrderResult,
+        Position,
     )
     from src.domain.strategies.price_drop import (
         PriceDropStrategy,
@@ -165,6 +166,11 @@ class DailyOrchestrator:
             (p for p in positions if p.asset == self._asset), None
         )
 
+        # ADR §7.9: surface any pending partial fill so downstream Decision
+        # logs the warning. Computed once and merged into every post-position
+        # reasoning dict below.
+        pending_info = self._pending_partial_info(position)
+
         # 4. Strategy
         evaluation = self._strategy.evaluate(
             position=position,
@@ -185,6 +191,7 @@ class DailyOrchestrator:
                     **evaluation.reasoning,
                     **self._signal_info(signal),
                     "strategy_reason": evaluation.reason,
+                    **pending_info,
                 },
                 resulting_order_id=None,
             )
@@ -208,6 +215,7 @@ class DailyOrchestrator:
                     "strategy_reason": evaluation.reason,
                     "pre_adjust_quantity": str(evaluation.target_quantity),
                     "adjusted_quantity": str(adjusted_qty),
+                    **pending_info,
                 },
                 resulting_order_id=None,
             )
@@ -237,6 +245,7 @@ class DailyOrchestrator:
                         "strategy_reason": evaluation.reason,
                         "idempotency_key": idempotency_key,
                         "error": str(e),
+                        **pending_info,
                     },
                     resulting_order_id=None,
                 )
@@ -251,6 +260,7 @@ class DailyOrchestrator:
                     "strategy_reason": evaluation.reason,
                     "idempotency_key": idempotency_key,
                     "error": str(e),
+                    **pending_info,
                 },
                 resulting_order_id=None,
             )
@@ -263,6 +273,7 @@ class DailyOrchestrator:
             order_result,
             pre_adjust_quantity=evaluation.target_quantity,
             adjusted_quantity=adjusted_qty,
+            pending_info=pending_info,
         )
 
     # ------------------------------------------------------------------
@@ -302,6 +313,15 @@ class DailyOrchestrator:
         except ExternalSystemError:
             return None
 
+    def _pending_partial_info(self, position: Position | None) -> dict[str, str]:
+        """Reasoning fragment surfacing any pending partial fill (ADR §7.9)."""
+        if position is None or not position.has_pending_partial():
+            return {}
+        return {
+            "pending_partial_quantity": str(position.pending_partial_quantity),
+            "pending_partial_warning": "True",
+        }
+
     def _decision_from_result(
         self,
         as_of: datetime,
@@ -311,6 +331,7 @@ class DailyOrchestrator:
         *,
         pre_adjust_quantity: Decimal,
         adjusted_quantity: Decimal,
+        pending_info: dict[str, str],
     ) -> Decision:
         next_split_level = evaluation.reasoning.get("next_split_level", "?")
         base_reasoning = {
@@ -325,6 +346,7 @@ class DailyOrchestrator:
             "filled_price": (
                 str(result.filled_price) if result.filled_price is not None else ""
             ),
+            **pending_info,
         }
 
         if result.status == OrderStatus.FILLED:
