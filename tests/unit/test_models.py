@@ -30,6 +30,7 @@ from src.domain.models import (
     Price,
     SignalLevel,
     SignalSource,
+    SplitEntry,
 )
 
 # ---------------------------------------------------------------------------
@@ -408,6 +409,113 @@ class TestOHLCV:
         bar = self._bar()
         with pytest.raises(ValidationError):
             bar.close = Decimal("36000")
+
+
+# ---------------------------------------------------------------------------
+# SplitEntry
+# ---------------------------------------------------------------------------
+TRADE_DATE = datetime(2026, 4, 29, 6, 0, 0, tzinfo=UTC).date()
+
+
+class TestSplitEntry:
+    def _entry(self, **overrides) -> SplitEntry:
+        base = {
+            "split_number": 1,
+            "entry_date": TRADE_DATE,
+            "quantity": Decimal("28"),
+            "entry_price": Decimal("35000"),
+            "idempotency_key": "KRX:069500:2026-04-29",
+        }
+        base.update(overrides)
+        return SplitEntry(**base)
+
+    # ----------- happy paths -----------
+    def test_construct_happy_path(self):
+        e = self._entry()
+        assert e.split_number == 1
+        assert e.entry_date == TRADE_DATE
+        assert e.quantity == Decimal("28")
+        assert e.entry_price == Decimal("35000")
+        assert e.idempotency_key == "KRX:069500:2026-04-29"
+
+    def test_max_split_number_seven(self):
+        # split_number=7 is the upper bound (matches Position.split_level)
+        e = self._entry(split_number=7)
+        assert e.split_number == 7
+
+    # ----------- validation -----------
+    def test_split_number_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(split_number=0)
+
+    def test_split_number_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(split_number=-1)
+
+    def test_split_number_above_seven_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(split_number=8)
+
+    def test_negative_quantity_raises(self):
+        with pytest.raises(ValidationError):
+            self._entry(quantity=Decimal("-1"))
+
+    def test_zero_quantity_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(quantity=Decimal(0))
+
+    def test_zero_price_raises(self):
+        with pytest.raises(ValidationError):
+            self._entry(entry_price=Decimal(0))
+
+    def test_negative_price_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(entry_price=Decimal("-100"))
+
+    def test_float_quantity_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(quantity=28.5)
+
+    def test_float_entry_price_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(entry_price=35000.5)
+
+    def test_string_quantity_coerced(self):
+        e = self._entry(quantity="28")
+        assert e.quantity == Decimal("28")
+
+    def test_string_entry_price_coerced(self):
+        e = self._entry(entry_price="35000")
+        assert e.entry_price == Decimal("35000")
+
+    def test_empty_idempotency_key_rejected(self):
+        with pytest.raises(ValidationError):
+            self._entry(idempotency_key="")
+
+    def test_extra_fields_forbidden(self):
+        with pytest.raises(ValidationError):
+            SplitEntry(  # type: ignore[call-arg]
+                split_number=1,
+                entry_date=TRADE_DATE,
+                quantity=Decimal("28"),
+                entry_price=Decimal("35000"),
+                idempotency_key="k",
+                extra="not allowed",
+            )
+
+    # ----------- value-object semantics -----------
+    def test_equality_and_hash(self):
+        a = self._entry()
+        b = self._entry()
+        c = self._entry(split_number=2)
+        assert a == b
+        assert hash(a) == hash(b)
+        assert a != c
+
+    def test_immutable(self):
+        e = self._entry()
+        with pytest.raises(ValidationError):
+            e.split_number = 2
 
 
 # ---------------------------------------------------------------------------

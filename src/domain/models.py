@@ -304,6 +304,37 @@ class OHLCV(ValueObject):
         return self
 
 
+class SplitEntry(ValueObject):
+    """A single completed split-buy record (one of N entries on a Position).
+
+    Conceptually the "one of seven accounts" of 세븐 스플릿 modelled inside a
+    single-account implementation. Per CLAUDE.md §4.4 and ADR §7.5/§7.9, only
+    fully FILLED orders produce a SplitEntry; PARTIALLY_FILLED fills do NOT
+    (they remain visible only via Position.pending_partial_quantity).
+
+    Fields:
+    - split_number    : 1-indexed position within the split sequence (1..7,
+                        matches the upper bound of Position.split_level).
+    - entry_date      : business date of the buy (no timezone — it is a market
+                        local date, not a UTC instant).
+    - quantity        : filled quantity (> 0).
+    - entry_price     : fill price (> 0).
+    - idempotency_key : the OrderRequest.idempotency_key that produced this
+                        entry, linking back to the order trail.
+    """
+
+    split_number: int = Field(ge=1, le=7)
+    entry_date: date
+    quantity: Decimal = Field(gt=Decimal(0))
+    entry_price: Decimal = Field(gt=Decimal(0))
+    idempotency_key: str = Field(min_length=1, max_length=64)
+
+    @field_validator("quantity", "entry_price", mode="before")
+    @classmethod
+    def _coerce_decimal(cls, v: object) -> Decimal:
+        return _to_decimal(v)
+
+
 # ---------------------------------------------------------------------------
 # Entities
 # ---------------------------------------------------------------------------
