@@ -24,6 +24,13 @@ if TYPE_CHECKING:
         PortfolioSnapshot,
         Position,
     )
+    from src.ports.repositories import (
+        DecisionRepoPort,
+        OrderRepoPort,
+        PortfolioSnapshotRepoPort,
+        PositionRepoPort,
+    )
+    from src.ports.unit_of_work import UnitOfWorkPort
 
 
 class InMemoryPositionRepo:
@@ -138,12 +145,14 @@ class InMemoryUnitOfWork:
     """
 
     def __init__(self) -> None:
-        self.positions = InMemoryPositionRepo()
-        self.orders = InMemoryOrderRepo()
-        self.decisions = InMemoryDecisionRepo()
-        self.snapshots = InMemoryPortfolioSnapshotRepo()
+        # Annotated as the Port types so this class structurally conforms to
+        # UnitOfWorkPort (mypy treats attribute Protocol types as invariant).
+        self.positions: PositionRepoPort = InMemoryPositionRepo()
+        self.orders: OrderRepoPort = InMemoryOrderRepo()
+        self.decisions: DecisionRepoPort = InMemoryDecisionRepo()
+        self.snapshots: PortfolioSnapshotRepoPort = InMemoryPortfolioSnapshotRepo()
 
-    def __enter__(self) -> InMemoryUnitOfWork:
+    def __enter__(self) -> UnitOfWorkPort:
         return self
 
     def __exit__(

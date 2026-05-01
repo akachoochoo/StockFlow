@@ -1,13 +1,19 @@
-"""DailyOrchestrator — daily trading decision flow.
+"""DailyOrchestrator — daily trading decision flow + atomic persistence.
 
 CLAUDE.md §1.2 (DI): all external systems are injected as Ports. Phase 0
 wiring uses Mock adapters; Phase 1+ swaps in real adapters with zero changes
 here.
 
+Per ADR §8.5 (corrects §6.1) the orchestrator persists its outcome through
+an injected ``uow_factory``. Decision computation is purely in-memory; a
+single UnitOfWork commit at the end covers Order + Position + Decision in
+one atomic transaction. Auto-rollback on any exception ensures partial
+saves never persist (CLAUDE.md §10.3).
+
 CLAUDE.md §6 exception policy:
-- DomainError      -> caught; recorded as skip Decision, continue next day
+- DomainError       -> caught; recorded as skip Decision, continue next day
 - ExternalSystemError -> caught; recorded as skip Decision, continue next day
-- IntegrityError   -> propagated (system halt is the caller's responsibility)
+- IntegrityError    -> propagated (system halt is the caller's responsibility)
 
 Reconciliation (CLAUDE.md §11.2) is the CLI/runner's responsibility before
 calling run_for_date(). The orchestrator trusts that DB and broker state
@@ -15,6 +21,7 @@ agree at entry. See docs/decisions/0001-phase-0-decisions.md.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
@@ -28,6 +35,7 @@ from src.domain.exceptions import (
 )
 from src.domain.models import (
     Decision,
+    Order,
     OrderRequest,
     OrderSide,
     OrderStatus,
@@ -53,6 +61,7 @@ if TYPE_CHECKING:
     from src.ports.broker import BrokerPort
     from src.ports.market_data import MarketDataPort
     from src.ports.signals import SignalPort
+    from src.ports.unit_of_work import UnitOfWorkPort
 
 
 _CAUTION_REDUCTION: Final = Decimal("0.5")
@@ -92,8 +101,23 @@ _STRATEGY_REASON_MAP: Final[dict[str, SkipReason]] = {
 }
 
 
+@dataclass(frozen=True)
+class _Outcome:
+    """Internal result of one orchestrator run before persistence.
+
+    `decision` is always set. `order` is set whenever we obtained a real
+    OrderResult (any status — REJECTED orders are still worth persisting
+    for audit). `updated_position` is set only when broker state actually
+    changed (FILLED / PARTIALLY_FILLED).
+    """
+
+    decision: Decision
+    order: Order | None = None
+    updated_position: Position | None = None
+
+
 class DailyOrchestrator:
-    """One-day trading decision orchestrator."""
+    """One-day trading decision orchestrator with atomic persistence."""
 
     def __init__(
         self,
@@ -105,6 +129,7 @@ class DailyOrchestrator:
         config: SplitStrategyConfig,
         asset: Asset,
         clock: Callable[[], datetime],
+        uow_factory: Callable[[], UnitOfWorkPort],
     ) -> None:
         self._broker = broker
         self._market_data = market_data
@@ -113,46 +138,77 @@ class DailyOrchestrator:
         self._config = config
         self._asset = asset
         self._clock = clock
+        self._uow_factory = uow_factory
 
     def run_for_date(self, today: date) -> Decision:
         """Run the daily decision flow for `today`.
 
-        IntegrityError-class exceptions propagate; everything else maps to a
-        skip Decision so the system can record and continue.
+        Computes the outcome (Decision + optional Order + optional updated
+        Position) without touching persistence, then commits all of it
+        through one UnitOfWork. IntegrityError propagates; everything else
+        becomes a skip Decision so the system can record and continue.
         """
+        outcome = self._compute_outcome(today)
+        self._persist(outcome)
+        return outcome.decision
+
+    # ------------------------------------------------------------------
+    # Persistence (one transaction per call)
+    # ------------------------------------------------------------------
+    def _persist(self, outcome: _Outcome) -> None:
+        with self._uow_factory() as uow:
+            if outcome.order is not None:
+                uow.orders.save(outcome.order)
+            if outcome.updated_position is not None:
+                uow.positions.save(outcome.updated_position)
+            uow.decisions.save(outcome.decision)
+            uow.commit()
+
+    # ------------------------------------------------------------------
+    # Decision computation
+    # ------------------------------------------------------------------
+    def _compute_outcome(self, today: date) -> _Outcome:
         as_of = self._clock()
 
         # 1. Signal first (HALT/EMERGENCY short-circuits everything else)
         try:
             signal = self._signal.collect(self._asset.asset_class, as_of)
         except ExternalSystemError as e:
-            return self._skip(
-                today, as_of,
-                SkipReason.MARKET_DATA_UNAVAILABLE,
-                {"error": str(e), "stage": "signal_collect"},
+            return _Outcome(
+                decision=self._skip(
+                    today, as_of,
+                    SkipReason.MARKET_DATA_UNAVAILABLE,
+                    {"error": str(e), "stage": "signal_collect"},
+                )
             )
 
         if signal.level in (SignalLevel.HALT, SignalLevel.EMERGENCY):
-            return self._skip(
-                today, as_of,
-                SkipReason.CIRCUIT_BREAKER_HALT,
-                self._signal_info(signal),
+            return _Outcome(
+                decision=self._skip(
+                    today, as_of,
+                    SkipReason.CIRCUIT_BREAKER_HALT,
+                    self._signal_info(signal),
+                )
             )
 
         # 2. Market data
         try:
             current_price = self._market_data.get_price(self._asset, as_of)
         except DataIntegrityError as e:
-            return self._skip(
-                today, as_of,
-                SkipReason.DATA_INTEGRITY_ISSUE,
-                {**self._signal_info(signal), "error": str(e), "stage": "get_price"},
+            return _Outcome(
+                decision=self._skip(
+                    today, as_of,
+                    SkipReason.DATA_INTEGRITY_ISSUE,
+                    {**self._signal_info(signal), "error": str(e), "stage": "get_price"},
+                )
             )
         except MarketDataUnavailableError as e:
-            return self._skip(
-                today, as_of,
-                SkipReason.MARKET_DATA_UNAVAILABLE,
-                {**self._signal_info(signal), "error": str(e), "stage": "get_price"},
+            return _Outcome(
+                decision=self._skip(
+                    today, as_of,
+                    SkipReason.MARKET_DATA_UNAVAILABLE,
+                    {**self._signal_info(signal), "error": str(e), "stage": "get_price"},
+                )
             )
 
         # 3. Account state
@@ -160,10 +216,12 @@ class DailyOrchestrator:
             balance = self._broker.get_balance()
             positions = self._broker.get_positions()
         except ExternalSystemError as e:
-            return self._skip(
-                today, as_of,
-                SkipReason.BROKER_TIMEOUT,
-                {**self._signal_info(signal), "error": str(e), "stage": "account_state"},
+            return _Outcome(
+                decision=self._skip(
+                    today, as_of,
+                    SkipReason.BROKER_TIMEOUT,
+                    {**self._signal_info(signal), "error": str(e), "stage": "account_state"},
+                )
             )
 
         position = next(
@@ -188,16 +246,18 @@ class DailyOrchestrator:
             skip_reason = _STRATEGY_REASON_MAP.get(
                 evaluation.reason, SkipReason.STRATEGY_NO_BUY
             )
-            return self._build_decision(
-                as_of,
-                action=f"skip:{skip_reason.value}",
-                reasoning={
-                    **evaluation.reasoning,
-                    **self._signal_info(signal),
-                    "strategy_reason": evaluation.reason,
-                    **pending_info,
-                },
-                resulting_order_id=None,
+            return _Outcome(
+                decision=self._build_decision(
+                    as_of,
+                    action=f"skip:{skip_reason.value}",
+                    reasoning={
+                        **evaluation.reasoning,
+                        **self._signal_info(signal),
+                        "strategy_reason": evaluation.reason,
+                        **pending_info,
+                    },
+                    resulting_order_id=None,
+                )
             )
 
         # mypy narrowing: should_buy=True implies these are non-None
@@ -210,18 +270,20 @@ class DailyOrchestrator:
             signal.level, evaluation.target_quantity, self._asset.lot_size
         )
         if adjusted_qty <= 0:
-            return self._build_decision(
-                as_of,
-                action=f"skip:{SkipReason.QUANTITY_TOO_SMALL.value}",
-                reasoning={
-                    **evaluation.reasoning,
-                    **self._signal_info(signal),
-                    "strategy_reason": evaluation.reason,
-                    "pre_adjust_quantity": str(evaluation.target_quantity),
-                    "adjusted_quantity": str(adjusted_qty),
-                    **pending_info,
-                },
-                resulting_order_id=None,
+            return _Outcome(
+                decision=self._build_decision(
+                    as_of,
+                    action=f"skip:{SkipReason.QUANTITY_TOO_SMALL.value}",
+                    reasoning={
+                        **evaluation.reasoning,
+                        **self._signal_info(signal),
+                        "strategy_reason": evaluation.reason,
+                        "pre_adjust_quantity": str(evaluation.target_quantity),
+                        "adjusted_quantity": str(adjusted_qty),
+                        **pending_info,
+                    },
+                    resulting_order_id=None,
+                )
             )
 
         # 6. Place order with idempotency + recovery on timeout
@@ -240,9 +302,27 @@ class DailyOrchestrator:
         except BrokerConnectionError as e:
             recovered = self._try_recover_order(idempotency_key)
             if recovered is None:
-                return self._build_decision(
+                return _Outcome(
+                    decision=self._build_decision(
+                        as_of,
+                        action=f"skip:{SkipReason.BROKER_TIMEOUT.value}",
+                        reasoning={
+                            **evaluation.reasoning,
+                            **self._signal_info(signal),
+                            "strategy_reason": evaluation.reason,
+                            "idempotency_key": idempotency_key,
+                            "error": str(e),
+                            **pending_info,
+                        },
+                        resulting_order_id=None,
+                    )
+                )
+            order_result = recovered
+        except BrokerOrderError as e:
+            return _Outcome(
+                decision=self._build_decision(
                     as_of,
-                    action=f"skip:{SkipReason.BROKER_TIMEOUT.value}",
+                    action=f"skip:{SkipReason.BROKER_REJECTED.value}",
                     reasoning={
                         **evaluation.reasoning,
                         **self._signal_info(signal),
@@ -253,24 +333,11 @@ class DailyOrchestrator:
                     },
                     resulting_order_id=None,
                 )
-            order_result = recovered
-        except BrokerOrderError as e:
-            return self._build_decision(
-                as_of,
-                action=f"skip:{SkipReason.BROKER_REJECTED.value}",
-                reasoning={
-                    **evaluation.reasoning,
-                    **self._signal_info(signal),
-                    "strategy_reason": evaluation.reason,
-                    "idempotency_key": idempotency_key,
-                    "error": str(e),
-                    **pending_info,
-                },
-                resulting_order_id=None,
             )
 
-        # 7. Build Decision from order result
-        return self._decision_from_result(
+        # 7. We have an OrderResult — build Decision, Order record, and
+        #    optionally fetch the updated Position to persist.
+        decision = self._decision_from_result(
             as_of,
             evaluation,
             signal,
@@ -278,6 +345,17 @@ class DailyOrchestrator:
             pre_adjust_quantity=evaluation.target_quantity,
             adjusted_quantity=adjusted_qty,
             pending_info=pending_info,
+        )
+        order = Order.from_request_result(request, order_result)
+        updated_position = None
+        if order_result.status in (
+            OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED,
+        ):
+            updated_position = self._fetch_updated_position()
+        return _Outcome(
+            decision=decision,
+            order=order,
+            updated_position=updated_position,
         )
 
     # ------------------------------------------------------------------
@@ -316,6 +394,11 @@ class DailyOrchestrator:
             return self._broker.get_order_status(idempotency_key)
         except ExternalSystemError:
             return None
+
+    def _fetch_updated_position(self) -> Position | None:
+        """Fetch the post-fill Position from the broker. None if absent."""
+        positions = self._broker.get_positions()
+        return next((p for p in positions if p.asset == self._asset), None)
 
     def _pending_partial_info(self, position: Position | None) -> dict[str, str]:
         """Reasoning fragment surfacing any pending partial fill (ADR §7.9)."""

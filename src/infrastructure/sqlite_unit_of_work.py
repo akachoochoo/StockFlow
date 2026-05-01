@@ -32,6 +32,14 @@ if TYPE_CHECKING:
     import sqlite3
     from types import TracebackType
 
+    from src.ports.repositories import (
+        DecisionRepoPort,
+        OrderRepoPort,
+        PortfolioSnapshotRepoPort,
+        PositionRepoPort,
+    )
+    from src.ports.unit_of_work import UnitOfWorkPort
+
 
 class SqliteUnitOfWork:
     """UnitOfWorkPort over a sqlite3.Connection."""
@@ -39,12 +47,14 @@ class SqliteUnitOfWork:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
         self._committed = False
-        self.positions = SqlitePositionRepo(conn)
-        self.orders = SqliteOrderRepo(conn)
-        self.decisions = SqliteDecisionRepo(conn)
-        self.snapshots = SqlitePortfolioSnapshotRepo(conn)
+        # Annotate as Port types so this class structurally conforms to
+        # UnitOfWorkPort (mypy treats attribute Protocol types as invariant).
+        self.positions: PositionRepoPort = SqlitePositionRepo(conn)
+        self.orders: OrderRepoPort = SqliteOrderRepo(conn)
+        self.decisions: DecisionRepoPort = SqliteDecisionRepo(conn)
+        self.snapshots: PortfolioSnapshotRepoPort = SqlitePortfolioSnapshotRepo(conn)
 
-    def __enter__(self) -> SqliteUnitOfWork:
+    def __enter__(self) -> UnitOfWorkPort:
         self._committed = False
         return self
 

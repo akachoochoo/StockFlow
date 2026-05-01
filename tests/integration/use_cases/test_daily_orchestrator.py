@@ -14,6 +14,7 @@ from decimal import Decimal
 import pytest
 
 from src.adapters.mock.broker import MockBroker
+from src.adapters.mock.in_memory_unit_of_work import InMemoryUnitOfWork
 from src.adapters.mock.market_data import MockMarketData
 from src.adapters.mock.signals import NullSignal
 from src.domain.constants import KST
@@ -280,6 +281,7 @@ def _make_real_orchestrator(
         config=_config(),
         asset=asset,
         clock=lambda: clock_at,
+        uow_factory=lambda: InMemoryUnitOfWork(),
     )
     return orchestrator, broker
 
@@ -341,6 +343,7 @@ class TestCircuitBreaker:
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         return orch, broker
 
@@ -376,6 +379,7 @@ class TestCircuitBreaker:
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         decision = orch.run_for_date(TODAY)
         assert decision.action == "buy_split_1"
@@ -399,6 +403,7 @@ class TestCircuitBreaker:
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         decision = orch.run_for_date(TODAY)
         assert decision.action == f"skip:{SkipReason.QUANTITY_TOO_SMALL.value}"
@@ -519,6 +524,7 @@ class TestExternalErrors:
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         return orch, broker
 
@@ -602,6 +608,7 @@ class TestOrderPlacement:
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         return orch, broker
 
@@ -754,6 +761,7 @@ class TestIntegrityErrorPropagation:
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         with pytest.raises(IntegrityError):
             orch.run_for_date(TODAY)
@@ -788,6 +796,7 @@ class TestPendingPartial:
             config=_config(),
             asset=asset,
             clock=lambda: clock_t,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         decision_t = orch.run_for_date(TODAY)
         # Partial fill action and warning surfaced
@@ -816,6 +825,7 @@ class TestPendingPartial:
             config=_config(),
             asset=asset,
             clock=lambda: clock_tplus1,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         orch2.run_for_date(next_day)
         position_after_tplus1 = broker.get_positions()[0]
@@ -858,7 +868,216 @@ class TestPendingPartial:
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
         )
         decision = orch.run_for_date(TODAY)
         assert decision.reasoning.get("pending_partial_warning") == "True"
         assert decision.reasoning.get("pending_partial_quantity") == "5"
+
+
+# ---------------------------------------------------------------------------
+# Persistence via uow_factory (ADR §8.5)
+# ---------------------------------------------------------------------------
+class TestPersistence:
+    """Verify run_for_date persists Decision + Order + Position via the UoW."""
+
+    def _orch_with_shared_uow(
+        self,
+        *,
+        broker,
+        market_data,
+        signal,
+        clock_at,
+    ):
+        shared_uow = InMemoryUnitOfWork()
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=market_data,
+            signal=signal,
+            strategy=PriceDropStrategy(),
+            config=_config(),
+            asset=_asset(),
+            clock=lambda: clock_at,
+            uow_factory=lambda: shared_uow,
+        )
+        return orch, shared_uow
+
+    def test_buy_decision_persists_decision_order_and_position(self):
+        # Real Mock broker with default rates: place_order returns FILLED.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "35000")]
+        clock_at = _utc_after_close(TODAY)
+        broker = MockBroker(
+            initial_balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            clock=lambda: clock_at,
+            rng=random.Random(42),
+        )
+        orch, uow = self._orch_with_shared_uow(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=NullSignal(),
+            clock_at=clock_at,
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action == "buy_split_1"
+
+        # Decision saved
+        saved_decisions = uow.decisions.list_by_date_range(TODAY, TODAY)
+        assert len(saved_decisions) == 1
+        assert saved_decisions[0].action == "buy_split_1"
+
+        # Order saved (FILLED)
+        saved_order = uow.orders.get_by_idempotency_key(
+            "KRX:069500:2026-04-30"
+        )
+        assert saved_order is not None
+        assert saved_order.status is OrderStatus.FILLED
+
+        # Position saved
+        saved_position = uow.positions.get(asset.fqn)
+        assert saved_position is not None
+        assert saved_position.quantity > 0
+
+    def test_skip_decision_saves_decision_only_no_order_no_position(self):
+        # HALT signal short-circuits before broker; no Order, no Position.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "35000")]
+        clock_at = _utc_after_close(TODAY)
+        broker = _FakeBroker(
+            balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+        )
+        orch, uow = self._orch_with_shared_uow(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=_FakeSignal(signal=_signal(level=SignalLevel.HALT, at=clock_at)),
+            clock_at=clock_at,
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action.startswith("skip:")
+
+        # Decision saved
+        assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
+        # No Order, no Position
+        assert uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30") is None
+        assert uow.positions.get(asset.fqn) is None
+
+    def test_broker_timeout_with_no_recovery_skips_order_save(self):
+        # BrokerConnectionError + recovery returns None → no Order persisted.
+        asset = _asset()
+        clock_at = _utc_after_close(TODAY)
+        bars = [_bar(asset, date(2026, 4, 29), "35000")]
+        broker = _FakeBroker(
+            balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            place_error=BrokerConnectionError("timeout"),
+            get_status_result=None,  # recovery fails
+        )
+        orch, uow = self._orch_with_shared_uow(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=_FakeSignal(signal=_signal(at=clock_at)),
+            clock_at=clock_at,
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action == f"skip:{SkipReason.BROKER_TIMEOUT.value}"
+        # Decision saved, but no Order or Position
+        assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
+        assert uow.orders.get_by_idempotency_key(
+            "KRX:069500:2026-04-30"
+        ) is None
+        assert uow.positions.get(asset.fqn) is None
+
+    def test_broker_order_error_skips_order_save(self):
+        # BrokerOrderError → Order never accepted → no Order to save.
+        asset = _asset()
+        clock_at = _utc_after_close(TODAY)
+        bars = [_bar(asset, date(2026, 4, 29), "35000")]
+        broker = _FakeBroker(
+            balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            place_error=BrokerOrderError("validation"),
+        )
+        orch, uow = self._orch_with_shared_uow(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=_FakeSignal(signal=_signal(at=clock_at)),
+            clock_at=clock_at,
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action == f"skip:{SkipReason.BROKER_REJECTED.value}"
+        assert uow.orders.get_by_idempotency_key(
+            "KRX:069500:2026-04-30"
+        ) is None
+        assert uow.positions.get(asset.fqn) is None
+
+    def test_rejected_order_status_persists_order_record_for_audit(self):
+        # Broker accepts the request but returns REJECTED status →
+        # Order record is saved (audit trail). No Position update.
+        asset = _asset()
+        clock_at = _utc_after_close(TODAY)
+        bars = [_bar(asset, date(2026, 4, 29), "35000")]
+        broker = _FakeBroker(
+            balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            place_result=OrderResult(
+                idempotency_key="KRX:069500:2026-04-30",
+                asset=asset,
+                broker_order_id=None,
+                status=OrderStatus.REJECTED,
+                filled_quantity=Decimal(0),
+                filled_price=None,
+                submitted_at=clock_at,
+                filled_at=None,
+            ),
+        )
+        orch, uow = self._orch_with_shared_uow(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=_FakeSignal(signal=_signal(at=clock_at)),
+            clock_at=clock_at,
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action == f"skip:{SkipReason.BROKER_REJECTED.value}"
+        # Order saved with REJECTED status — audit trail
+        saved = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30")
+        assert saved is not None
+        assert saved.status is OrderStatus.REJECTED
+        # No Position update on rejection
+        assert uow.positions.get(asset.fqn) is None
+
+    def test_partial_fill_saves_order_and_updated_position(self):
+        # PARTIALLY_FILLED → Order saved + Position updated (quantity/avg_price).
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "35000")]
+        clock_at = _utc_after_close(TODAY)
+        broker = MockBroker(
+            initial_balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            clock=lambda: clock_at,
+            rng=random.Random(42),
+            simulate_partial_fill_rate=1.0,
+        )
+        orch, uow = self._orch_with_shared_uow(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=NullSignal(),
+            clock_at=clock_at,
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action.endswith("_partial")
+        order = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30")
+        assert order is not None
+        assert order.status is OrderStatus.PARTIALLY_FILLED
+        position = uow.positions.get(asset.fqn)
+        assert position is not None
+        assert position.quantity > 0
+        # entries empty per ADR §7.5 (partial fills don't add SplitEntry)
+        assert position.entries == []
