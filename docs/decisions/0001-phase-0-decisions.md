@@ -368,22 +368,35 @@
   - `test_partial_fill_does_not_become_split_entry_next_day`: PARTIALLY_FILLED 후 다음날 다시 평가했을 때 entries에 partial이 추가되지 않음을 확인.
   - `test_decision_logs_pending_partial_warning`: `has_pending_partial()`이 True인 Position을 받은 Orchestrator의 Decision.reasoning에 경고 키 포함.
 
-### 7.10 [예약] Asset.round_to_tick + Strategy target_price 정렬 (§7.0b 재처리)
+### 7.10 [구현 완료, 2026-05-01] Asset.round_to_tick + Strategy target_price 정렬 (§7.0b 재처리)
 - **결정**: Step 7.x 6단계 외 별도 micro-step으로 추가:
   - `Asset.round_to_tick(price: Decimal) -> Decimal` 메서드: `tick_size`의 배수로 floor (매수 LIMIT은 보수적으로 더 낮은 호가 선택).
   - `PriceDropStrategy._compute_target_price`(또는 직접) 사용처: `target_price = asset.round_to_tick(current_price.value)`.
   - Decimal precision: 호가 단위가 5/10/100/500/1000원 등으로 변하므로 단순 `(price // tick_size) * tick_size` 사용.
   - 단위 테스트: KODEX 200(tick=5), 가상 stock(tick=10/100/1000)에서 floor 동작 확인.
-- **시점**: §7의 Position/SplitEntry 작업 직후, 이번 ADR commit 이후 시작 6단계와 별개로 잡음. 사용자 승인 후 진행.
+- **구현**:
+  - `Asset.round_to_tick`이 추가됨; `(price // self.tick_size) * self.tick_size`로 floor.
+  - `PriceDropStrategy.evaluate`가 `target_price = asset.round_to_tick(current_price.value)`로 전환.
+  - 5개 round_to_tick unit test (정확히 일치/floor/just-below/0.01 tick/edge price<tick).
+  - 1개 strategy test (35003 → 35000으로 정렬 확인).
+- **엣지 케이스**: `price < tick_size`이면 `round_to_tick`은 `Decimal(0)` 반환. Phase 0에서 Price 모델이 `value > 0` 보장하고 KODEX 200(tick=5, price ~35,000)에선 발생 안 함. 향후 마이크로캡 종목에선 가드 필요.
 
-### 7.11 [예약] today 기반 max_split_per_day 가드 (§7.0d 재처리)
+### 7.11 [구현 완료, 2026-05-01] today 기반 max_split_per_day 가드 (§7.0d 재처리)
 - **결정**: `SplitStrategyConfig`에 `max_split_per_day: int` 필드 추가 (기본값 1, Phase 0 묵시 룰 명시화).
 - **Strategy 분기**:
   - `today_buys = sum(1 for e in position.entries if e.entry_date == today)` 계산.
   - `if today_buys >= config.max_split_per_day: return skip:max_split_per_day_reached`.
   - 신규 SkipReason 항목: `MAX_SPLIT_PER_DAY_REACHED` (오케스트레이터 매핑은 `STRATEGY_NO_BUY` 그룹).
 - **이유**: §7.0d 재처리. retry/multi-trigger로 인한 동일일 다회 매수 방지. entries.entry_date 추가가 전제이므로 §7.1~§7.3 작업 후 자연스럽게 추가 가능.
-- **시점**: §7.10과 같은 6단계 작업 후 micro-step. 사용자 승인 후 진행.
+- **구현**:
+  - `SplitStrategyConfig.max_split_per_day: int = Field(default=1, ge=1)` 추가.
+  - `PriceDropStrategy.evaluate` 첫 분기로 `today_buys` 계산 + cap 체크 → `skip:max_split_per_day_reached`.
+  - `SkipReason.MAX_SPLIT_PER_DAY_REACHED` 추가; `_STRATEGY_REASON_MAP`에 `"skip:max_split_per_day_reached" → STRATEGY_NO_BUY` 엔트리.
+  - 5개 strategy test + 1개 orchestrator 매핑 test.
+  - `_filled_position` 헬퍼 default `entry_date=YESTERDAY`로 변경 (이전 매수가 yesterday-or-earlier로 의미 명확).
+- **부분 체결 처리**: ADR §7.5와 일관 — partial fills는 `entries`에 들어가지 않으므로 `today_buys` 카운트에 포함 안 됨. 결과적으로 partial-only 상태에서는 같은 날 추가 매수 시도가 가능 (Phase 0 cron-once-per-day 가정에서 발생 안 하지만, 다회 호출 시 노출).
+  - 운영자가 `pending_partial_warning`(§7.9)으로 감지해야 함.
+  - 자동 차단을 원하면 Phase 1+에서 partial 카운트 포함하는 옵션 추가 검토.
 
 ---
 

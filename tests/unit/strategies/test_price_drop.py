@@ -31,6 +31,7 @@ from src.domain.strategies.price_drop import (
 
 UTC_NOW = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
 TODAY = date(2026, 4, 30)
+YESTERDAY = date(2026, 4, 29)
 
 
 def _asset(
@@ -78,6 +79,7 @@ def _filled_position(
     quantity: str,
     avg_price: str,
     split_level: int,
+    entry_date: date | None = None,
 ) -> Position:
     """Build a Position with auto-generated entries summing to `quantity`.
 
@@ -86,9 +88,14 @@ def _filled_position(
     test convenience and does NOT have to match the strategy's per-split
     pricing model. Phase 0 strategy reads only quantity/avg_price/split_level
     so the per-entry detail doesn't affect strategy logic (ADR §7.7).
+
+    `entry_date` defaults to YESTERDAY so the §7.11 max_split_per_day check
+    sees `today_buys == 0` for prior-day positions. Pass `entry_date=TODAY`
+    to test the same-day scenario.
     """
     qty = Decimal(quantity)
     avg = Decimal(avg_price)
+    d = entry_date or YESTERDAY
     if split_level == 0:
         entries: list[SplitEntry] = []
     else:
@@ -97,7 +104,7 @@ def _filled_position(
         entries = [
             SplitEntry(
                 split_number=i,
-                entry_date=UTC_NOW.date(),
+                entry_date=d,
                 quantity=base,
                 entry_price=avg,
                 idempotency_key=f"k{i}",
@@ -107,7 +114,7 @@ def _filled_position(
         entries.append(
             SplitEntry(
                 split_number=split_level,
-                entry_date=UTC_NOW.date(),
+                entry_date=d,
                 quantity=remainder,
                 entry_price=avg,
                 idempotency_key=f"k{split_level}",
@@ -401,6 +408,104 @@ class TestPreconditions:
                 config=_config(),
                 today=TODAY,
             )
+
+
+# ---------------------------------------------------------------------------
+# max_split_per_day guard (ADR §7.11)
+# ---------------------------------------------------------------------------
+class TestMaxSplitPerDay:
+    def setup_method(self):
+        self.strategy = PriceDropStrategy()
+        self.asset = _asset()
+
+    def test_default_max_split_per_day_is_one(self):
+        cfg = SplitStrategyConfig(
+            drop_threshold_pct=Decimal("7.0"),
+            max_split_count=7,
+            per_split_amount=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        )
+        assert cfg.max_split_per_day == 1
+
+    def test_max_split_per_day_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            SplitStrategyConfig(
+                drop_threshold_pct=Decimal("7.0"),
+                max_split_count=7,
+                per_split_amount=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+                max_split_per_day=0,
+            )
+
+    def test_first_buy_today_allowed_when_position_empty(self):
+        result = self.strategy.evaluate(
+            position=None,
+            current_price=_price("35000", self.asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.should_buy is True
+
+    def test_today_entry_blocks_next_buy_with_default_cap(self):
+        # Position has one entry from TODAY → today_buys=1 → cap (1) reached.
+        position = _filled_position(
+            self.asset,
+            quantity="28",
+            avg_price="35000",
+            split_level=1,
+            entry_date=TODAY,
+        )
+        result = self.strategy.evaluate(
+            position=position,
+            current_price=_price("32000", self.asset),  # would otherwise buy
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.should_buy is False
+        assert result.reason == "skip:max_split_per_day_reached"
+        assert result.reasoning["today_buys"] == "1"
+        assert result.reasoning["max_split_per_day"] == "1"
+
+    def test_yesterday_entries_do_not_count_against_cap(self):
+        # Default _filled_position uses YESTERDAY → today_buys = 0 → buy proceeds.
+        position = _filled_position(
+            self.asset,
+            quantity="28",
+            avg_price="35000",
+            split_level=1,
+        )
+        result = self.strategy.evaluate(
+            position=position,
+            current_price=_price("32000", self.asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.should_buy is True
+
+    def test_max_split_per_day_higher_cap_allows_more(self):
+        # cap=2: one today entry still allows another buy
+        position = _filled_position(
+            self.asset,
+            quantity="28",
+            avg_price="35000",
+            split_level=1,
+            entry_date=TODAY,
+        )
+        cfg = SplitStrategyConfig(
+            drop_threshold_pct=Decimal("7.0"),
+            max_split_count=7,
+            per_split_amount=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+            max_split_per_day=2,
+        )
+        result = self.strategy.evaluate(
+            position=position,
+            current_price=_price("32000", self.asset),
+            balance=_balance(),
+            config=cfg,
+            today=TODAY,
+        )
+        assert result.should_buy is True
 
 
 # ---------------------------------------------------------------------------

@@ -70,6 +70,7 @@ class SkipReason(StrEnum):
     CIRCUIT_BREAKER_HALT = "circuit_breaker_halt"
     MARKET_DATA_UNAVAILABLE = "market_data_unavailable"
     STRATEGY_NO_BUY = "strategy_no_buy"
+    MAX_SPLIT_PER_DAY_REACHED = "max_split_per_day_reached"
     QUANTITY_TOO_SMALL = "quantity_too_small"
     INSUFFICIENT_BALANCE = "insufficient_balance"
     BROKER_REJECTED = "broker_rejected"
@@ -79,10 +80,13 @@ class SkipReason(StrEnum):
 
 # Map strategy-side skip reason strings to orchestrator SkipReason values.
 # Anything not listed defaults to STRATEGY_NO_BUY (granular detail kept in
-# reasoning["strategy_reason"]).
+# reasoning["strategy_reason"]). Per ADR §7.11, the max_split_per_day skip
+# routes through STRATEGY_NO_BUY at the orchestrator while preserving the
+# granular reason in reasoning.
 _STRATEGY_REASON_MAP: Final[dict[str, SkipReason]] = {
     "skip:max_split_reached": SkipReason.STRATEGY_NO_BUY,
     "skip:drop_insufficient": SkipReason.STRATEGY_NO_BUY,
+    "skip:max_split_per_day_reached": SkipReason.STRATEGY_NO_BUY,
     "skip:quantity_below_lot_size": SkipReason.QUANTITY_TOO_SMALL,
     "skip:insufficient_balance": SkipReason.INSUFFICIENT_BALANCE,
 }

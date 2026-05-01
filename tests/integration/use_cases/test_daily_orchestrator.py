@@ -440,6 +440,25 @@ class TestStrategySkipMapping:
         assert decision.action == f"skip:{SkipReason.STRATEGY_NO_BUY.value}"
         assert decision.reasoning["strategy_reason"] == "skip:drop_insufficient"
 
+    def test_max_split_per_day_reached_maps_to_strategy_no_buy(self):
+        # ADR §7.11: today_buys >= max_split_per_day → strategy says
+        # "skip:max_split_per_day_reached" → orchestrator maps to STRATEGY_NO_BUY.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "32000")]  # would otherwise buy
+        orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
+        broker._positions[asset.fqn] = _seeded_position(
+            asset,
+            quantity="28",
+            avg_price="35000",
+            split_level=1,
+            last_buy_at=_utc_after_close(TODAY),  # entry_date == TODAY
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action == f"skip:{SkipReason.STRATEGY_NO_BUY.value}"
+        assert decision.reasoning["strategy_reason"] == "skip:max_split_per_day_reached"
+        assert decision.reasoning["today_buys"] == "1"
+        assert decision.reasoning["max_split_per_day"] == "1"
+
     def test_quantity_below_lot_size_maps_to_quantity_too_small(self):
         asset = _asset(lot_size="100")  # huge lot
         bars = [_bar(asset, date(2026, 4, 29), "35000")]

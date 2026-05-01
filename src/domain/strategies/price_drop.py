@@ -42,12 +42,19 @@ class SplitStrategyConfig(DomainModel):
 
     `max_loss_pct` is reserved for Phase 1+ position-loss limits; ignored in
     Phase 0 (CLAUDE.md §11.4).
+
+    `max_split_per_day` (ADR §7.11) caps the number of FULL fills allowed on
+    one calendar day, preventing retry/multi-trigger from compounding into
+    multiple buys. Default 1 makes the Phase 0 implicit "one buy per day"
+    rule explicit. Counted against `position.entries[*].entry_date == today`;
+    partial fills do NOT count (CLAUDE.md §4.4).
     """
 
     drop_threshold_pct: Decimal = Field(gt=Decimal(0))
     max_split_count: int = Field(ge=1, le=7)
     per_split_amount: Money
     max_loss_pct: Decimal | None = None
+    max_split_per_day: int = Field(default=1, ge=1)
 
 
 class StrategyEvaluation(DomainModel):
@@ -135,6 +142,29 @@ class PriceDropStrategy:
             "per_split_amount": str(config.per_split_amount.amount),
             "available_cash": str(balance.cash.amount),
         }
+
+        # ------------------------------------------------------------------
+        # 0. max_split_per_day guard (ADR §7.11). Counts FULL fills today
+        #    via position.entries; partial fills aren't included
+        #    (CLAUDE.md §4.4 / ADR §7.5). Empty position → entries=[] → 0.
+        # ------------------------------------------------------------------
+        today_buys = (
+            sum(1 for e in position.entries if e.entry_date == today)
+            if position is not None
+            else 0
+        )
+        if today_buys >= config.max_split_per_day:
+            return StrategyEvaluation(
+                should_buy=False,
+                reason="skip:max_split_per_day_reached",
+                target_quantity=None,
+                target_price=None,
+                reasoning={
+                    **reasoning_base,
+                    "today_buys": str(today_buys),
+                    "max_split_per_day": str(config.max_split_per_day),
+                },
+            )
 
         # ------------------------------------------------------------------
         # 1. Determine the target split level.
