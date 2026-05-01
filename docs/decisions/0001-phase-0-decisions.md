@@ -249,12 +249,31 @@
 
 ## 7. Position 분할별 추적 (Step 7 직전 추가 변경 요청)
 
-### 7.0 [누락 인정] entry_dates 미구현
-- **사용자 원래 요청 (Step 5 Q5)**: `place_order` 체결 시 `entry_dates`도 FILLED일 때만 추가.
-- **실제 구현 결과**: Position에 `last_buy_at: datetime | None`만 추가하고 `entry_dates: list[date]`는 누락.
-- **누락 인정 시점**: 2026-05-01 (Step 7 진행 전 사용자 검토 시 발견).
-- **재처리**: Step 5 요청을 그대로 복구하지 않고, Step 7.1~7.3의 더 풍부한 구조(`SplitEntry` + `entries`)로 흡수.
-- **재발 방지**: 사용자 답변에 명시된 항목은 다음 단계 시작 전 ADR에 즉시 항목화. 이번 ADR 갱신부터 적용.
+### 7.0 [누락 인정] 미구현 항목 일괄 정리
+2026-05-01 §12.3.1 체크리스트 적용 시 발견된 이전 결정 미구현 항목들을 모아둔다.
+재발 방지: 이번부터 ADR 갱신 시마다 이 체크 수행.
+
+#### 7.0a entry_dates 미구현 (Step 5 Q5)
+- **원래 요청**: `place_order` 체결 시 `entry_dates`도 FILLED일 때만 추가.
+- **실제**: Position에 `last_buy_at: datetime | None`만 추가, `entry_dates: list[date]`는 빠짐.
+- **재처리**: Step 5 요청을 그대로 복구하지 않고, §7.1~§7.3의 더 풍부한 구조(`SplitEntry` + `entries`)로 흡수. `SplitEntry.entry_date`가 `entry_dates`의 정보를 더 강하게 보존.
+
+#### 7.0b round_to_tick 미구현 (Step 4 Q4 보강)
+- **원래 요청**: "Asset에 tick_size 필드와 round_to_tick 메서드 추가. Strategy에서 target_price = asset.round_to_tick(current_price.value)."
+- **실제**: `tick_size` 필드만 추가, `round_to_tick` 메서드 없음. Strategy는 `target_price = current_price.value`를 그대로 사용 (호가 단위 정렬 안 함).
+- **재처리 방침**: Step 7.x 작업과 함께 별도 micro-step으로 추가. `Asset.round_to_tick(price: Decimal) -> Decimal` 메서드(`tick_size` 배수로 floor 또는 round) + Strategy `target_price = asset.round_to_tick(current_price.value)`. 새 ADR 항목 §7.10에서 정식 결정.
+- **재검토**: KODEX 200 tick_size=5라 5원 단위 LIMIT 주문이 자연스러움. 이 누락이 KIS API 연결 시 주문 거부 유발 위험 — Phase 1 진입 전 반드시 보강.
+
+#### 7.0c min_quantity vs lot_size 명명 (Step 4 Q4 보강)
+- **원래 요청**: "수량 계산은 asset.min_quantity 활용해 floor".
+- **실제**: 동일 의미의 필드를 `lot_size`로 명명해 구현. KODEX 200은 `lot_size=Decimal("1")`, 사용자가 명시한 `min_quantity=Decimal("1")`과 값/의도 일치.
+- **재처리 방침**: 두 용어가 미묘하게 다를 수 있음(lot_size = 매매 단위, min_quantity = 최소 주문 수량). Phase 0 단일 ETF에서는 같지만 Phase 1+에서 분리 필요할 수 있음. **Phase 0은 `lot_size` 단일 명칭 유지** + ADR에 동의어 명시. Phase 1+에서 KIS API 명세 검토 후 분리 여부 결정.
+
+#### 7.0d today → max_split_per_day 체크 미구현 (Step 4 Q3 보강)
+- **원래 요청**: "today를 max_split_per_day 체크에 실제 사용. 형식적 인자가 아니라 실제 로직 기여."
+- **실제**: `today: date`는 시그니처에 있고 reasoning에 기록되지만, "오늘 이미 N회 매수했나" 판정 로직은 없음. 사용자가 명시적으로 경고한 "형식적 인자" 상태 그대로.
+- **재처리 방침**: Step 7.x에서 `Position.entries`가 추가되면 자연스럽게 구현 가능 — `sum(1 for e in entries if e.entry_date == today) >= max_split_per_day` 체크. 새 ADR 항목 §7.11에서 정식 결정 (`SplitStrategyConfig.max_split_per_day` 추가 + Strategy 분기).
+- **재검토**: 현재 Phase 0 = 1일 1회 매수 가정이 묵시적 — 코드에 룰로 박혀있지 않음. entries 도입 시 명시 가드 추가 안 하면 retry/multi-trigger 시 다회 매수 위험.
 
 ### 7.1 SplitEntry 신규 도메인 모델
 - **결정**: 새 `ValueObject` `SplitEntry(split_number, entry_date, quantity, entry_price, idempotency_key)` 추가.
@@ -322,8 +341,49 @@
   - `tests/unit/test_models.py`: Position 신규 invariants/메서드 테스트
   - `tests/integration/adapters/mock/test_broker.py`: entries 기반 검증
 - **변경 없음**:
-  - `PriceDropStrategy`: position.split_level/avg_price/quantity만 사용. entries 직접 참조 안 함.
+  - `PriceDropStrategy`: position.split_level/avg_price/quantity만 사용. entries 직접 참조 안 함. (단, §7.11 max_split_per_day 적용 시 entries 참조 추가 예정.)
   - `DailyOrchestrator`: 동일 (Position을 broker에서 받아 strategy에 전달만).
+
+### 7.8 [옵션 A 채택] Position invariant + helper 보강
+- **결정**: §7.5의 "느슨한" 옵션 A를 채택하되 다음 항목으로 보강:
+  - Position docstring에 부분 체결 정책 명시 (CLAUDE.md §4.4 + §7.5 정책 인용).
+  - `pending_partial_quantity: Decimal` property — `Position.quantity - sum(e.quantity for e in entries)`. 0 이상.
+  - `has_pending_partial() -> bool` 메서드 — `pending_partial_quantity > 0`.
+  - `_validate_invariants` (model_validator) 검증:
+    - `split_level == len(entries)`
+    - entries의 split_number가 1부터 split_level까지 순차 (gap/중복 금지)
+    - `quantity >= sum(e.quantity for e in entries)` (하한)
+    - `avg_price > 0` (quantity > 0인 경우)
+  - **avg_price 가중평균 일치 검증은 의도적으로 생략** (옵션 A 한계: 부분 체결분이 avg_price에 섞여 있어 entries만으로는 재계산 불가).
+- **이유**: 부분 체결분의 흔적을 `pending_partial_quantity`로 가시화. 호출자(Orchestrator/Strategy)가 미체결 잔량 존재를 감지하고 적절히 처리할 수 있게 함.
+- **트레이드오프**: avg_price 무결성 검증 약함. 대신 5.4(MockBroker 가중평균 책임) + 7.6(SQLite 영속화 시 stored value 신뢰)으로 보완.
+
+### 7.9 [옵션 B] 부분 체결분의 다음날 처리 정책
+- **결정**: 부분 체결분(`pending_partial_quantity`)은 **영구히 `entries`에 흡수되지 않음**. 다음날 이후에도:
+  - 같은 차수에 대한 추가 매수가 발생해 *전체* 체결되면, 그 fill만 새 SplitEntry로 등록 (이전 partial은 그대로 quantity/avg_price에만 반영된 채 남음).
+  - DailyOrchestrator가 `position.has_pending_partial()`을 감지하면 `Decision.reasoning`에 경고 키(`pending_partial_quantity`, `pending_partial_warning="True"`)를 기록.
+  - 시스템은 자동으로 부분→완전 변환을 시도하지 않음. 운영자가 ADR 결정 또는 수동 개입으로 처리.
+- **이유**: 부분 체결을 사후 split로 승급시키려면 "어느 차수의 일부였나"를 추적해야 하는데, 이는 split 정의를 흐리고 가격/시점 정보 합성도 모호해짐. CLAUDE.md §11.4 "자동 catch-up 금지" 정신과도 일치 — 부분 체결 처리도 사람 판단.
+- **테스트 필수 케이스 (Step 7.e/f에서 작성)**:
+  - `test_partial_fill_does_not_become_split_entry_next_day`: PARTIALLY_FILLED 후 다음날 다시 평가했을 때 entries에 partial이 추가되지 않음을 확인.
+  - `test_decision_logs_pending_partial_warning`: `has_pending_partial()`이 True인 Position을 받은 Orchestrator의 Decision.reasoning에 경고 키 포함.
+
+### 7.10 [예약] Asset.round_to_tick + Strategy target_price 정렬 (§7.0b 재처리)
+- **결정**: Step 7.x 6단계 외 별도 micro-step으로 추가:
+  - `Asset.round_to_tick(price: Decimal) -> Decimal` 메서드: `tick_size`의 배수로 floor (매수 LIMIT은 보수적으로 더 낮은 호가 선택).
+  - `PriceDropStrategy._compute_target_price`(또는 직접) 사용처: `target_price = asset.round_to_tick(current_price.value)`.
+  - Decimal precision: 호가 단위가 5/10/100/500/1000원 등으로 변하므로 단순 `(price // tick_size) * tick_size` 사용.
+  - 단위 테스트: KODEX 200(tick=5), 가상 stock(tick=10/100/1000)에서 floor 동작 확인.
+- **시점**: §7의 Position/SplitEntry 작업 직후, 이번 ADR commit 이후 시작 6단계와 별개로 잡음. 사용자 승인 후 진행.
+
+### 7.11 [예약] today 기반 max_split_per_day 가드 (§7.0d 재처리)
+- **결정**: `SplitStrategyConfig`에 `max_split_per_day: int` 필드 추가 (기본값 1, Phase 0 묵시 룰 명시화).
+- **Strategy 분기**:
+  - `today_buys = sum(1 for e in position.entries if e.entry_date == today)` 계산.
+  - `if today_buys >= config.max_split_per_day: return skip:max_split_per_day_reached`.
+  - 신규 SkipReason 항목: `MAX_SPLIT_PER_DAY_REACHED` (오케스트레이터 매핑은 `STRATEGY_NO_BUY` 그룹).
+- **이유**: §7.0d 재처리. retry/multi-trigger로 인한 동일일 다회 매수 방지. entries.entry_date 추가가 전제이므로 §7.1~§7.3 작업 후 자연스럽게 추가 가능.
+- **시점**: §7.10과 같은 6단계 작업 후 micro-step. 사용자 승인 후 진행.
 
 ---
 
