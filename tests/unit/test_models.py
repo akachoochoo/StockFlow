@@ -197,10 +197,16 @@ class TestAsset:
         a = make_asset(code="069500")
         assert a.fqn == "KRX:069500"
 
-    def test_fqn_serializes_in_dump(self):
+    def test_fqn_excluded_from_dump_for_round_trip_safety(self):
+        # fqn is a plain @property, not a serialized field, so model_dump
+        # / model_dump_json output stays compatible with extra="forbid" on
+        # round-trip via Asset.model_validate(...).
         a = make_asset()
         dumped = a.model_dump()
-        assert dumped["fqn"] == "KRX:069500"
+        assert "fqn" not in dumped
+        # And the canonical form is still recoverable on the rebuilt model.
+        rebuilt = Asset.model_validate(dumped)
+        assert rebuilt.fqn == "KRX:069500"
 
     def test_default_lot_size(self):
         a = Asset(

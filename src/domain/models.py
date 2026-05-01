@@ -16,7 +16,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    computed_field,
     field_validator,
     model_validator,
 )
@@ -233,10 +232,16 @@ class Asset(DomainModel):
     def _coerce_size(cls, v: object) -> Decimal:
         return _to_decimal(v)
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def fqn(self) -> str:
-        """Fully qualified name: 'EXCHANGE:CODE' (e.g. 'KRX:069500')."""
+        """Fully qualified name: 'EXCHANGE:CODE' (e.g. 'KRX:069500').
+
+        Plain property (not @computed_field) so the value is NOT included in
+        ``model_dump`` / ``model_dump_json`` output. Repository adapters store
+        ``asset_fqn`` as a separate column for indexed lookup, so duplicating
+        it inside ``asset_json`` would cause round-trip rejection by the
+        Asset model's ``extra="forbid"`` config.
+        """
         return f"{self.exchange.value}:{self.code}"
 
     def round_to_tick(self, price: Decimal) -> Decimal:
