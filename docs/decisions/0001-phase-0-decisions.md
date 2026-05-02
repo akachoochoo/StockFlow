@@ -1,7 +1,7 @@
 # ADR 0001: Phase 0 Design Decisions
 
 > 누적 기록 문서. 새 결정은 아래에 섹션으로 추가.
-> 마지막 업데이트: 2026-05-02 (§10 CLI / Paper Trading 추가)
+> 마지막 업데이트: 2026-05-02 (§10 CLI / Paper Trading sub-steps 10.a~10.m 완료)
 
 ---
 
@@ -805,19 +805,19 @@ CREATE TABLE portfolio_snapshots (
 - **로드맵 Step 10 흡수**: 사용자 명시 — Step 9 안에서 함께 작성.
 
 ### 10.9 작업 순서 (Step 9 sub-steps)
-- **10.a** ADR §10 신규 (이 문서)
-- **10.b** `src/infrastructure/csv_market_data_loader.py` + 단위 테스트
-- **10.c** `src/cli/safety.py` (kill switch + lock) + 단위 테스트
-- **10.d** `src/cli/output_formatter.py` (text + JSON) + 단위 테스트
-- **10.e** `MockBroker.set_position()` 추가 + `PortfolioSnapshotRepoPort.get_last()` 추가 (양쪽 어댑터)
-- **10.f** `src/cli/composition.py` paper 와이어링
-- **10.g** `src/cli/main.py` (click group + backtest + paper 서브명령)
-- **10.h** `tests/integration/test_cli.py` (CliRunner)
-- **10.i** `tests/integration/test_backtest_paper_equivalence.py`
-- **10.j** `scripts/manual_backtest.py` 폐기, `scripts/download_kodex200.py` placeholder 추가
-- **10.k** ruff / mypy / pytest 통과
-- **10.l** `trading backtest` 실 데이터(또는 합성) manual 검증
-- **10.m** `trading paper` 5일 연속 실행 manual 검증
+- **10.a** ✅ ADR §10 신규 (이 문서)
+- **10.b** ✅ `src/infrastructure/csv_market_data_loader.py` + 단위 테스트
+- **10.c** ✅ `src/cli/safety.py` (kill switch + lock) + 단위 테스트
+- **10.d** ✅ `src/cli/output_formatter.py` (text + JSON) + 단위 테스트
+- **10.e** ✅ `MockBroker.set_position()` + `PortfolioSnapshotRepoPort.get_last()` (양쪽 어댑터)
+- **10.f** ✅ `src/cli/composition.py` paper 와이어링
+- **10.g** ✅ `src/cli/main.py` (click group + backtest + paper 서브명령)
+- **10.h** ✅ `tests/integration/test_cli.py` (CliRunner) — 18 시나리오
+- **10.i** ✅ `tests/integration/test_backtest_paper_equivalence.py` — Decision 시퀀스 + 최종 cash/포지션 동일성 invariant
+- **10.j** ✅ `scripts/manual_backtest.py` 폐기, `scripts/download_kodex200.py` placeholder 추가 (Phase 1 진입 시 pykrx 의존성 도입 예정)
+- **10.k** ✅ ruff / mypy / pytest 모두 그린 (489 passed, 99 % coverage)
+- **10.l** ✅ `trading backtest` 60일 합성 데이터로 manual 검증 — split_1~7 모두 발화, 최종 -23.31 % return, MDD -23.91 %, Sharpe -4.06 (하락장에서 예상한 형태)
+- **10.m** ✅ `trading paper` 10일 연속(2026-02-02~02-13) manual 검증 — cross-run cash/position 복원 정상, backtest와 동일한 (date, action, qty, price) 시퀀스 재현 확인 (split_1 33주@30135, split_2 36주@27740, split_3 36주@27435)
 
 ---
 
