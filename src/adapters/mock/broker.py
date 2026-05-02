@@ -211,6 +211,7 @@ class MockBroker:
                 result.filled_price,
                 result.filled_at,
                 idempotency_key=request.idempotency_key,
+                target_slot_number=request.slot_number,
             )
         else:  # SELL
             assert request.slot_number is not None
@@ -249,13 +250,17 @@ class MockBroker:
         now: datetime,
         *,
         idempotency_key: str,
+        target_slot_number: int | None = None,
     ) -> None:
-        """Apply a fully-filled BUY into the smallest EMPTY slot.
+        """Apply a fully-filled BUY into a target EMPTY slot.
 
-        ADR 0002 §3.1 / §4.4. Slot allocation policy: lowest ``slot_number``
-        with EMPTY state wins (deterministic seven-account ordering).
-        Existing slots' ``last_exit_*`` history is preserved when the slot
-        is refilled — that history feeds the HybridTimeBasedReentry policy.
+        ADR 0002 §3.1 / §4.4 / §5.9.3. When ``target_slot_number`` is
+        provided (Phase 0.5 sells-then-buys cascade), that exact slot is
+        filled — the strategy's choice authoritative. When None (Phase 0
+        / paper-trading first buy with no cascade), fall back to "smallest
+        EMPTY slot wins" deterministic allocation. Existing slots'
+        ``last_exit_*`` history is preserved when the slot is refilled —
+        that history feeds the HybridTimeBasedReentry policy.
         """
         existing = self._positions.get(asset.fqn)
         if existing is None:
@@ -267,15 +272,33 @@ class MockBroker:
             slots = list(existing.slots)
 
         target_idx: int | None = None
-        for i, s in enumerate(slots):
-            if s.state is SlotState.EMPTY:
-                target_idx = i
-                break
-        if target_idx is None:
-            raise BrokerConnectionError(
-                f"all {len(slots)} slots already FILLED for {asset.fqn}; "
-                "refusing to place buy without first selling a slot"
-            )
+        if target_slot_number is not None:
+            for i, s in enumerate(slots):
+                if s.slot_number == target_slot_number:
+                    if s.state is not SlotState.EMPTY:
+                        raise BrokerConnectionError(
+                            f"BUY targets slot {target_slot_number} on "
+                            f"{asset.fqn} but slot is "
+                            f"{s.state.value}, not EMPTY"
+                        )
+                    target_idx = i
+                    break
+            if target_idx is None:
+                raise BrokerConnectionError(
+                    f"BUY targets slot {target_slot_number} on {asset.fqn} "
+                    f"but slot does not exist (slots: "
+                    f"{[s.slot_number for s in slots]})"
+                )
+        else:
+            for i, s in enumerate(slots):
+                if s.state is SlotState.EMPTY:
+                    target_idx = i
+                    break
+            if target_idx is None:
+                raise BrokerConnectionError(
+                    f"all {len(slots)} slots already FILLED for {asset.fqn}; "
+                    "refusing to place buy without first selling a slot"
+                )
 
         target_slot = slots[target_idx]
         # KRX session is fully inside one UTC date (KST=UTC+9, hours
