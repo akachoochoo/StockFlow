@@ -1,0 +1,35 @@
+# Phase 0.5 strategy config — Policy F (HybridTimeBasedReentry).
+#
+# ADR 0002 §4.3: each empty slot's reentry trigger is anchored to its own
+# last_exit_price during the cooldown window (Phase 0.5 keeps last_exit
+# anchor for the full lifetime — Phase 1+ may delegate to D-2 after
+# cooldown). Fresh slots in a non-empty position fall back to
+# position.avg_price (§4.7 5차 좁힘 — Phase 0 D 호환 행동).
+#
+# Same per_split_amount / drop_threshold_pct / profit_target_pct as
+# strategies-D.yaml — only the reentry policy differs. This isolates the
+# reentry-anchor variable for the Phase 0.5 D-vs-F comparison
+# (ADR §1.3 / §8). The 5-year KOSPI 200 backtest lives in step 0.5.24 /
+# 0.5.25; the analysis script lives in step 0.5.26.
+
+version: "0.5"
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 10000000
+      max_split_per_day: 1
+
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60

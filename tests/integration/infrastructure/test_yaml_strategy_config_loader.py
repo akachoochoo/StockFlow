@@ -284,3 +284,63 @@ assets:
         path.write_text("- item1\n- item2\n", encoding="utf-8")
         with pytest.raises(ValueError, match="mapping"):
             load_strategy_config(path)
+
+
+# ---------------------------------------------------------------------------
+# Repo-checked-in config files (Phase 0.5 step 0.5.22)
+# ---------------------------------------------------------------------------
+class TestRepoConfigFiles:
+    """Smoke tests for ``config/strategies-D.yaml`` / ``strategies-F.yaml``.
+
+    These are the actual policy-D-2 vs policy-F config files used by the
+    5-year KOSPI 200 D-vs-F comparison (ADR §8.4). Tests verify they
+    load cleanly and carry the ADR §8.3 baseline parameters so a future
+    schema change can't quietly invalidate them.
+    """
+
+    def _repo_root(self) -> Path:
+        # tests/integration/infrastructure/test_*.py → repo root is 4 up.
+        from pathlib import Path as _Path
+        return _Path(__file__).resolve().parents[3]
+
+    def test_strategies_d_yaml_loads(self):
+        path = self._repo_root() / "config" / "strategies-D.yaml"
+        bundles = load_strategy_config(path)
+        assert "069500" in bundles
+        bundle = bundles["069500"]
+        # ADR §8.3 baseline parameters
+        assert bundle.buy_config.drop_threshold_pct == Decimal("5.0")
+        assert bundle.buy_config.max_split_count == 7
+        assert bundle.buy_config.per_split_amount.amount == Decimal("10000000")
+        assert bundle.buy_config.per_split_amount.currency is Currency.KRW
+        assert bundle.sell_config.profit_target_pct == Decimal("10.0")
+        # D-2 specific
+        assert bundle.reentry_strategy_name == "moving_average"
+        assert bundle.reentry_parameters == {"window": 20, "ma_type": "sma"}
+
+    def test_strategies_f_yaml_loads(self):
+        path = self._repo_root() / "config" / "strategies-F.yaml"
+        bundles = load_strategy_config(path)
+        bundle = bundles["069500"]
+        # ADR §8.3 baseline parameters
+        assert bundle.buy_config.drop_threshold_pct == Decimal("5.0")
+        assert bundle.buy_config.max_split_count == 7
+        assert bundle.buy_config.per_split_amount.amount == Decimal("10000000")
+        assert bundle.sell_config.profit_target_pct == Decimal("10.0")
+        # F specific
+        assert bundle.reentry_strategy_name == "hybrid"
+        assert bundle.reentry_parameters == {"cooldown_days": 60}
+
+    def test_d_and_f_share_buy_and_sell_params(self):
+        # Phase 0.5 D-vs-F comparison isolates the reentry variable per
+        # ADR §1.3 — every other parameter must be identical.
+        d = load_strategy_config(
+            self._repo_root() / "config" / "strategies-D.yaml"
+        )["069500"]
+        f = load_strategy_config(
+            self._repo_root() / "config" / "strategies-F.yaml"
+        )["069500"]
+        assert d.buy_config == f.buy_config
+        assert d.sell_config == f.sell_config
+        # Reentry side is the only intentional difference.
+        assert d.reentry_strategy_name != f.reentry_strategy_name
