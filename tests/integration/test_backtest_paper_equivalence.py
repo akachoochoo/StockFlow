@@ -1,0 +1,218 @@
+"""Backtest vs paper trading equivalence regression (ADR §10.8 / step 10.k).
+
+The single most important Phase 0 invariant (CLAUDE.md §7.4): backtesting
+historical data via ``BacktestRunner`` and replaying the same data
+day-by-day through the ``trading paper`` CLI (cron simulation) MUST
+produce identical decisions and the same final state. If this regression
+ever breaks, something has crept in that depends on wall-clock time or
+external state (a violation of §3.2 / §1.2).
+"""
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+from typing import TYPE_CHECKING
+
+import pytest
+from click.testing import CliRunner
+
+from src.application.backtest_runner import BacktestRunner
+from src.cli import composition, safety
+from src.cli.main import main
+from src.domain.models import Currency, Money
+from src.domain.strategies.price_drop import SplitStrategyConfig
+from src.infrastructure.csv_market_data_loader import load_ohlcv_csv
+from src.infrastructure.db import connect
+from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# 9-day fixture engineered to fire 5 sequential buy_split levels
+# ---------------------------------------------------------------------------
+CSV_ROWS: list[tuple[str, str, str, str, str, str]] = [
+    # date          open    high    low     close   volume
+    ("2026-04-20", "30000", "30200", "29800", "30000", "1000"),
+    ("2026-04-21", "30000", "30100", "29900", "30000", "1000"),
+    ("2026-04-22", "30000", "30050", "29950", "30000", "1000"),
+    ("2026-04-23", "29000", "29100", "27900", "28000", "2000"),
+    ("2026-04-24", "28000", "28200", "27900", "28100", "1500"),
+    ("2026-04-27", "28000", "28200", "26100", "26200", "2000"),
+    ("2026-04-28", "26000", "26200", "25900", "26000", "1500"),
+    ("2026-04-29", "25000", "25500", "23500", "24000", "2500"),
+    ("2026-04-30", "24000", "24500", "23800", "24300", "1500"),
+]
+START = date(2026, 4, 20)
+END = date(2026, 4, 30)
+CAPITAL = 5_000_000
+SHARED_FLAGS: list[str] = [
+    "--capital", str(CAPITAL),
+    "--drop-pct", "5",
+    "--max-split", "7",
+    "--per-split-amount", "500000",
+    "--max-split-per-day", "1",
+]
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _isolated_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(safety, "_DEFAULT_LOCK_PATH", tmp_path / "test.lock")
+
+
+@pytest.fixture
+def csv_path(tmp_path) -> Path:
+    p = tmp_path / "kodex.csv"
+    body = "date,open,high,low,close,volume\n" + "\n".join(
+        ",".join(r) for r in CSV_ROWS
+    )
+    p.write_text(body + "\n")
+    return p
+
+
+def _trading_dates() -> list[date]:
+    return [date.fromisoformat(r[0]) for r in CSV_ROWS]
+
+
+def _build_config() -> SplitStrategyConfig:
+    return SplitStrategyConfig(
+        drop_threshold_pct=Decimal("5"),
+        max_split_count=7,
+        per_split_amount=Money(amount=Decimal(500_000), currency=Currency.KRW),
+        max_split_per_day=1,
+    )
+
+
+def _decision_keys(decisions):
+    """Return the comparison key for each decision.
+
+    We compare on (date, action, filled_quantity, filled_price) — the
+    timestamps differ in nanos because backtest swaps the clock holder
+    while paper rebuilds it per CLI run, but the *date* part is what
+    matters for "same outcome on the same day".
+    """
+    keys = []
+    for d in decisions:
+        keys.append((
+            d.timestamp.date(),
+            d.action,
+            d.reasoning.get("filled_quantity"),
+            d.reasoning.get("filled_price"),
+        ))
+    return keys
+
+
+# ---------------------------------------------------------------------------
+# The regression test itself
+# ---------------------------------------------------------------------------
+def test_backtest_and_paper_produce_identical_outcomes(tmp_path, csv_path):
+    asset = composition.kodex200()
+    bars = load_ohlcv_csv(csv_path, asset)
+    config = _build_config()
+    initial_capital = Money(
+        amount=Decimal(CAPITAL), currency=Currency.KRW
+    )
+
+    # ---------- Path A: BacktestRunner (one call, in-memory state) ----------
+    runner = BacktestRunner(
+        asset=asset,
+        strategy_config=config,
+        initial_capital=initial_capital,
+        ohlcv_by_asset={asset: bars},
+    )
+    bt_result = runner.run(START, END)
+
+    # ---------- Path B: trading paper, cron-simulated day-by-day ----------
+    db = tmp_path / "paper.db"
+    cli = CliRunner()
+    base_args = [
+        "paper",
+        "--csv", str(csv_path),
+        "--db", str(db),
+        *SHARED_FLAGS,
+    ]
+    for d in _trading_dates():
+        result = cli.invoke(
+            main, [*base_args, "--date", d.isoformat()]
+        )
+        assert result.exit_code == 0, (
+            f"paper failed on {d}: exception={result.exception!r}"
+            f"\n{result.output}"
+        )
+
+    conn = connect(db)
+    try:
+        with SqliteUnitOfWork(conn) as uow:
+            paper_decisions = uow.decisions.list_by_date_range(START, END)
+            paper_positions = uow.positions.list_all()
+            paper_last_snap = uow.snapshots.get_last()
+    finally:
+        conn.close()
+
+    # ---------- Compare decision sequences ----------
+    bt_keys = _decision_keys(bt_result.decisions)
+    paper_keys = _decision_keys(paper_decisions)
+    assert bt_keys == paper_keys, (
+        "\nBacktest and paper diverged on decision sequence:"
+        f"\n  backtest: {bt_keys}"
+        f"\n  paper:    {paper_keys}"
+    )
+
+    # The fixture is engineered for ≥ 4 buys — a too-quiet sequence would
+    # let a regression hide. Lock that floor in.
+    buy_count = sum(
+        1 for d in bt_result.decisions if d.action.startswith("buy_")
+    )
+    assert buy_count >= 4, (
+        f"fixture produced only {buy_count} buys — strengthen scenario"
+    )
+
+    # ---------- Compare final cash + valuations ----------
+    bt_final_snap = bt_result.snapshots[-1]
+    assert paper_last_snap is not None
+    assert paper_last_snap.snapshot_date == bt_final_snap.snapshot_date
+    assert paper_last_snap.cash == bt_final_snap.cash, (
+        f"cash diverged: backtest={bt_final_snap.cash} "
+        f"paper={paper_last_snap.cash}"
+    )
+    assert paper_last_snap.total_value == bt_final_snap.total_value
+    assert (
+        paper_last_snap.total_unrealized_pnl
+        == bt_final_snap.total_unrealized_pnl
+    )
+
+    bt_vals = {v.asset.fqn: v for v in bt_final_snap.valuations}
+    paper_vals = {v.asset.fqn: v for v in paper_last_snap.valuations}
+    assert bt_vals.keys() == paper_vals.keys(), (
+        f"valuation asset sets differ: "
+        f"backtest={set(bt_vals)} paper={set(paper_vals)}"
+    )
+    for fqn, bv in bt_vals.items():
+        pv = paper_vals[fqn]
+        assert bv.quantity == pv.quantity, (
+            f"qty diverged for {fqn}: backtest={bv.quantity} paper={pv.quantity}"
+        )
+        assert bv.avg_price == pv.avg_price, (
+            f"avg_price diverged for {fqn}: "
+            f"backtest={bv.avg_price} paper={pv.avg_price}"
+        )
+        assert bv.split_level == pv.split_level, (
+            f"split_level diverged for {fqn}: "
+            f"backtest={bv.split_level} paper={pv.split_level}"
+        )
+
+    # ---------- positions table ↔ snapshot.valuations consistency ----------
+    # This is the §10.4 sanity check invariant — the two SQLite truth
+    # sources must agree at the end of the run, otherwise the next paper
+    # invocation would refuse to start.
+    pos_by_fqn = {p.asset.fqn: p for p in paper_positions}
+    assert pos_by_fqn.keys() == paper_vals.keys()
+    for fqn, pos in pos_by_fqn.items():
+        val = paper_vals[fqn]
+        assert pos.quantity == val.quantity
+        assert pos.avg_price == val.avg_price
+        assert pos.split_level == val.split_level
