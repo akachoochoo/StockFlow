@@ -1,7 +1,7 @@
 # ADR 0001: Phase 0 Design Decisions
 
 > 누적 기록 문서. 새 결정은 아래에 섹션으로 추가.
-> 마지막 업데이트: 2026-05-01
+> 마지막 업데이트: 2026-05-02 (§10 CLI / Paper Trading 추가)
 
 ---
 
@@ -587,6 +587,237 @@ CREATE TABLE portfolio_snapshots (
   - `_Outcome` dataclass 도입; persistence 분리; 두 UoW 어댑터 모두 attribute를 Port 타입으로 명시(mypy 구조 적합성).
 - **8.i** ✅ `DailySnapshotBuilder` + 단위/통합 테스트 (`a5c9907`)
 - **8.j** ✅ ADR 마무리 + push
+
+---
+
+## 9. BacktestRunner (Step 8)
+
+> 결정 라운드 시작 전 §12.3.1 체크리스트 적용:
+> 직전 사용자 요청 중 미구현 항목 검색 (`grep -r entry_dates`, `grep -r round_to_tick`,
+> `grep -r max_split_per_day`, `grep -r BacktestRunner`) → §7.10/§7.11 반영 완료,
+> Step 8 신규 항목만 남음.
+
+### 9.0 목적
+- **결정**: `src/application/backtest_runner.py::BacktestRunner` — 단일 자산 과거 OHLCV를 day-by-day 재생하여 `DailyOrchestrator + DailySnapshotBuilder`를 실거래와 동일한 흐름으로 호출. `BacktestResult`로 결과 박제 (decisions, snapshots, 4개 성과 지표).
+- **이유**: CLAUDE.md §7.4 "백테스트와 실거래 동일성 검증"의 1차 도구. Phase 0 종료 기준(KOSPI 200 5년치 백테스트 성공)을 충족하는 최소 단위.
+- **Phase 0 한계 명시**: 단일 자산, 단일 프로세스, 단일 스레드. 멀티 자산은 Phase 1+.
+
+### 9.1 시그니처
+- **결정**: 생성자 주입형 클래스 + `run(start, end) -> BacktestResult`.
+  ```python
+  BacktestRunner(
+      *,
+      asset: Asset,
+      strategy_config: SplitStrategyConfig,
+      initial_capital: Money,
+      ohlcv_by_asset: dict[Asset, list[OHLCV]],
+      signal_factory: Callable[[], SignalPort] | None = None,  # default NullSignal
+      decision_kst_time: time = time(9, 0),
+      snapshot_kst_time: time = time(16, 0),
+  )
+  ```
+- **이유**:
+  - DI 일관성 (CLAUDE.md §1.2). `signal_factory`는 매 run마다 새 SignalPort를 만들 수 있게 callable로 받음 (Phase 2 RuleBasedSignal에서 캐시 상태 격리 필요할 때 대비).
+  - `ohlcv_by_asset`은 호출자 책임으로 미리 로드. CSV/pykrx 로더는 Step 9에서 분리(§9.6).
+  - `decision_kst_time` / `snapshot_kst_time`은 ADR §4.2의 두 시계 모델을 외부 주입 가능하게 노출 (테스트 시 KRX 외 시장에 응용 가능).
+- **트레이드오프**: `signal_factory`가 약간의 보일러플레이트. 그러나 Phase 0 NullSignal은 stateless라 매 호출 새로 만들어도 비용 0.
+
+### 9.2 Trading day 정의
+- **결정**: `bars`에 OHLCV가 존재하는 날만 trading day. `[start, end]` 범위 안에서 OHLCV가 있는 `trade_date`만 iterate.
+- **이유**:
+  - 휴장일/주말은 외부에서 fixture가 이미 반영(KRX는 휴장일에 bar 없음). MockMarketData의 `is_market_open` 결과를 별도로 묻지 않음으로써 데이터-소스 단일 진실 유지.
+  - 사용자가 5년치 KRX 데이터를 주입하면 자연스럽게 ~1250 영업일만 처리.
+- **트레이드오프**: bar 누락(데이터 결손) = 휴장일 취급. 결손 vs 휴장 구분은 향후 데이터 소스(pykrx 등)에서 holiday calendar로 보강.
+
+### 9.3 룩어헤드 방지 (두 시계 모델)
+- **결정**:
+  - `decision_at` = KST `decision_kst_time`(기본 09:00) → UTC. 이 시각에는 T-1 종가만 보임 (MockMarketData §5.7 룩어헤드 자동 방지).
+  - `snapshot_at` = KST `snapshot_kst_time`(기본 16:00) → UTC. KRX 마감(15:30) 후라 T 종가가 가용.
+- **흐름**:
+  ```
+  for trade_date in trading_dates:
+      clock_holder[0] = utc_for(d, 09:00 KST)   # T-1 close visible
+      decisions.append(orchestrator.run_for_date(d))
+      clock_holder[0] = utc_for(d, 16:00 KST)   # T close visible
+      snapshots.append(snapshot_builder.build_and_save(d))
+  ```
+- **이유**: ADR §4.2의 의도를 코드 흐름으로 박제. 의사결정은 정보 격차 ≤ 0(과거만 보임), 평가는 마감가 기준. CLAUDE.md §7.4 "백테스트와 실거래 동일성"의 핵심 메커니즘.
+- **재검토**: 장중 트리거 전략(분봉) 도입 시 이 두-시계 모델은 다중-시계로 확장 필요 (Phase 1+).
+
+### 9.4 인스턴스 공유 (한 run = 한 어댑터 세트)
+- **결정**: 한 `run()` 호출 안에서는 `MockBroker`, `MockMarketData`, `NullSignal`, `InMemoryUnitOfWork`를 **한 번 생성하고 모든 trading day에서 재사용**. 각 `run()`은 독립 (생성자 주입값으로 매번 새 어댑터 세트 빌드).
+- **이유**:
+  - 포지션/잔고/주문/decision/snapshot이 day-to-day로 누적돼야 함 (페이퍼 트레이딩과 동일한 상태 진행).
+  - run 단위 격리 → 같은 BacktestRunner 인스턴스로 여러 (start, end) 백테스트 가능.
+  - `clock`은 mutable holder(`list[datetime|None]`) 1개를 모든 어댑터에 공유. 두 시계 사이 swap이 holder 1번 갱신으로 끝남.
+- **트레이드오프**: `InMemoryUnitOfWork` 1개를 공유하므로 ADR §8.9 "no-op 트랜잭션" 정책에 따라 day간 격리 시뮬레이션 안 됨. Phase 0 결정성/단순성 우선.
+
+### 9.5 성과 지표 (CAGR / MDD / Sharpe / Calmar)
+- **결정**:
+  - 계산 로직은 `src/application/metrics.py`에 **순수 함수**로 분리. 입력: `list[PortfolioSnapshot]`, 출력: `Decimal`.
+  - `BacktestResult.from_run()` 팩토리에서 metrics 호출 → 4개 지표를 결과 필드로 직접 노출.
+  - **Phase 0 단순화**: risk-free rate = 0, 거래일 = 252일/년 가정.
+- **함수 시그니처**:
+  ```python
+  def cagr(snapshots: list[PortfolioSnapshot]) -> Decimal
+  def max_drawdown(snapshots: list[PortfolioSnapshot]) -> Decimal  # 음수 (-15.5 등)
+  def sharpe_ratio(snapshots: list[PortfolioSnapshot], *,
+                   risk_free_rate: Decimal = Decimal(0),
+                   trading_days_per_year: int = 252) -> Decimal
+  def calmar_ratio(snapshots: list[PortfolioSnapshot]) -> Decimal
+  ```
+- **엣지 케이스**:
+  - snapshots 비어있음 / 1개 → 모든 지표 0 반환 (시계열 부족).
+  - MDD가 0 → Calmar는 0 반환 (분모 0 회피, infinity 방지).
+  - 일일 수익률 표준편차 0 → Sharpe 0 반환.
+- **이유**:
+  - 순수 함수 분리는 페이퍼 트레이딩 / 실거래 보고서에서도 같은 함수 재사용 가능 (사용자 명시 — "외부 의존 없는 코드 최대화" 철학).
+  - `PortfolioSnapshot.total_value`가 일일 자산가치 시계열 단일 진실의 출처 (ADR §8.6).
+- **트레이드오프**: risk-free=0과 252일은 Phase 0 단순화. 실거래 시 KOSPI 무위험 수익률 / 시장별 거래일 수 주입 필요 (Phase 1+에서 파라미터 노출 이미 준비됨).
+
+### 9.6 Phase 0 한계 / Phase 1+ 확장 포인트
+- **단일 자산만**: `asset` 필드 1개. 멀티 자산은 `dict[Asset, SplitStrategyConfig]` 형태로 확장 필요.
+- **OHLCV 사전 로드 가정**: CSV/pykrx 다운로더는 Step 9에서 추가. BacktestRunner는 데이터 소스에 의존 안 함.
+- **CLI 진입점 없음**: Step 9에서 `trading paper / backtest` CLI 구축. Step 8은 `scripts/manual_backtest.py`로 일회성 manual 검증만 (사용자 명시 — "사람이 직접 결과 보고 직관 형성").
+- **Reconciliation 없음**: 백테스트는 broker가 곧 진실. CLAUDE.md §11.2의 DB↔broker 대조는 페이퍼/실거래 CLI 책임 (Step 9+).
+- **단일 통화 (KRW)**: 환율 변환 없음. PortfolioSnapshot의 currency 일치 invariant가 보호.
+- **부분 체결분 valuation**: ADR §8.6 옵션 A 그대로 — Position.quantity 전체로 valuation. 백테스트 결과의 부분 체결 흔적은 Decision.reasoning + Position.has_pending_partial로 추적.
+
+### 9.7 작업 순서 (Step 8 sub-steps)
+- **9.a** ADR §9 신규 (이 문서)
+- **9.b** `src/application/metrics.py` + `tests/unit/test_metrics.py`
+- **9.c** `src/application/backtest_runner.py` 완성 (`BacktestResult.from_run` 추가)
+- **9.d** `tests/integration/application/test_backtest_runner.py` (6개 시나리오)
+- **9.e** `scripts/manual_backtest.py` (60일치 inline fixture)
+- **9.f** ruff/mypy/pytest 통과
+- **9.g** `python scripts/manual_backtest.py` 실행 → 사람 눈으로 결과 검증
+
+---
+
+## 10. CLI / Paper Trading (Step 9)
+
+> 결정 라운드 시작 전 §12.3.1 체크리스트 적용:
+> 직전 사용자 요청 항목 검색 (`grep -r "trading paper"`, `grep -r CashRepo`,
+> `grep -r kill_switch`, `grep -r TRADING_HALT`, `grep -r CliRunner`,
+> §9.6 "CLI 진입점 없음", §8.5 "Use Case가 connection을 모름") →
+> Q1~Q7 모든 답변 항목이 본 §10에 박제 대상으로 식별됨.
+
+### 10.0 목적
+- **결정**: Phase 0 운영 진입점 — `trading backtest` (과거 OHLCV 재생)와 `trading paper` (cron 단발 실행, SQLite 영속화) 두 서브명령. `manual_backtest.py`(§9.7 Step 8 산출)는 폐기.
+- **이유**: 로드맵 Step 9 명세 충족 + Step 10 (백테스트 vs 페이퍼 동일성 검증) 진입로 확보. Composition root를 CLI에 두어 도메인/어댑터 의존 그래프를 한 곳에서 와이어링.
+
+### 10.1 CLI 골격
+- **결정**: `src/cli/main.py`에 click group `trading` + 서브명령 `backtest` / `paper`.
+  ```
+  trading backtest --csv PATH --asset 069500 --start YYYY-MM-DD --end YYYY-MM-DD \
+                   --capital 10000000 [--json]
+  trading paper    --csv PATH --asset 069500 --date YYYY-MM-DD \
+                   --db PATH --capital 10000000 [--json]
+  ```
+- **이유**: pyproject `[project.scripts] trading = "src.cli:main"` 이미 등록. click 8.1 기존 의존성. status / reconcile 등 부가 명령은 운영 중 발견 시 Phase 1+에서 추가.
+- **CLAUDE.md §13.2 옵션 형식 준수**: 옵션 충돌 (예: `--date`/`--asset` 누락) 시 click 자체 에러로 즉시 거부 후 사람 개입 대기.
+
+### 10.2 CSV Market Data Loader
+- **결정**: `src/infrastructure/csv_market_data_loader.py::load_ohlcv_csv(path, asset) -> list[OHLCV]`. 표준 형식 `date,open,high,low,close,volume` (헤더 필수, ISO 8601 `YYYY-MM-DD`). 모든 숫자 필드는 `Decimal(str(...))`로 파싱.
+- **검증**:
+  - 헤더 누락 / 컬럼 부족 → `ValueError`
+  - 빈 파일 → 빈 리스트 (예외 아님 — 호출자가 의미 결정)
+  - OHLC 정합성 (`OHLCV` model_validator로 자동 위반 시 `ValidationError`)
+  - 중복 `trade_date` → `ValueError` ("거래기록은 시점의 사실" §8.3 정신)
+- **백테스트와 페이퍼 공유**: 같은 로더, 같은 검증, 같은 결정성. 차이는 caller의 `[start, end]` 범위만.
+- **pykrx 다운로더**: `scripts/download_kodex200.py`에 placeholder 작성. 실제 구현은 Phase 1 직전. Phase 0에서 pykrx를 실행 의존성으로 추가하지 않음 (네트워크 의존 회피).
+- **재검토**: tick_size가 시점에 따라 변하는 종목(액면병합 등) 도입 시 OHLCV에 `asset_json` 박제 또는 시계열 split factor 컬럼 추가 검토.
+
+### 10.3 Cash / Positions 진실 출처 분리 [핵심]
+- **결정**:
+  - **Cash 진실**: `portfolio_snapshots.cash` (가장 최근 snapshot의 cash 값)
+  - **Positions 진실**: `positions` 테이블 (PositionRepo)
+  - **첫 실행 (snapshot이 없을 때)**: CLI의 `--capital` 인자 또는 환경 default → MockBroker initial_balance
+- **이유**:
+  - PortfolioSnapshot은 §8.6에서 매일 박제되며 cash + valuations 합계가 invariant로 검증됨 → cash 별도 Repository 추가 없이 기존 인프라 재사용.
+  - Position 영속화는 §8.4의 positions 테이블에서 이미 보장.
+  - 두 출처 일관성은 §10.4 sanity check가 보호.
+- **흐름** (paper 명령 시작):
+  ```python
+  with uow_factory() as uow:
+      last_snap = uow.snapshots.get_last()  # MAX(snapshot_date)
+      cash_money = last_snap.cash if last_snap else config.initial_capital
+      stored_positions = uow.positions.list_all()
+  broker = MockBroker(initial_balance=Balance(cash=cash_money), clock=clock)
+  for p in stored_positions:
+      broker.set_position(p)  # §10.5에서 신규 메서드
+  ```
+- **트레이드오프**:
+  - 첫 paper 실행은 snapshot 없음 → `--capital` 또는 config 필수. CLI에서 누락 시 명시 에러.
+  - cash가 snapshot 단위로만 갱신되므로 같은 날 paper 명령을 두 번 실행하면 두 번째 실행은 첫 번째의 snapshot.cash를 시작값으로 사용 (idempotency_key가 `{asset.fqn}:{today}`이므로 두 번째 buy는 자동 차단됨 — §6.5).
+- **신규 Port 메서드**: `PortfolioSnapshotRepoPort.get_last() -> PortfolioSnapshot | None` 추가. SqliteRepo는 `ORDER BY snapshot_date DESC LIMIT 1`, InMemoryRepo는 `max(self._snapshots, key=date)`.
+
+### 10.4 Phase 0 Reconciliation 정책 (최소 sanity check)
+- **결정**: 정식 reconciliation (DB ↔ broker 실제 포지션 대조)은 Phase 1+ 실거래 도입 시 추가. Phase 0 paper에서는 다음 **최소 sanity check만** 수행:
+  - **Snapshot ↔ Positions 동기화**: 가장 최근 snapshot의 `valuations[*].asset.fqn` 집합이 positions 테이블의 `asset_fqn` 집합과 일치 (단, 비어있는 set 양쪽이면 통과).
+  - **불일치 시**: `IntegrityError` raise → CLI가 받아 시스템 정지 + 사람 개입 대기 (CLAUDE.md §6.1).
+  - **자동 수정 절대 금지** (§11.2 정신).
+- **위치**: CLI `paper` 명령 진입 직후, broker 와이어링 전. 별도 `src/cli/sanity.py::check_snapshot_position_sync(uow)`.
+- **이유**:
+  - Phase 0 MockBroker는 in-memory + 매번 새로 만들어지므로 "broker 실제 포지션" 개념 없음 → 정식 reconciliation 불가능.
+  - 그러나 SqliteUoW에서 두 출처 (cash from snapshots, positions from positions table)가 갈라지면 §10.3의 진실 출처 분리 가정이 깨짐 → sanity check가 수호자.
+  - Phase 1 KIS API 도입 시 본격 reconciliation 함수가 이 sanity check를 흡수하는 형태로 진화.
+- **재검토**: Phase 1 진입 직전.
+
+### 10.5 안전장치 (Kill Switch + Lock File)
+- **결정**: 두 항목 모두 Phase 0부터 도입. `src/cli/safety.py`에 헬퍼 분리.
+- **Kill switch (CLAUDE.md §11.1)**:
+  - 환경변수 `TRADING_HALT=1` 설정 시 모든 명령(backtest 포함) 즉시 종료, exit code 0, stderr에 critical 로그.
+  - CLI 진입 첫 줄에서 체크.
+- **Lock file (CLAUDE.md §10.2)**:
+  - 위치: `~/.trading-system.lock` (사용자 홈, 절대경로). `--lock-file PATH` 인자로 override 가능 (테스트용).
+  - 형식: 텍스트 1줄 — `f"{pid}\n"`.
+  - acquire: 파일 없으면 PID 기록 후 진입. 파일 있으면 PID 검증 → 살아있는 프로세스면 `ConcurrentRunError` raise; 없으면 (stale) 정리 후 재acquire.
+  - release: `atexit`으로 자동 정리 + 정상 종료 시 명시 정리.
+  - paper / backtest 둘 다 적용 (백테스트도 cron 가능성 대비).
+- **이유**:
+  - CLAUDE.md 명시 항목. Phase 1 직전 부담 회피.
+  - Lock file은 단순 PID-based로 구현 비용 작음 (psutil 등 외부 의존 없이 `os.kill(pid, 0)`로 살아있는지 검사).
+- **트레이드오프**: 같은 머신 가정. NFS / 분산 환경은 Phase 2+에서.
+
+### 10.6 출력 형식 (Text + --json)
+- **결정**: 기본은 human-readable text. `--json` 플래그로 JSON 출력.
+- **JSON 구조**: pydantic `model_dump_json()` 활용. `BacktestResult`는 `dataclass`라 `dataclasses.asdict` + 직접 JSON 변환 (Decimal → str). `Decision` / `PortfolioSnapshot`은 pydantic이라 자동.
+- **헬퍼 위치**: `src/cli/output_formatter.py`:
+  - `format_backtest_result(result, *, as_json: bool) -> str`
+  - `format_paper_decision(decision, snapshot, *, as_json: bool) -> str`
+- **이유**: text는 manual 검증/직관 형성 (§9.6 사용자 명시), JSON은 Phase 1+ 모니터링/대시보드 연결 대비 동시 노출.
+
+### 10.7 Composition Root
+- **결정**: `src/cli/composition.py`가 paper 와이어링 책임:
+  - `build_paper_orchestrator(asset, csv_path, db_path, today, capital, clock_factory) -> tuple[DailyOrchestrator, DailySnapshotBuilder]`
+  - `build_backtest_runner(asset, csv_path, capital, ...)` 는 `BacktestRunner` 자체가 self-contained라 단순 wrap.
+- **이유**: CLI 명령 본체는 인자 파싱 + safety + 출력만. 실제 객체 그래프 빌드는 composition root에서. 테스트가 CLI를 by-pass하고 composition만 검증 가능.
+- **MockBroker 확장**: `set_position(position: Position)` 메서드 추가 — 외부에서 복원된 Position을 broker 내부 dict에 주입. cash는 `__init__`의 `initial_balance`로 충분.
+
+### 10.8 백테스트 vs 페이퍼 동일성 회귀 테스트 (Step 10 흡수)
+- **결정**: `tests/integration/test_backtest_paper_equivalence.py` 작성. 같은 OHLCV / 같은 config로:
+  - backtest 1회 → BacktestResult.decisions 시퀀스
+  - paper N일 cron 시뮬레이션 (같은 SQLite DB, 매일 별도 CLI 호출로 시뮬) → Decision 시퀀스 from DB
+  - 두 시퀀스의 `(action, reasoning["filled_quantity"], reasoning["filled_price"])` 일치 확인.
+  - 최종 cash + position quantity / avg_price 일치 확인.
+- **이유**: CLAUDE.md §7.4 "백테스트와 실거래의 동일성 검증". Phase 0에서 이 회귀 테스트가 통과하면, Phase 1+ 실거래 진입 시 broker만 교체로 동일성 자동 보존됨.
+- **로드맵 Step 10 흡수**: 사용자 명시 — Step 9 안에서 함께 작성.
+
+### 10.9 작업 순서 (Step 9 sub-steps)
+- **10.a** ADR §10 신규 (이 문서)
+- **10.b** `src/infrastructure/csv_market_data_loader.py` + 단위 테스트
+- **10.c** `src/cli/safety.py` (kill switch + lock) + 단위 테스트
+- **10.d** `src/cli/output_formatter.py` (text + JSON) + 단위 테스트
+- **10.e** `MockBroker.set_position()` 추가 + `PortfolioSnapshotRepoPort.get_last()` 추가 (양쪽 어댑터)
+- **10.f** `src/cli/composition.py` paper 와이어링
+- **10.g** `src/cli/main.py` (click group + backtest + paper 서브명령)
+- **10.h** `tests/integration/test_cli.py` (CliRunner)
+- **10.i** `tests/integration/test_backtest_paper_equivalence.py`
+- **10.j** `scripts/manual_backtest.py` 폐기, `scripts/download_kodex200.py` placeholder 추가
+- **10.k** ruff / mypy / pytest 통과
+- **10.l** `trading backtest` 실 데이터(또는 합성) manual 검증
+- **10.m** `trading paper` 5일 연속 실행 manual 검증
 
 ---
 
