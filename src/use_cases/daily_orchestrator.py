@@ -787,7 +787,12 @@ class DailyOrchestrator:
             return buy_skip_reason
 
         if position is not None:
-            all_filled = position.split_level == position.max_split_count
+            # "All FILLED" is bounded by ``config.max_split_count`` rather
+            # than ``position.max_split_count``. The Position carries 7
+            # slots (Phase 0.5 fixed slot count), but the strategy may be
+            # configured with fewer (e.g. max_split_count=3 caps growth at
+            # 3 even though slots 4..7 stay EMPTY).
+            all_filled = position.split_level >= self._config.max_split_count
             all_empty = position.split_level == 0
         else:
             all_filled = False

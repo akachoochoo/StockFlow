@@ -25,6 +25,7 @@ from src.domain.models import (
     Money,
     SignalLevel,
     SignalSource,
+    SkipReason,
 )
 from src.domain.strategies.price_drop import SplitStrategyConfig
 
@@ -295,3 +296,158 @@ class TestBacktestRunner:
             assert snap.cash.amount == initial_cash
             assert snap.valuations == []
             assert snap.total_value.amount == initial_cash
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.5 sells-then-buys scenarios (ADR §11.e step 0.5.17)
+# ---------------------------------------------------------------------------
+class TestSellsThenBuysScenarios:
+    """Phase 0.5 cascade flow at the runner level. The orchestrator
+    integration suite covers fault injection + skip classification; here
+    we verify that the runner's day-by-day trading-date iteration produces
+    the same Decision sequences end-to-end on representative price paths.
+    """
+
+    def test_buy_then_sell_at_recovery_with_cascade_buy(self):
+        # Day1 buys slot 1 @ 35000 (T-1 close). Days 2-3 hold (no profit
+        # yet). Day4's decision sees Day3's close 38500 → slot 1 hits +10 %
+        # and sells; the same evaluation's BUY step then fires on slot 2
+        # via the post-sell first-buy bypass (§4.7) — Decision Invariant 3
+        # holds because excluded={1} forces the cascade buy onto slot 2.
+        asset = _asset()
+        days = [date(2026, 4, 20) + timedelta(days=i) for i in range(5)]
+        bars = [
+            _bar(asset, days[0], "35000"),  # T-1
+            _bar(asset, days[1], "35000"),  # Day1 snap; Day2 dec sees this
+            _bar(asset, days[2], "35000"),  # Day2 snap; Day3 dec sees this
+            _bar(asset, days[3], "38500"),  # Day3 snap; Day4 dec sees this
+            _bar(asset, days[4], "38500"),  # Day4 snap
+        ]
+        runner = BacktestRunner(
+            asset=asset,
+            strategy_config=_config(),
+            initial_capital=_capital(amount="10000000"),
+            ohlcv_by_asset={asset: bars},
+        )
+        result = runner.run(start=days[1], end=days[4])
+
+        assert result.n_trading_days == 4
+        actions = [d.action_kinds() for d in result.decisions]
+        # Day1 buys; Days 2-3 idle; Day4 sells slot 1 + buys slot 2.
+        assert actions[0] == ["buy_split_1"]
+        assert result.decisions[1].is_skip()
+        assert result.decisions[2].is_skip()
+        assert actions[3] == ["sell_slot_1", "buy_split_2"]
+
+        # Day4's sell records the +10 % profit on slot 1.
+        sell_action = result.decisions[3].sell_actions[0]
+        assert sell_action.slot_number == 1
+        assert sell_action.profit_pct == Decimal("10")
+
+        # Final position carries slot 1 EMPTY (with last_exit_*) + slot 2
+        # FILLED at 38500 — the cascade buy landed in a fresh slot.
+        final = result.final_snapshot
+        assert final is not None
+        position_qty = final.valuations[0].quantity
+        # Slot 2 holds 25 shares (1M / 38500 floor) at 38500.
+        assert position_qty == Decimal("25")
+        assert final.valuations[0].avg_price == Decimal("38500")
+
+    def test_multiple_sells_no_cascade_buy_when_drop_insufficient(self):
+        # Build slots 1, 2, 3 at descending entry prices, then a partial
+        # recovery to 33000 triggers sells on slots 2 (+10 %) and 3 (+18 %)
+        # while slot 1 (-5.7 %) holds. Buy step skipped because Hybrid's
+        # fresh-slot fallback uses post-sell avg=35000 → trigger=32550 >
+        # current 33000 → no fire. Result: two sells on a single day, no
+        # cascade buy.
+        asset = _asset()
+        days = [date(2026, 4, 20) + timedelta(days=i) for i in range(5)]
+        bars = [
+            _bar(asset, days[0], "35000"),  # T-1
+            _bar(asset, days[1], "30000"),  # Day1 snap; slot 1 fills @35000
+            _bar(asset, days[2], "28000"),  # Day2 snap; slot 2 fills @30000
+            _bar(asset, days[3], "33000"),  # Day3 snap; slot 3 fills @28000
+            _bar(asset, days[4], "33000"),  # Day4 snap; sells slots 2,3
+        ]
+        runner = BacktestRunner(
+            asset=asset,
+            strategy_config=_config(),
+            initial_capital=_capital(amount="10000000"),
+            ohlcv_by_asset={asset: bars},
+        )
+        result = runner.run(start=days[1], end=days[4])
+
+        assert result.n_trading_days == 4
+        # Days 1-3: progressive splits.
+        assert result.decisions[0].action_kinds() == ["buy_split_1"]
+        assert result.decisions[1].action_kinds() == ["buy_split_2"]
+        assert result.decisions[2].action_kinds() == ["buy_split_3"]
+        # Day4: two sells, no buy.
+        day4 = result.decisions[3]
+        assert day4.action_kinds() == ["sell_slot_2", "sell_slot_3"]
+        assert day4.buy_action is None
+        # skip_reason is None because sell_actions are present (Invariant 1).
+        assert day4.skip_reason is None
+        # Strategy emitted STRATEGY_NO_BUY (drop insufficient, mixed state)
+        # — visible in reasoning as the buy-side fingerprint.
+        assert (
+            day4.reasoning["buy_skip_reason_emitted"]
+            == SkipReason.STRATEGY_NO_BUY.value
+        )
+
+        # Final position holds only slot 1 (the un-sold survivor).
+        final = result.final_snapshot
+        assert final is not None
+        assert final.valuations[0].split_level == 1
+        # cross-check via Position.slots: 1 FILLED, 2 & 3 EMPTY w/ last_exit.
+        position = final.valuations[0]
+        # PositionValuation doesn't carry slots; verify quantity/avg instead.
+        assert position.quantity == Decimal("28")
+        assert position.avg_price == Decimal("35000")
+
+    def test_all_filled_no_profit_skip_during_dormancy(self):
+        # max_split_count=3 + sustained drops without recovery: 3 buys
+        # fire then the position sits underwater. Days 4-5 surface the
+        # ALL_SLOTS_FILLED_NO_PROFIT classification (ADR §5.6) — the Phase
+        # 0.5 retrospective uses this enum as the dormancy KPI denominator.
+        asset = _asset()
+        days = [date(2026, 4, 20) + timedelta(days=i) for i in range(6)]
+        bars = [
+            _bar(asset, days[0], "35000"),  # T-1
+            _bar(asset, days[1], "30000"),  # slot 1 fills @35000
+            _bar(asset, days[2], "28000"),  # slot 2 fills @30000
+            _bar(asset, days[3], "25000"),  # slot 3 fills @28000 (max=3)
+            _bar(asset, days[4], "23000"),  # all FILLED, no profit anywhere
+            _bar(asset, days[5], "23000"),  # same — dormancy
+        ]
+        runner = BacktestRunner(
+            asset=asset,
+            strategy_config=_config(max_split=3),
+            initial_capital=_capital(amount="10000000"),
+            ohlcv_by_asset={asset: bars},
+        )
+        result = runner.run(start=days[1], end=days[5])
+
+        assert result.n_trading_days == 5
+        # Days 1-3: progressive splits.
+        for idx, expected in enumerate(["buy_split_1", "buy_split_2", "buy_split_3"]):
+            assert result.decisions[idx].action_kinds() == [expected]
+        # Days 4-5: dormancy — all FILLED + no sells + no buys.
+        for idx in (3, 4):
+            decision = result.decisions[idx]
+            assert decision.skip_reason is SkipReason.ALL_SLOTS_FILLED_NO_PROFIT
+            assert decision.sell_actions == []
+            assert decision.buy_action is None
+            # Strategy's STRATEGY_NO_BUY (max_split_reached) preserved
+            # in reasoning even though the orchestrator surfaces the
+            # retrospective category as the top-level skip_reason.
+            assert (
+                decision.reasoning["buy_skip_reason_emitted"]
+                == SkipReason.STRATEGY_NO_BUY.value
+            )
+            assert decision.reasoning.get("max_split_reached") == "True"
+
+        # Final position has split_level == max (3).
+        final = result.final_snapshot
+        assert final is not None
+        assert final.valuations[0].split_level == 3
