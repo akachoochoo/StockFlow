@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from src.adapters.mock.broker import MockBroker
@@ -24,6 +25,10 @@ from src.domain.constants import KST
 from src.domain.exceptions import IntegrityError
 from src.domain.models import Balance
 from src.domain.strategies.price_drop import PriceDropStrategy
+from src.domain.strategies.profit_target import (
+    ProfitTargetSell,
+    SellStrategyConfig,
+)
 from src.domain.strategies.reentry import HybridTimeBasedReentry
 from src.infrastructure.db import connect
 from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
@@ -147,6 +152,14 @@ def build_paper_components(
             reentry=HybridTimeBasedReentry(cooldown_days=60),
         ),
         config=strategy_config,
+        # Phase 0.5 step 0.5.14: ProfitTargetSell with +10 % default.
+        # YAML config (step 0.5.19+) will surface profit_target_pct +
+        # max_sells_per_day per asset.
+        sell_strategy=ProfitTargetSell(),
+        sell_config=SellStrategyConfig(
+            profit_target_pct=Decimal("10.0"),
+            max_sells_per_day=7,
+        ),
         asset=asset,
         clock=clock,
         uow_factory=uow_factory,

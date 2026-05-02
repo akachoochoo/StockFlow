@@ -202,6 +202,10 @@ class BacktestRunner:
         signal = self._signal_factory()
         # Phase 0.5 step 0.5.10: hardcode HybridTimeBasedReentry until
         # YAML config (step 0.5.20) wires policy choice through.
+        from src.domain.strategies.profit_target import (
+            ProfitTargetSell,
+            SellStrategyConfig,
+        )
         from src.domain.strategies.reentry import HybridTimeBasedReentry
 
         strategy = PriceDropStrategy(
@@ -215,6 +219,13 @@ class BacktestRunner:
             signal=signal,
             strategy=strategy,
             config=self._strategy_config,
+            # Phase 0.5 step 0.5.14: ProfitTargetSell with +10 % default.
+            # YAML config (step 0.5.19+) will surface profit_target_pct.
+            sell_strategy=ProfitTargetSell(),
+            sell_config=SellStrategyConfig(
+                profit_target_pct=Decimal("10.0"),
+                max_sells_per_day=7,
+            ),
             asset=self._asset,
             clock=clock,
             uow_factory=lambda: shared_uow,

@@ -37,16 +37,33 @@ from src.domain.models import (
     Money,
     OrderRequest,
     OrderResult,
+    OrderSide,
     OrderStatus,
     Position,
     SignalLevel,
     SignalSource,
+    SlotState,
     SplitEntry,
     SplitSlot,
 )
 from src.domain.strategies.price_drop import PriceDropStrategy, SplitStrategyConfig
+from src.domain.strategies.profit_target import (
+    ProfitTargetSell,
+    SellStrategyConfig,
+)
 from src.domain.strategies.reentry import HybridTimeBasedReentry
 from src.use_cases.daily_orchestrator import DailyOrchestrator, SkipReason
+
+
+def _sell_strategy() -> ProfitTargetSell:
+    return ProfitTargetSell()
+
+
+def _sell_config(profit_target_pct: str = "10.0") -> SellStrategyConfig:
+    return SellStrategyConfig(
+        profit_target_pct=Decimal(profit_target_pct),
+        max_sells_per_day=7,
+    )
 
 
 def _strategy() -> PriceDropStrategy:
@@ -140,6 +157,52 @@ def _seeded_position(
         quantity=qty,
         avg_price=avg,
         split_level=split_level,
+        last_buy_at=last_buy_at,
+        slots=slots,
+    )
+
+
+def _position_with_per_slot_entries(
+    asset: Asset,
+    *,
+    entries_spec: list[tuple[int, str, str]],
+    last_buy_at: datetime,
+    max_split_count: int = 7,
+) -> Position:
+    """Build a Position from per-slot (slot_number, qty, entry_price) tuples.
+
+    Unlike ``_seeded_position`` (which uses a uniform ``avg_price`` across
+    all entries), this fixture lets each FILLED slot carry an independent
+    ``entry_price``. The Phase 0.5 sells-then-buys tests need that to
+    engineer per-slot profit triggers.
+    """
+    entries = [
+        SplitEntry(
+            split_number=sn,
+            entry_date=last_buy_at.date(),
+            quantity=Decimal(qty),
+            entry_price=Decimal(price),
+            idempotency_key=f"seed-{sn}",
+        )
+        for sn, qty, price in entries_spec
+    ]
+    filled_numbers = {e.split_number for e in entries}
+    slots: list[SplitSlot] = []
+    for n in range(1, max_split_count + 1):
+        if n in filled_numbers:
+            entry = next(e for e in entries if e.split_number == n)
+            slots.append(SplitSlot.filled(entry=entry))
+        else:
+            slots.append(SplitSlot.empty(slot_number=n))
+
+    total_qty = sum((e.quantity for e in entries), Decimal(0))
+    total_cost = sum((e.quantity * e.entry_price for e in entries), Decimal(0))
+    avg_price = total_cost / total_qty if total_qty > 0 else Decimal(0)
+    return Position(
+        asset=asset,
+        quantity=total_qty,
+        avg_price=avg_price,
+        split_level=len(entries),
         last_buy_at=last_buy_at,
         slots=slots,
     )
@@ -297,6 +360,8 @@ def _make_real_orchestrator(
         signal=signal,
         strategy=strategy,
         config=_config(),
+        sell_strategy=_sell_strategy(),
+        sell_config=_sell_config(),
         asset=asset,
         clock=lambda: clock_at,
         uow_factory=lambda: InMemoryUnitOfWork(),
@@ -317,7 +382,7 @@ class TestNormalBuyFlow:
         assert decision.reasoning["order_status"] == OrderStatus.FILLED.value
         assert decision.reasoning["filled_quantity"] == "28"
         # Idempotency key reflected
-        assert broker.all_orders()[0].idempotency_key == "KRX:069500:2026-04-30"
+        assert broker.all_orders()[0].idempotency_key == "KRX:069500:2026-04-30:buy:1"
 
     def test_subsequent_split_after_drop(self):
         # Pre-place a position via broker to set up state
@@ -360,6 +425,8 @@ class TestCircuitBreaker:
             signal=_FakeSignal(signal=_signal(level=level, at=clock_at)),
             strategy=_strategy(),
             config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
             asset=asset,
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
@@ -396,6 +463,8 @@ class TestCircuitBreaker:
             signal=_FakeSignal(signal=_signal(level=SignalLevel.CAUTION, at=clock_at)),
             strategy=_strategy(),
             config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
             asset=asset,
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
@@ -420,6 +489,8 @@ class TestCircuitBreaker:
             signal=_FakeSignal(signal=_signal(level=SignalLevel.CAUTION, at=clock_at)),
             strategy=_strategy(),
             config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
             asset=asset,
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
@@ -434,9 +505,12 @@ class TestCircuitBreaker:
 # Strategy-side skip mapping
 # ---------------------------------------------------------------------------
 class TestStrategySkipMapping:
-    def test_max_split_reached_maps_to_strategy_no_buy(self):
-        # Phase 0.5: all slots FILLED → STRATEGY_NO_BUY (no EMPTY slots
-        # to evaluate).
+    def test_all_filled_no_profit_maps_to_dormancy_skip_reason(self):
+        # Phase 0.5 / ADR §5.6: position has all 7 slots FILLED + current
+        # price is below avg → no sell trigger AND buy strategy has no
+        # EMPTY slot to evaluate. Orchestrator §5.6 priority remaps the
+        # buy-side STRATEGY_NO_BUY to ALL_SLOTS_FILLED_NO_PROFIT (the
+        # dormancy KPI denominator for the Phase 0.5 retrospective).
         asset = _asset()
         bars = [_bar(asset, date(2026, 4, 29), "20000")]
         orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
@@ -448,8 +522,11 @@ class TestStrategySkipMapping:
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
-        assert decision.reasoning.get("max_split_reached") == "True"
+        assert decision.skip_reason is SkipReason.ALL_SLOTS_FILLED_NO_PROFIT
+        assert (
+            decision.reasoning["buy_skip_reason_emitted"]
+            == SkipReason.STRATEGY_NO_BUY.value
+        )
 
     def test_drop_insufficient_maps_to_strategy_no_buy(self):
         # Phase 0.5 with HybridTimeBasedReentry: fresh slot fallback
@@ -524,7 +601,7 @@ class TestExternalErrors:
                     cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
                 ),
                 place_result=OrderResult(
-                    idempotency_key="KRX:069500:2026-04-30",
+                    idempotency_key="KRX:069500:2026-04-30:buy:1",
                     asset=asset,
                     broker_order_id="bid-1",
                     status=OrderStatus.FILLED,
@@ -542,6 +619,8 @@ class TestExternalErrors:
             signal=signal_obj,
             strategy=_strategy(),
             config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
             asset=asset,
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
@@ -608,7 +687,7 @@ class TestOrderPlacement:
             place_error=place_error,
             place_result=place_result
             or OrderResult(
-                idempotency_key="KRX:069500:2026-04-30",
+                idempotency_key="KRX:069500:2026-04-30:buy:1",
                 asset=asset,
                 broker_order_id="bid-1",
                 status=OrderStatus.FILLED,
@@ -626,6 +705,8 @@ class TestOrderPlacement:
             signal=_FakeSignal(signal=_signal(at=clock_at)),
             strategy=_strategy(),
             config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
             asset=asset,
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
@@ -637,7 +718,7 @@ class TestOrderPlacement:
         orch, _ = self._wire(
             place_error=BrokerConnectionError("timeout"),
             get_status_result=OrderResult(
-                idempotency_key="KRX:069500:2026-04-30",
+                idempotency_key="KRX:069500:2026-04-30:buy:1",
                 asset=_asset(),
                 broker_order_id="bid-recovered",
                 status=OrderStatus.FILLED,
@@ -678,7 +759,7 @@ class TestOrderPlacement:
         clock_at = _utc_after_close(TODAY)
         orch, _ = self._wire(
             place_result=OrderResult(
-                idempotency_key="KRX:069500:2026-04-30",
+                idempotency_key="KRX:069500:2026-04-30:buy:1",
                 asset=_asset(),
                 broker_order_id=None,
                 status=OrderStatus.REJECTED,
@@ -695,7 +776,7 @@ class TestOrderPlacement:
         clock_at = _utc_after_close(TODAY)
         orch, _ = self._wire(
             place_result=OrderResult(
-                idempotency_key="KRX:069500:2026-04-30",
+                idempotency_key="KRX:069500:2026-04-30:buy:1",
                 asset=_asset(),
                 broker_order_id=None,
                 status=OrderStatus.UNKNOWN,
@@ -766,6 +847,8 @@ class TestIntegrityErrorPropagation:
             signal=signal,
             strategy=_strategy(),
             config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
             asset=asset,
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
@@ -798,6 +881,8 @@ class TestPersistence:
             signal=signal,
             strategy=_strategy(),
             config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
             asset=_asset(),
             clock=lambda: clock_at,
             uow_factory=lambda: shared_uow,
@@ -832,7 +917,7 @@ class TestPersistence:
 
         # Order saved (FILLED)
         saved_order = uow.orders.get_by_idempotency_key(
-            "KRX:069500:2026-04-30"
+            "KRX:069500:2026-04-30:buy:1"
         )
         assert saved_order is not None
         assert saved_order.status is OrderStatus.FILLED
@@ -864,7 +949,7 @@ class TestPersistence:
         # Decision saved
         assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
         # No Order, no Position
-        assert uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30") is None
+        assert uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30:buy:1") is None
         assert uow.positions.get(asset.fqn) is None
 
     def test_broker_timeout_with_no_recovery_skips_order_save(self):
@@ -890,7 +975,7 @@ class TestPersistence:
         # Decision saved, but no Order or Position
         assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
         assert uow.orders.get_by_idempotency_key(
-            "KRX:069500:2026-04-30"
+            "KRX:069500:2026-04-30:buy:1"
         ) is None
         assert uow.positions.get(asset.fqn) is None
 
@@ -914,7 +999,7 @@ class TestPersistence:
         decision = orch.run_for_date(TODAY)
         assert decision.skip_reason is SkipReason.BROKER_REJECTED
         assert uow.orders.get_by_idempotency_key(
-            "KRX:069500:2026-04-30"
+            "KRX:069500:2026-04-30:buy:1"
         ) is None
         assert uow.positions.get(asset.fqn) is None
 
@@ -929,7 +1014,7 @@ class TestPersistence:
                 cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
             ),
             place_result=OrderResult(
-                idempotency_key="KRX:069500:2026-04-30",
+                idempotency_key="KRX:069500:2026-04-30:buy:1",
                 asset=asset,
                 broker_order_id=None,
                 status=OrderStatus.REJECTED,
@@ -948,7 +1033,7 @@ class TestPersistence:
         decision = orch.run_for_date(TODAY)
         assert decision.skip_reason is SkipReason.BROKER_REJECTED
         # Order saved with REJECTED status — audit trail
-        saved = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30")
+        saved = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30:buy:1")
         assert saved is not None
         assert saved.status is OrderStatus.REJECTED
         # No Position update on rejection
@@ -958,3 +1043,373 @@ class TestPersistence:
     # §3.2.1) blocks partial fills end-to-end. Phase 1 will reintroduce
     # both the broker capability and the persistence test alongside the
     # slot-aware partial-fill redesign.
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.5 sells-then-buys cascade (ADR 0002 §5.3 + §5.9)
+# ---------------------------------------------------------------------------
+class _SequencedSellBroker:
+    """Broker fake that returns a different response per place_order call.
+
+    Used to exercise the SELL loop abort path (ADR §5.9.4) where the first
+    sell fills but the second sell raises. Position state is static — the
+    orchestrator's behavioural contract is what we're asserting, not the
+    broker's bookkeeping.
+    """
+
+    def __init__(
+        self,
+        *,
+        balance: Balance,
+        position: Position,
+        asset: Asset,
+        responses: list[object],
+        clock_at: datetime,
+    ) -> None:
+        self._balance = balance
+        self._position = position
+        self._asset = asset
+        self._responses = list(responses)
+        self._clock_at = clock_at
+        self.placed: list[OrderRequest] = []
+
+    def get_balance(self) -> Balance:
+        return self._balance
+
+    def get_positions(self) -> list[Position]:
+        return [self._position]
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        self.placed.append(request)
+        if not self._responses:
+            raise BrokerOrderError("no scripted response left")
+        resp = self._responses.pop(0)
+        if isinstance(resp, BaseException):
+            raise resp
+        # "fill" sentinel → fully-filled OrderResult at request.target_price.
+        return OrderResult(
+            idempotency_key=request.idempotency_key,
+            asset=request.asset,
+            broker_order_id=f"mock-{len(self.placed)}",
+            status=OrderStatus.FILLED,
+            filled_quantity=request.quantity,
+            filled_price=request.target_price,
+            submitted_at=self._clock_at,
+            filled_at=self._clock_at,
+        )
+
+    def get_order_status(self, idempotency_key: str) -> OrderResult | None:
+        del idempotency_key
+        return None
+
+    def cancel_order(self, broker_order_id: str) -> bool:
+        del broker_order_id
+        return False
+
+
+class TestSellsThenBuysFlow:
+    """Phase 0.5 ADR §5.3 sells-then-buys cascade integration."""
+
+    def test_sell_only_when_buy_drop_insufficient(self):
+        # Slot 1 entry 20000 (+12.5% sell trigger), slot 2 entry 23000
+        # (no sell trigger). After selling slot 1, post-sell avg=23000 →
+        # Hybrid fresh-slot trigger=21390 (23000 * 0.93). Current 22500 >
+        # 21390 → no buy. Result: 1 sell, 0 buys.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "22500")]
+        orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[(1, "1", "20000"), (2, "1", "23000")],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.skip_reason is None
+        assert decision.action_kinds() == ["sell_slot_1"]
+        assert decision.sell_actions[0].slot_number == 1
+        assert decision.buy_action is None
+
+    def test_sell_then_buy_on_different_slot(self):
+        # Solo slot 1 at entry 20000 sells at 22000 (+10%). After sell the
+        # position is empty so the first-buy bypass returns current_price
+        # for every EMPTY slot. excluded={1} forces the buy onto the
+        # smallest unexcluded slot (slot 2). Decision Invariant 3
+        # (buy_slot ∉ sell_slots) is structurally enforced.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "22000")]
+        orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[(1, "1", "20000")],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.action_kinds() == ["sell_slot_1", "buy_split_2"]
+        assert decision.sell_actions[0].slot_number == 1
+        assert decision.buy_action is not None
+        assert decision.buy_action.slot_number == 2
+
+    def test_excluded_blocks_same_day_rebuy(self):
+        # 7 slots FILLED. Slot 1 entry 21000 sells at current 23100 (+10%);
+        # slots 2-7 entry 42000 stay underwater. After the sell the only
+        # EMPTY slot is slot 1, but excluded={1} drops it from the buy
+        # candidate set → ALL_EMPTY_SLOTS_EXCLUDED_BY_SAME_DAY_SELL.
+        # sell_actions present → skip_reason stays None (Invariant 1);
+        # the strategy's emitted reason surfaces in reasoning.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "23100")]
+        orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[
+                (1, "1", "21000"),
+                (2, "1", "42000"),
+                (3, "1", "42000"),
+                (4, "1", "42000"),
+                (5, "1", "42000"),
+                (6, "1", "42000"),
+                (7, "1", "42000"),
+            ],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        decision = orch.run_for_date(TODAY)
+        assert len(decision.sell_actions) == 1
+        assert decision.sell_actions[0].slot_number == 1
+        assert decision.buy_action is None
+        assert decision.skip_reason is None
+        assert (
+            decision.reasoning["buy_skip_reason_emitted"]
+            == SkipReason.ALL_EMPTY_SLOTS_EXCLUDED_BY_SAME_DAY_SELL.value
+        )
+
+    def test_halt_blocks_sells_too(self):
+        # ADR §5.9.2 [결정 2A]: HALT short-circuits before either sell or
+        # buy is evaluated. Even with a sellable position, no broker
+        # interaction occurs.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "22000")]
+        clock_at = _utc_after_close(TODAY)
+        broker = MockBroker(
+            initial_balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            clock=lambda: clock_at,
+            rng=random.Random(42),
+        )
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[(1, "1", "20000")],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=_FakeSignal(signal=_signal(level=SignalLevel.HALT, at=clock_at)),
+            strategy=_strategy(),
+            config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
+            asset=asset,
+            clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
+        )
+        decision = orch.run_for_date(TODAY)
+        assert decision.skip_reason is SkipReason.CIRCUIT_BREAKER_HALT
+        assert decision.sell_actions == []
+        assert decision.buy_action is None
+        assert broker.all_orders() == []
+
+    def test_caution_halves_buy_keeps_sell_full_quantity(self):
+        # Slot 1 entry 20000 sells at 22000 (+10%) at full slot quantity.
+        # Buy step uses spend 1,000,000 / 22000 = 45.45 → floor 45 →
+        # CAUTION halves to 22 (lot_size=1). Per ADR §5.9.2 SELL is unaffected.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "22000")]
+        clock_at = _utc_after_close(TODAY)
+        broker = MockBroker(
+            initial_balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            clock=lambda: clock_at,
+            rng=random.Random(42),
+        )
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[(1, "1", "20000")],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=_FakeSignal(
+                signal=_signal(level=SignalLevel.CAUTION, at=clock_at)
+            ),
+            strategy=_strategy(),
+            config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
+            asset=asset,
+            clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
+        )
+        decision = orch.run_for_date(TODAY)
+        assert len(decision.sell_actions) == 1
+        assert decision.sell_actions[0].filled_quantity == Decimal("1")
+        assert decision.buy_action is not None
+        assert decision.buy_action.filled_quantity == Decimal("22")
+
+    def test_idempotency_keys_are_slot_aware(self):
+        # ADR §5.9.1 [결정 1A]: keys carry the slot number for both sides.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "22000")]
+        orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[(1, "1", "20000")],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        orch.run_for_date(TODAY)
+        keys = sorted(o.idempotency_key for o in broker.all_orders())
+        assert keys == [
+            "KRX:069500:2026-04-30:buy:2",
+            "KRX:069500:2026-04-30:sell:1",
+        ]
+
+    def test_max_sells_per_day_caps_sell_count(self):
+        # 3 slots all at +10%, but max_sells_per_day=2 → ProfitTargetSell
+        # trims the trigger list to the smallest two slot_numbers.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "22000")]
+        clock_at = _utc_after_close(TODAY)
+        broker = MockBroker(
+            initial_balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            clock=lambda: clock_at,
+            rng=random.Random(42),
+        )
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[
+                (1, "1", "20000"),
+                (2, "1", "20000"),
+                (3, "1", "20000"),
+            ],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=NullSignal(),
+            strategy=_strategy(),
+            config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=SellStrategyConfig(
+                profit_target_pct=Decimal("10.0"),
+                max_sells_per_day=2,
+            ),
+            asset=asset,
+            clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
+        )
+        decision = orch.run_for_date(TODAY)
+        assert sorted(sa.slot_number for sa in decision.sell_actions) == [1, 2]
+
+    def test_persists_multiple_orders_and_position(self):
+        # End-to-end: sell + buy → uow.orders carries both records, the
+        # updated Position reflects FILLED→EMPTY (slot 1) + EMPTY→FILLED
+        # (slot 2) in a single atomic commit.
+        asset = _asset()
+        bars = [_bar(asset, date(2026, 4, 29), "22000")]
+        clock_at = _utc_after_close(TODAY)
+        broker = MockBroker(
+            initial_balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            clock=lambda: clock_at,
+            rng=random.Random(42),
+        )
+        broker._positions[asset.fqn] = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[(1, "1", "20000")],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        shared_uow = InMemoryUnitOfWork()
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=NullSignal(),
+            strategy=_strategy(),
+            config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
+            asset=asset,
+            clock=lambda: clock_at,
+            uow_factory=lambda: shared_uow,
+        )
+        orch.run_for_date(TODAY)
+
+        sell_order = shared_uow.orders.get_by_idempotency_key(
+            "KRX:069500:2026-04-30:sell:1"
+        )
+        buy_order = shared_uow.orders.get_by_idempotency_key(
+            "KRX:069500:2026-04-30:buy:2"
+        )
+        assert sell_order is not None and sell_order.side is OrderSide.SELL
+        assert buy_order is not None and buy_order.side is OrderSide.BUY
+        saved_position = shared_uow.positions.get(asset.fqn)
+        assert saved_position is not None
+        slot_1 = saved_position.get_slot(1)
+        slot_2 = saved_position.get_slot(2)
+        assert slot_1 is not None and slot_1.state is SlotState.EMPTY
+        assert slot_1.last_exit_price == Decimal("22000")
+        assert slot_2 is not None and slot_2.state is SlotState.FILLED
+
+    def test_sell_loop_abort_records_partial_sells_skips_buy(self):
+        # ADR §5.9.4: slot 1 sell fills, slot 2 raises BrokerOrderError.
+        # Successful sell is persisted; buy step skipped. Invariant 1
+        # forbids skip_reason while sell_actions present, so the abort
+        # detail is captured in reasoning.
+        asset = _asset()
+        clock_at = _utc_after_close(TODAY)
+        bars = [_bar(asset, date(2026, 4, 29), "22000")]
+        position = _position_with_per_slot_entries(
+            asset,
+            entries_spec=[
+                (1, "1", "20000"),
+                (2, "1", "20000"),
+                (3, "1", "20000"),
+            ],
+            last_buy_at=_utc_after_close(date(2026, 4, 28)),
+        )
+        broker = _SequencedSellBroker(
+            balance=Balance(
+                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+            ),
+            position=position,
+            asset=asset,
+            responses=["fill", BrokerOrderError("validation")],
+            clock_at=clock_at,
+        )
+        orch = DailyOrchestrator(
+            broker=broker,
+            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+            signal=_FakeSignal(signal=_signal(at=clock_at)),
+            strategy=_strategy(),
+            config=_config(),
+            sell_strategy=_sell_strategy(),
+            sell_config=_sell_config(),
+            asset=asset,
+            clock=lambda: clock_at,
+            uow_factory=lambda: InMemoryUnitOfWork(),
+        )
+        decision = orch.run_for_date(TODAY)
+        assert len(decision.sell_actions) == 1
+        assert decision.sell_actions[0].slot_number == 1
+        assert decision.buy_action is None
+        assert decision.skip_reason is None
+        assert decision.reasoning["sell_loop_aborted_at_slot"] == "2"
+        assert (
+            decision.reasoning["sell_loop_abort_reason"]
+            == SkipReason.BROKER_REJECTED.value
+        )
