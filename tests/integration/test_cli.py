@@ -372,6 +372,197 @@ class TestSanityCheck:
 
 
 # ---------------------------------------------------------------------------
+# --config option (Phase 0.5 step 0.5.20, ADR §6.3)
+# ---------------------------------------------------------------------------
+def _yaml_config(
+    tmp_path: Path,
+    *,
+    code: str = "069500",
+    drop: str = "5.0",
+    profit_target: str = "10.0",
+    reentry: str = "hybrid",
+    cooldown: int = 60,
+    window: int | None = None,
+) -> Path:
+    """Write a Phase 0.5 strategies YAML and return its path."""
+    reentry_block = (
+        f"reentry_strategy: \"{reentry}\"\n"
+        f"    reentry_parameters:\n"
+        + (f"      window: {window}\n" if window is not None else "")
+        + (
+            f"      cooldown_days: {cooldown}\n"
+            if reentry == "hybrid" or window is None
+            else ""
+        )
+    )
+    body = f"""\
+version: "0.5"
+assets:
+  "{code}":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: {drop}
+      max_split_count: 7
+      per_split_amount: 500000
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: {profit_target}
+    {reentry_block.rstrip()}
+"""
+    path = tmp_path / "strategies.yaml"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class TestConfigOption:
+    def test_backtest_with_config_runs(self, csv_path, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--capital", "5000000",
+                "--config", str(_yaml_config(tmp_path)),
+                "--start", "2026-04-27", "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Backtest result" in result.output
+        # YAML drop=5.0 + per_split=500000 produces the same buys as the
+        # flag-only happy path. Spot-check via splits.
+        assert "buy_split_1" in result.output
+
+    def test_paper_with_config_runs(self, csv_path, tmp_path):
+        runner = CliRunner()
+        db = tmp_path / "paper.db"
+        result = runner.invoke(
+            main,
+            [
+                "paper",
+                "--csv", str(csv_path),
+                "--db", str(db),
+                "--capital", "5000000",
+                "--config", str(_yaml_config(tmp_path)),
+                "--date", "2026-04-28",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Paper trading" in result.output
+        assert db.exists()
+
+    def test_config_with_strategy_flag_rejected(self, csv_path, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--config", str(_yaml_config(tmp_path)),
+                "--drop-pct", "5.0",  # mutually exclusive
+                "--start", "2026-04-27", "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+        assert "--drop-pct" in result.output
+
+    def test_config_with_multiple_strategy_flags_lists_all(self, csv_path, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--config", str(_yaml_config(tmp_path)),
+                "--drop-pct", "5.0",
+                "--cooldown-days", "30",
+                "--start", "2026-04-27", "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--drop-pct" in result.output
+        assert "--cooldown-days" in result.output
+
+    def test_config_with_meta_only_options_allowed(self, csv_path, tmp_path):
+        # --capital + --json + --csv + --start + --end are meta options;
+        # they may coexist with --config without raising (ADR §6.3).
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--capital", "8000000",
+                "--config", str(_yaml_config(tmp_path)),
+                "--start", "2026-04-27", "--end", "2026-04-30",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["initial_capital"]["amount"] == "8000000"
+
+    def test_moving_average_flag_without_config_rejected(self, csv_path):
+        # ADR §6.3: flag-only path supports hybrid only; moving_average
+        # has window/ma_type only via YAML.
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--reentry-strategy", "moving_average",
+                "--start", "2026-04-27", "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "moving_average" in result.output
+        assert "--config" in result.output
+
+    def test_config_asset_code_mismatch_rejected(self, csv_path, tmp_path):
+        # Phase 0.5 single-asset hardcoded to KODEX 200 (069500); arbitrary
+        # YAML codes raise UsageError until the Phase 0.7 ADR round.
+        runner = CliRunner()
+        config = _yaml_config(tmp_path, code="999999")
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--config", str(config),
+                "--start", "2026-04-27", "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "999999" in result.output
+        assert "069500" in result.output
+
+    def test_flag_only_path_unchanged_when_config_absent(self, csv_path):
+        # Regression: explicit strategy flags still work without --config
+        # (Phase 0 compatibility, ADR §6.3 last bullet).
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--capital", "5000000",
+                "--drop-pct", "5.0",
+                "--per-split-amount", "500000",
+                "--profit-target-pct", "10.0",
+                "--max-sells-per-day", "3",
+                "--cooldown-days", "30",
+                "--start", "2026-04-27", "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Backtest result" in result.output
+
+
+# ---------------------------------------------------------------------------
 # Top-level
 # ---------------------------------------------------------------------------
 def test_top_level_help_lists_both_commands():

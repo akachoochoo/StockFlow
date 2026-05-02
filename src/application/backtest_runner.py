@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.adapters.mock.broker import MockBroker
 from src.adapters.mock.in_memory_unit_of_work import InMemoryUnitOfWork
@@ -41,6 +41,7 @@ from src.application.snapshot_builder import DailySnapshotBuilder
 from src.domain.constants import KST
 from src.domain.models import Balance
 from src.domain.strategies.price_drop import PriceDropStrategy
+from src.domain.strategies.profit_target import SellStrategyConfig
 from src.use_cases.daily_orchestrator import DailyOrchestrator
 
 if TYPE_CHECKING:
@@ -157,6 +158,9 @@ class BacktestRunner:
         strategy_config: SplitStrategyConfig,
         initial_capital: Money,
         ohlcv_by_asset: dict[Asset, list[OHLCV]],
+        sell_strategy_config: SellStrategyConfig | None = None,
+        reentry_strategy_name: str = "hybrid",
+        reentry_parameters: dict[str, Any] | None = None,
         signal_factory: Callable[[], SignalPort] | None = None,
         decision_kst_time: time = time(9, 0),
         snapshot_kst_time: time = time(16, 0),
@@ -167,6 +171,18 @@ class BacktestRunner:
         self._strategy_config = strategy_config
         self._initial_capital = initial_capital
         self._ohlcv_by_asset = ohlcv_by_asset
+        # Phase 0.5 defaults match step 0.5.14 hardcoded composition; the
+        # YAML loader (step 0.5.19) routes here when --config is used.
+        self._sell_strategy_config = sell_strategy_config or SellStrategyConfig(
+            profit_target_pct=Decimal("10.0"),
+            max_sells_per_day=7,
+        )
+        self._reentry_strategy_name = reentry_strategy_name
+        self._reentry_parameters = (
+            dict(reentry_parameters)
+            if reentry_parameters is not None
+            else {"cooldown_days": 60}
+        )
         self._signal_factory = signal_factory or (lambda: NullSignal())
         self._decision_kst_time = decision_kst_time
         self._snapshot_kst_time = snapshot_kst_time
@@ -200,17 +216,17 @@ class BacktestRunner:
         )
         market_data = MockMarketData(ohlcv_by_asset=self._ohlcv_by_asset)
         signal = self._signal_factory()
-        # Phase 0.5 step 0.5.10: hardcode HybridTimeBasedReentry until
-        # YAML config (step 0.5.20) wires policy choice through.
-        from src.domain.strategies.profit_target import (
-            ProfitTargetSell,
-            SellStrategyConfig,
-        )
-        from src.domain.strategies.reentry import HybridTimeBasedReentry
+        from src.domain.strategies.profit_target import ProfitTargetSell
+        from src.domain.strategies.reentry import create_reentry_strategy
 
-        strategy = PriceDropStrategy(
-            reentry=HybridTimeBasedReentry(cooldown_days=60),
+        # Reentry policy comes from constructor (default Hybrid; YAML
+        # config swaps the name + params per ADR §6).
+        reentry = create_reentry_strategy(
+            self._reentry_strategy_name,
+            market_data=market_data,
+            **self._reentry_parameters,
         )
+        strategy = PriceDropStrategy(reentry=reentry)
         shared_uow = InMemoryUnitOfWork()
 
         orchestrator = DailyOrchestrator(
@@ -219,13 +235,8 @@ class BacktestRunner:
             signal=signal,
             strategy=strategy,
             config=self._strategy_config,
-            # Phase 0.5 step 0.5.14: ProfitTargetSell with +10 % default.
-            # YAML config (step 0.5.19+) will surface profit_target_pct.
             sell_strategy=ProfitTargetSell(),
-            sell_config=SellStrategyConfig(
-                profit_target_pct=Decimal("10.0"),
-                max_sells_per_day=7,
-            ),
+            sell_config=self._sell_strategy_config,
             asset=self._asset,
             clock=clock,
             uow_factory=lambda: shared_uow,

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.adapters.mock.broker import MockBroker
 from src.adapters.mock.market_data import MockMarketData
@@ -29,7 +29,7 @@ from src.domain.strategies.profit_target import (
     ProfitTargetSell,
     SellStrategyConfig,
 )
-from src.domain.strategies.reentry import HybridTimeBasedReentry
+from src.domain.strategies.reentry import create_reentry_strategy
 from src.infrastructure.db import connect
 from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
 from src.use_cases.daily_orchestrator import DailyOrchestrator
@@ -101,6 +101,9 @@ def build_paper_components(
     initial_capital: Money,
     strategy_config: SplitStrategyConfig,
     initial_clock: datetime,
+    sell_strategy_config: SellStrategyConfig | None = None,
+    reentry_strategy_name: str = "hybrid",
+    reentry_parameters: dict[str, Any] | None = None,
 ) -> PaperComponents:
     """Build a paper-trading orchestrator + snapshot builder.
 
@@ -141,25 +144,32 @@ def build_paper_components(
 
     market_data = MockMarketData(ohlcv_by_asset={asset: bars})
 
+    # Phase 0.5 defaults match the step 0.5.14 hardcoded composition; the
+    # YAML loader (step 0.5.19) routes here when --config is used (CLI
+    # step 0.5.20).
+    effective_sell_config = sell_strategy_config or SellStrategyConfig(
+        profit_target_pct=Decimal("10.0"),
+        max_sells_per_day=7,
+    )
+    effective_reentry_params = (
+        dict(reentry_parameters)
+        if reentry_parameters is not None
+        else {"cooldown_days": 60}
+    )
+    reentry = create_reentry_strategy(
+        reentry_strategy_name,
+        market_data=market_data,
+        **effective_reentry_params,
+    )
+
     orchestrator = DailyOrchestrator(
         broker=broker,
         market_data=market_data,
         signal=NullSignal(),
-        # Phase 0.5 step 0.5.10: hardcode HybridTimeBasedReentry until
-        # YAML config (step 0.5.20) lets the user pick policy + window/
-        # cooldown via strategies-D.yaml / strategies-F.yaml.
-        strategy=PriceDropStrategy(
-            reentry=HybridTimeBasedReentry(cooldown_days=60),
-        ),
+        strategy=PriceDropStrategy(reentry=reentry),
         config=strategy_config,
-        # Phase 0.5 step 0.5.14: ProfitTargetSell with +10 % default.
-        # YAML config (step 0.5.19+) will surface profit_target_pct +
-        # max_sells_per_day per asset.
         sell_strategy=ProfitTargetSell(),
-        sell_config=SellStrategyConfig(
-            profit_target_pct=Decimal("10.0"),
-            max_sells_per_day=7,
-        ),
+        sell_config=effective_sell_config,
         asset=asset,
         clock=clock,
         uow_factory=uow_factory,
