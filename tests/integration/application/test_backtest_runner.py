@@ -248,12 +248,13 @@ class TestBacktestRunner:
         assert result.decisions[1].is_skip()
         assert actions[2] == ["buy_split_2"]
         assert actions[3] == ["buy_split_3"]
-        # Days 5 & 6: max_split_reached
+        # Days 5 & 6: max_split_reached. Strategy emits STRATEGY_NO_BUY
+        # with reasoning["max_split_reached"] = "True" (Phase 0.5).
         for idx in (4, 5):
             assert result.decisions[idx].is_skip()
             assert (
-                result.decisions[idx].reasoning["strategy_reason"]
-                == "skip:max_split_reached"
+                result.decisions[idx].reasoning.get("max_split_reached")
+                == "True"
             )
 
         # Final position has split_level == 3 (max)

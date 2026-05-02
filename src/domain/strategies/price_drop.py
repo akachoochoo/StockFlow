@@ -1,22 +1,25 @@
 """PriceDropStrategy — gradual buy on price drops (세븐 스플릿).
 
-Phase 0 algorithm summary:
+Phase 0.5 algorithm (ADR 0002 §4.4 / §4.7 / §4.8):
 
-    1. position is None or quantity == 0  → 1st split buy
-    2. position.split_level >= max_split  → skip (max reached)
-    3. drop from avg_price >= threshold   → next split buy
-    4. otherwise                          → skip (drop insufficient)
-    5. quantity rounds below lot_size     → skip
-    6. cash < required                    → skip (insufficient balance)
+    1. Validate caller-supplied inputs (asset / currency consistency).
+    2. max_split_per_day guard (CLAUDE.md §4.4 / ADR 0001 §7.11).
+    3. If position has any FILLED slot AND all slots are FILLED → skip.
+    4. For each EMPTY slot (or synthesized slot 1 when position is None),
+       compute the slot's trigger price via the injected
+       ``ReentryPriceStrategyPort``.
+       - First-buy / no-history slots return ``current_price`` (auto match).
+       - Slots whose trigger is ``None`` (data insufficient) are excluded.
+    5. Pick the smallest ``slot_number`` whose trigger ≥ current_price
+       (i.e. ``current_price <= trigger``).
+    6. If no slot qualifies, skip with a precise SkipReason
+       (NO_ACTION_TAKEN / INSUFFICIENT_HISTORICAL_DATA / max_split_reached).
+    7. Build a ``BuyDecision`` (intent) with target_price floored to
+       tick_size and quantity floored to lot_size; verify cash balance.
 
 Domain rules (CLAUDE.md §1.1, §3.2): no external imports, no datetime.now(),
-all time/price values are injected as parameters. The strategy emits BUY only
-in Phase 0; SELL is reserved for future phases (CLAUDE.md §14, OrderSide doc).
-
-Signal handling: the strategy is intentionally circuit-breaker-agnostic.
-DailyOrchestrator inspects the signal and either short-circuits (HALT/EMERGENCY)
-or post-processes the strategy output (CAUTION quantity reduction). See
-docs/decisions/0001-phase-0-decisions.md.
+all time/price values are injected as parameters. The strategy emits BUY
+intents only — orchestrator wires SELL via ``ProfitTargetSell`` separately.
 """
 from __future__ import annotations
 
@@ -25,12 +28,19 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field, model_validator
 
-from src.domain.models import DomainModel, Money
+from src.domain.models import (
+    DomainModel,
+    Money,
+    SkipReason,
+    SplitSlot,
+    ValueObject,
+)
 
 if TYPE_CHECKING:
     from datetime import date
 
-    from src.domain.models import Balance, Position, Price
+    from src.domain.models import Asset, Balance, Position, Price
+    from src.ports.reentry_strategy import ReentryPriceStrategyPort
 
 
 class SplitStrategyConfig(DomainModel):
@@ -43,11 +53,10 @@ class SplitStrategyConfig(DomainModel):
     `max_loss_pct` is reserved for Phase 1+ position-loss limits; ignored in
     Phase 0 (CLAUDE.md §11.4).
 
-    `max_split_per_day` (ADR §7.11) caps the number of FULL fills allowed on
-    one calendar day, preventing retry/multi-trigger from compounding into
-    multiple buys. Default 1 makes the Phase 0 implicit "one buy per day"
-    rule explicit. Counted against `position.entries[*].entry_date == today`;
-    partial fills do NOT count (CLAUDE.md §4.4).
+    `max_split_per_day` (ADR 0001 §7.11) caps the number of FULL fills
+    allowed on one calendar day. Default 1 makes the Phase 0 implicit
+    "one buy per day" rule explicit. Counted against FILLED slots whose
+    `entry.entry_date == today`.
     """
 
     drop_threshold_pct: Decimal = Field(gt=Decimal(0))
@@ -57,43 +66,61 @@ class SplitStrategyConfig(DomainModel):
     max_split_per_day: int = Field(default=1, ge=1)
 
 
-class StrategyEvaluation(DomainModel):
-    """Outcome of PriceDropStrategy.evaluate().
+class BuyDecision(ValueObject):
+    """Strategy-side BUY intent (ADR 0002 §4.11).
 
-    When `should_buy=True`, `target_quantity` and `target_price` are set, and
-    `reason` is a label like "buy_split_2". When `should_buy=False`, both
-    target fields are None and `reason` is a "skip:..." label. `reasoning`
-    holds every input the strategy used, for replay/debug (CLAUDE.md §8.1).
+    `target_quantity` and `target_price` are pre-fill projections. The
+    orchestrator may further reduce quantity per circuit-breaker
+    (CAUTION) before submitting the OrderRequest. Once the broker fills
+    the order, the orchestrator composes a ``BuyActionRecord`` from this
+    intent + ``OrderResult`` for the persisted Decision.
     """
 
-    should_buy: bool
-    reason: str = Field(min_length=1, max_length=100)
-    target_quantity: Decimal | None
-    target_price: Decimal | None
+    slot_number: int = Field(ge=1, le=7)
+    target_quantity: Decimal = Field(gt=Decimal(0))
+    target_price: Decimal = Field(gt=Decimal(0))
+    reasoning: dict[str, str]
+
+
+class BuyEvaluationResult(DomainModel):
+    """PriceDropStrategy.evaluate output (ADR 0002 §4.11).
+
+    Mutually exclusive: either ``buy`` is set (intent to buy) OR
+    ``skip_reason`` is set (no buy this evaluation). The top-level
+    ``reasoning`` dict carries the strategy-wide context (current_price,
+    drop_threshold, etc.); per-buy details live in ``buy.reasoning``.
+    """
+
+    buy: BuyDecision | None = None
+    skip_reason: SkipReason | None = None
     reasoning: dict[str, str]
 
     @model_validator(mode="after")
-    def _check_consistency(self) -> StrategyEvaluation:
-        if self.should_buy:
-            if self.target_quantity is None or self.target_price is None:
-                raise ValueError(
-                    "should_buy=True requires target_quantity and target_price"
-                )
-        else:
-            if self.target_quantity is not None or self.target_price is not None:
-                raise ValueError(
-                    "should_buy=False requires target_quantity and target_price to be None"
-                )
+    def _check_xor(self) -> BuyEvaluationResult:
+        has_buy = self.buy is not None
+        has_skip = self.skip_reason is not None
+        if has_buy == has_skip:
+            raise ValueError(
+                "BuyEvaluationResult requires exactly one of "
+                "buy / skip_reason; got "
+                f"(buy={'set' if has_buy else 'None'}, "
+                f"skip_reason={'set' if has_skip else 'None'})"
+            )
         return self
 
 
 class PriceDropStrategy:
     """Gradual buy on price drops (세븐 스플릿).
 
-    Stateless: all state is in the injected `position`. This makes the strategy
-    trivial to share between backtest and live trading (CLAUDE.md §7.4).
-    Circuit-breaker-agnostic: DailyOrchestrator handles HALT/EMERGENCY/CAUTION.
+    Stateless: all state is in the injected `position`. The reentry
+    price policy is also injected — Phase 0.5 ships D-2 (MA) and F
+    (cooldown) implementations; composition root chooses one. No default
+    is provided to avoid biasing the D-2 vs F backtest comparison
+    (ADR 0002 §4.4).
     """
+
+    def __init__(self, reentry: ReentryPriceStrategyPort) -> None:
+        self._reentry = reentry
 
     def evaluate(
         self,
@@ -103,13 +130,7 @@ class PriceDropStrategy:
         balance: Balance,
         config: SplitStrategyConfig,
         today: date,
-    ) -> StrategyEvaluation:
-        """Decide whether to place a buy order at `today`.
-
-        Raises:
-            ValueError: caller passed inconsistent inputs (asset/currency
-                mismatch). These are programming errors, not market conditions.
-        """
+    ) -> BuyEvaluationResult:
         asset = current_price.asset
 
         # ------------------------------------------------------------------
@@ -132,7 +153,6 @@ class PriceDropStrategy:
                 f"asset.currency ({asset.currency.value})"
             )
 
-        # Build base reasoning context every branch will extend.
         reasoning_base: dict[str, str] = {
             "today": today.isoformat(),
             "asset": asset.fqn,
@@ -144,11 +164,7 @@ class PriceDropStrategy:
         }
 
         # ------------------------------------------------------------------
-        # 0. max_split_per_day guard (ADR §7.11 + ADR 0002 §3.1). Counts
-        #    FULL fills today by walking FILLED slots. Partial fills are
-        #    blocked at the broker level in Phase 0.5 (ADR 0002 §3.2.1) so
-        #    every FILLED slot is a fully-completed buy. Empty position →
-        #    no FILLED slots → 0.
+        # 1. max_split_per_day guard — count today's FILLED slots.
         # ------------------------------------------------------------------
         today_buys = (
             sum(
@@ -160,11 +176,9 @@ class PriceDropStrategy:
             else 0
         )
         if today_buys >= config.max_split_per_day:
-            return StrategyEvaluation(
-                should_buy=False,
-                reason="skip:max_split_per_day_reached",
-                target_quantity=None,
-                target_price=None,
+            return BuyEvaluationResult(
+                buy=None,
+                skip_reason=SkipReason.MAX_SPLIT_PER_DAY_REACHED,
                 reasoning={
                     **reasoning_base,
                     "today_buys": str(today_buys),
@@ -173,54 +187,90 @@ class PriceDropStrategy:
             )
 
         # ------------------------------------------------------------------
-        # 1. Determine the target split level.
+        # 2. config.max_split_count guard. Position.slots length may exceed
+        #    config.max_split_count (broker uses its own slot count). The
+        #    strategy enforces the config cap on FILLED count.
         # ------------------------------------------------------------------
-        is_empty_position = position is None or position.quantity == 0
-        prev_avg_price: Decimal | None = None
-        drop_pct: Decimal | None = None
-
-        if is_empty_position:
-            next_split_level = 1
-        else:
-            assert position is not None  # narrow for mypy; quantity>0 implies not None
-            # 2. max split reached
-            if position.split_level >= config.max_split_count:
-                reasoning = {
+        if position is not None and position.split_level >= config.max_split_count:
+            return BuyEvaluationResult(
+                buy=None,
+                skip_reason=SkipReason.STRATEGY_NO_BUY,
+                reasoning={
                     **reasoning_base,
                     "current_split_level": str(position.split_level),
-                }
-                return StrategyEvaluation(
-                    should_buy=False,
-                    reason="skip:max_split_reached",
-                    target_quantity=None,
-                    target_price=None,
-                    reasoning=reasoning,
-                )
-            next_split_level = position.split_level + 1
-            prev_avg_price = position.avg_price
-            # 3. drop from avg_price
-            drop_pct = (
-                (prev_avg_price - current_price.value) / prev_avg_price * Decimal(100)
+                    "max_split_reached": "True",
+                },
             )
-            if drop_pct < config.drop_threshold_pct:
-                reasoning = {
-                    **reasoning_base,
-                    "current_split_level": str(position.split_level),
-                    "avg_price": str(prev_avg_price),
-                    "drop_pct": str(drop_pct),
-                }
-                return StrategyEvaluation(
-                    should_buy=False,
-                    reason="skip:drop_insufficient",
-                    target_quantity=None,
-                    target_price=None,
-                    reasoning=reasoning,
-                )
 
         # ------------------------------------------------------------------
-        # 4. We want to buy. Compute quantity and cost.
-        # target_price is floored to the asset's tick_size so the LIMIT order
-        # always sits on a valid exchange price (CLAUDE.md §4.2, ADR §7.10).
+        # 3. Determine candidate EMPTY slots.
+        #    - position is None → synthesize EMPTY slots 1..max_split_count
+        #      with no exit history (first-buy bypass via §4.7).
+        #    - position exists, all FILLED → skip (max_split_reached).
+        # ------------------------------------------------------------------
+        if position is None:
+            candidate_slots = [
+                SplitSlot.empty(slot_number=i)
+                for i in range(1, config.max_split_count + 1)
+            ]
+            effective_position = _synthetic_empty_position(asset, config.max_split_count)
+        else:
+            candidate_slots = position.empty_slots
+            if not candidate_slots:
+                return BuyEvaluationResult(
+                    buy=None,
+                    skip_reason=SkipReason.STRATEGY_NO_BUY,
+                    reasoning={
+                        **reasoning_base,
+                        "current_split_level": str(position.split_level),
+                        "max_split_reached": "True",
+                    },
+                )
+            effective_position = position
+
+        # ------------------------------------------------------------------
+        # 3. Compute trigger per slot via injected ReentryPriceStrategy.
+        #    Track slots that qualified (current_price <= trigger) vs
+        #    slots whose trigger was None (insufficient data).
+        # ------------------------------------------------------------------
+        qualified: list[tuple[SplitSlot, Decimal]] = []
+        none_count = 0
+        for slot in candidate_slots:
+            trigger = self._reentry.get_trigger_price(
+                slot=slot,
+                position=effective_position,
+                current_price=current_price.value,
+                drop_threshold_pct=config.drop_threshold_pct,
+                as_of=today,
+            )
+            if trigger is None:
+                none_count += 1
+                continue
+            if current_price.value <= trigger:
+                qualified.append((slot, trigger))
+
+        if not qualified:
+            # Distinguish "all slots insufficient data" from "all slots
+            # data fine but none qualified" for retrospective analysis.
+            if none_count == len(candidate_slots):
+                skip_reason = SkipReason.INSUFFICIENT_HISTORICAL_DATA
+            else:
+                skip_reason = SkipReason.STRATEGY_NO_BUY
+            return BuyEvaluationResult(
+                buy=None,
+                skip_reason=skip_reason,
+                reasoning={
+                    **reasoning_base,
+                    "candidate_empty_slots": str(len(candidate_slots)),
+                    "none_count": str(none_count),
+                },
+            )
+
+        # Smallest slot_number wins — already sorted in iteration order.
+        target_slot, target_trigger = qualified[0]
+
+        # ------------------------------------------------------------------
+        # 4. Compute order quantity / price (lot + tick aligned).
         # ------------------------------------------------------------------
         target_price = asset.round_to_tick(current_price.value)
         spend_amount = config.per_split_amount.amount
@@ -228,60 +278,71 @@ class PriceDropStrategy:
         lot_size = asset.lot_size
         target_quantity = (raw_qty // lot_size) * lot_size
 
-        # 5. quantity rounds below lot_size
         if target_quantity <= 0:
-            reasoning = {
-                **reasoning_base,
-                "raw_qty": str(raw_qty),
-                "lot_size": str(lot_size),
-                "spend_amount": str(spend_amount),
-            }
-            return StrategyEvaluation(
-                should_buy=False,
-                reason="skip:quantity_below_lot_size",
-                target_quantity=None,
-                target_price=None,
-                reasoning=reasoning,
+            return BuyEvaluationResult(
+                buy=None,
+                skip_reason=SkipReason.QUANTITY_TOO_SMALL,
+                reasoning={
+                    **reasoning_base,
+                    "target_slot_number": str(target_slot.slot_number),
+                    "trigger_price": str(target_trigger),
+                    "raw_qty": str(raw_qty),
+                    "lot_size": str(lot_size),
+                },
             )
 
         actual_cost = target_quantity * target_price
-
-        # 6. insufficient balance
         if balance.cash.amount < actual_cost:
-            reasoning = {
-                **reasoning_base,
-                "target_quantity": str(target_quantity),
-                "target_price": str(target_price),
-                "actual_cost": str(actual_cost),
-            }
-            return StrategyEvaluation(
-                should_buy=False,
-                reason="skip:insufficient_balance",
-                target_quantity=None,
-                target_price=None,
-                reasoning=reasoning,
+            return BuyEvaluationResult(
+                buy=None,
+                skip_reason=SkipReason.INSUFFICIENT_BALANCE,
+                reasoning={
+                    **reasoning_base,
+                    "target_slot_number": str(target_slot.slot_number),
+                    "target_quantity": str(target_quantity),
+                    "target_price": str(target_price),
+                    "actual_cost": str(actual_cost),
+                },
             )
 
         # ------------------------------------------------------------------
-        # Buy.
+        # 5. Buy intent.
         # ------------------------------------------------------------------
-        reasoning = {
-            **reasoning_base,
-            "next_split_level": str(next_split_level),
+        buy_reasoning = {
+            "trigger_price": str(target_trigger),
+            "current_price": str(current_price.value),
             "target_quantity": str(target_quantity),
             "target_price": str(target_price),
             "actual_cost": str(actual_cost),
-            "spend_amount": str(spend_amount),
         }
-        if prev_avg_price is not None:
-            reasoning["avg_price"] = str(prev_avg_price)
-        if drop_pct is not None:
-            reasoning["drop_pct"] = str(drop_pct)
+        if target_slot.last_exit_price is not None:
+            buy_reasoning["last_exit_price"] = str(target_slot.last_exit_price)
+        if target_slot.last_exit_date is not None:
+            buy_reasoning["last_exit_date"] = target_slot.last_exit_date.isoformat()
 
-        return StrategyEvaluation(
-            should_buy=True,
-            reason=f"buy_split_{next_split_level}",
-            target_quantity=target_quantity,
-            target_price=target_price,
-            reasoning=reasoning,
+        return BuyEvaluationResult(
+            buy=BuyDecision(
+                slot_number=target_slot.slot_number,
+                target_quantity=target_quantity,
+                target_price=target_price,
+                reasoning=buy_reasoning,
+            ),
+            skip_reason=None,
+            reasoning={
+                **reasoning_base,
+                "target_slot_number": str(target_slot.slot_number),
+                "trigger_price": str(target_trigger),
+                "qualified_slot_count": str(len(qualified)),
+            },
         )
+
+
+def _synthetic_empty_position(asset: Asset, max_split_count: int) -> Position:
+    """Build a placeholder Position with all-EMPTY slots.
+
+    Used to give MovingAverageReentry a Position object when the broker
+    has no record yet. The reentry policy reads ``position.asset`` and
+    ``position.split_level`` (== 0) — both correct for first-buy bypass.
+    """
+    from src.domain.models import Position
+    return Position.empty(asset, max_split_count=max_split_count)

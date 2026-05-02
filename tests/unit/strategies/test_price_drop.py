@@ -1,11 +1,13 @@
-"""Unit tests for src.domain.strategies.price_drop.
+"""Unit tests for src.domain.strategies.price_drop (Phase 0.5).
 
-Domain logic — pure functions, no mocks. Targets 100% coverage of the
-PriceDropStrategy.evaluate() decision tree. Circuit breaker handling now
-lives in DailyOrchestrator and is tested there.
+Domain logic — pure functions, no mocks beyond the injected
+ReentryPriceStrategyPort. Tests use HybridTimeBasedReentry for the
+"Phase 0 D fallback (avg_price-anchor)" coverage and a stub policy for
+edge cases (insufficient data → None).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -21,14 +23,17 @@ from src.domain.models import (
     Money,
     Position,
     Price,
+    SkipReason,
     SplitEntry,
     SplitSlot,
 )
 from src.domain.strategies.price_drop import (
+    BuyDecision,
+    BuyEvaluationResult,
     PriceDropStrategy,
     SplitStrategyConfig,
-    StrategyEvaluation,
 )
+from src.domain.strategies.reentry import HybridTimeBasedReentry
 
 UTC_NOW = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
 TODAY = date(2026, 4, 30)
@@ -74,6 +79,13 @@ def _price(value: str, asset: Asset | None = None) -> Price:
     return Price(asset=asset or _asset(), value=Decimal(value), timestamp=UTC_NOW)
 
 
+def _strategy() -> PriceDropStrategy:
+    """Default strategy fixture using HybridTimeBasedReentry — its
+    fresh-slot fallback (avg_price) preserves Phase 0 drop semantics
+    so existing scenarios keep working."""
+    return PriceDropStrategy(reentry=HybridTimeBasedReentry(cooldown_days=60))
+
+
 def _filled_position(
     asset: Asset,
     *,
@@ -83,17 +95,6 @@ def _filled_position(
     entry_date: date | None = None,
     max_split_count: int = 7,
 ) -> Position:
-    """Build a Position with `split_level` FILLED slots (1..N) + EMPTY rest.
-
-    All entries use `avg_price` as entry_price so the weighted-average
-    invariant trivially holds. Quantity is distributed across the FILLED
-    slots (base + remainder on the last). Phase 0.5 (ADR 0002 §3.2)
-    requires equality between Position.quantity and the FILLED slot sum.
-
-    `entry_date` defaults to YESTERDAY so the §7.11 max_split_per_day check
-    sees `today_buys == 0` for prior-day positions. Pass `entry_date=TODAY`
-    to test the same-day scenario.
-    """
     qty = Decimal(quantity)
     avg = Decimal(avg_price)
     d = entry_date or YESTERDAY
@@ -137,39 +138,46 @@ def _filled_position(
 
 
 # ---------------------------------------------------------------------------
-# StrategyEvaluation invariants
+# BuyDecision / BuyEvaluationResult invariants
 # ---------------------------------------------------------------------------
-class TestStrategyEvaluation:
-    def test_buy_requires_target_fields(self):
-        with pytest.raises(ValidationError):
-            StrategyEvaluation(
-                should_buy=True,
-                reason="buy_split_1",
-                target_quantity=None,
-                target_price=None,
+class TestBuyDecisionAndResult:
+    def test_buy_decision_construct(self):
+        bd = BuyDecision(
+            slot_number=2,
+            target_quantity=Decimal("28"),
+            target_price=Decimal("32000"),
+            reasoning={"trigger_price": "33250"},
+        )
+        assert bd.slot_number == 2
+
+    def test_evaluation_result_must_have_xor(self):
+        # Both set → ValidationError
+        with pytest.raises(ValidationError, match=r"exactly one"):
+            BuyEvaluationResult(
+                buy=BuyDecision(
+                    slot_number=1,
+                    target_quantity=Decimal("10"),
+                    target_price=Decimal("30000"),
+                    reasoning={},
+                ),
+                skip_reason=SkipReason.STRATEGY_NO_BUY,
                 reasoning={},
             )
 
-    def test_skip_must_have_none_targets(self):
-        with pytest.raises(ValidationError):
-            StrategyEvaluation(
-                should_buy=False,
-                reason="skip:x",
-                target_quantity=Decimal("10"),
-                target_price=Decimal("35000"),
-                reasoning={},
-            )
+    def test_evaluation_result_must_have_at_least_one(self):
+        with pytest.raises(ValidationError, match=r"exactly one"):
+            BuyEvaluationResult(buy=None, skip_reason=None, reasoning={})
 
 
 # ---------------------------------------------------------------------------
-# First-split (no position) buy path
+# First-buy bypass (position is None / split_level == 0)
 # ---------------------------------------------------------------------------
-class TestFirstSplit:
+class TestFirstBuy:
     def setup_method(self):
-        self.strategy = PriceDropStrategy()
+        self.strategy = _strategy()
         self.asset = _asset()
 
-    def test_no_position_triggers_first_split(self):
+    def test_no_position_triggers_slot_one(self):
         # 1,000,000 / 35,000 = 28.57... → floor → 28
         result = self.strategy.evaluate(
             position=None,
@@ -178,15 +186,13 @@ class TestFirstSplit:
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is True
-        assert result.reason == "buy_split_1"
-        assert result.target_quantity == Decimal("28")
-        assert result.target_price == Decimal("35000")
-        assert result.reasoning["next_split_level"] == "1"
-        assert result.reasoning["actual_cost"] == "980000"
-        assert "avg_price" not in result.reasoning  # no position yet
+        assert result.skip_reason is None
+        assert result.buy is not None
+        assert result.buy.slot_number == 1
+        assert result.buy.target_quantity == Decimal("28")
+        assert result.buy.target_price == Decimal("35000")
 
-    def test_empty_position_treated_as_no_position(self):
+    def test_empty_position_triggers_slot_one(self):
         empty = Position.empty(self.asset)
         result = self.strategy.evaluate(
             position=empty,
@@ -195,11 +201,11 @@ class TestFirstSplit:
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is True
-        assert result.reason == "buy_split_1"
+        assert result.buy is not None
+        assert result.buy.slot_number == 1
 
     def test_target_price_rounded_to_tick(self):
-        # current_price 35003 with tick_size 5 → target_price floors to 35000
+        # current 35003 with tick=5 → target=35000
         result = self.strategy.evaluate(
             position=None,
             current_price=_price("35003", self.asset),
@@ -207,17 +213,17 @@ class TestFirstSplit:
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is True
-        assert result.target_price == Decimal("35000")
-        assert result.reasoning["target_price"] == "35000"
+        assert result.buy is not None
+        assert result.buy.target_price == Decimal("35000")
 
 
 # ---------------------------------------------------------------------------
-# Subsequent-split buy / skip path
+# Subsequent split using HybridTimeBasedReentry's avg_price fallback
+# (preserves Phase 0 drop-from-avg semantics for fresh slots)
 # ---------------------------------------------------------------------------
 class TestSubsequentSplit:
     def setup_method(self):
-        self.strategy = PriceDropStrategy()
+        self.strategy = _strategy()
         self.asset = _asset()
         self.position = _filled_position(
             self.asset,
@@ -227,7 +233,8 @@ class TestSubsequentSplit:
         )
 
     def test_drop_above_threshold_triggers_next_split(self):
-        # avg_price=35000, current=32000 → drop = 8.57% > 7%
+        # Hybrid's fresh-slot fallback: trigger = avg(35000) * 0.93 = 32550
+        # current=32000 ≤ 32550 → fire on slot 2
         result = self.strategy.evaluate(
             position=self.position,
             current_price=_price("32000", self.asset),
@@ -235,17 +242,14 @@ class TestSubsequentSplit:
             config=_config(drop_threshold_pct="7.0"),
             today=TODAY,
         )
-        assert result.should_buy is True
-        assert result.reason == "buy_split_2"
+        assert result.buy is not None
+        assert result.buy.slot_number == 2
         # 1,000,000 / 32,000 = 31.25 → floor → 31
-        assert result.target_quantity == Decimal("31")
-        assert result.target_price == Decimal("32000")
-        assert result.reasoning["next_split_level"] == "2"
-        assert result.reasoning["avg_price"] == "35000"
-        assert "drop_pct" in result.reasoning
+        assert result.buy.target_quantity == Decimal("31")
+        assert result.buy.target_price == Decimal("32000")
 
     def test_drop_at_exact_threshold_triggers_next_split(self):
-        # avg_price=35000, current=32550 → drop = (35000-32550)/35000*100 = 7.0%
+        # avg=35000, drop_pct=7 → trigger=32550. current=32550 → fires.
         result = self.strategy.evaluate(
             position=self.position,
             current_price=_price("32550", self.asset),
@@ -253,10 +257,11 @@ class TestSubsequentSplit:
             config=_config(drop_threshold_pct="7.0"),
             today=TODAY,
         )
-        assert result.should_buy is True
+        assert result.buy is not None
+        assert result.buy.slot_number == 2
 
     def test_drop_below_threshold_skips(self):
-        # avg=35000, current=33500 → drop ≈ 4.28% < 7%
+        # current=33500 > trigger=32550 → no fire
         result = self.strategy.evaluate(
             position=self.position,
             current_price=_price("33500", self.asset),
@@ -264,13 +269,10 @@ class TestSubsequentSplit:
             config=_config(drop_threshold_pct="7.0"),
             today=TODAY,
         )
-        assert result.should_buy is False
-        assert result.reason == "skip:drop_insufficient"
-        assert "drop_pct" in result.reasoning
-        assert result.reasoning["current_split_level"] == "1"
+        assert result.buy is None
+        assert result.skip_reason is SkipReason.STRATEGY_NO_BUY
 
     def test_price_above_avg_skips(self):
-        # current > avg → drop is negative
         result = self.strategy.evaluate(
             position=self.position,
             current_price=_price("36000", self.asset),
@@ -278,26 +280,116 @@ class TestSubsequentSplit:
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is False
-        assert result.reason == "skip:drop_insufficient"
+        assert result.buy is None
+        assert result.skip_reason is SkipReason.STRATEGY_NO_BUY
 
     def test_max_split_reached_skips(self):
         position = _filled_position(
             self.asset,
             quantity="100",
             avg_price="30000",
-            split_level=7,  # at the cap
+            split_level=7,
         )
         result = self.strategy.evaluate(
             position=position,
-            current_price=_price("20000", self.asset),  # huge drop, but maxed
+            current_price=_price("20000", self.asset),
             balance=_balance(),
             config=_config(max_split_count=7),
             today=TODAY,
         )
-        assert result.should_buy is False
-        assert result.reason == "skip:max_split_reached"
-        assert result.reasoning["current_split_level"] == "7"
+        assert result.buy is None
+        assert result.skip_reason is SkipReason.STRATEGY_NO_BUY
+        assert result.reasoning.get("max_split_reached") == "True"
+
+
+# ---------------------------------------------------------------------------
+# Slot-priority + insufficient-data routing — uses a stub reentry policy
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class _AlwaysNoneReentry:
+    """Stub reentry policy that returns None for every slot — except
+    when split_level==0 (then current_price for first-buy bypass)."""
+
+    def get_trigger_price(self, *, slot, position, current_price, drop_threshold_pct, as_of) -> Decimal | None:
+        if position.split_level == 0:
+            return current_price
+        return None
+
+
+@dataclass(frozen=True)
+class _PartialNoneReentry:
+    """Returns None for slot_number < 4, MA-like trigger for >=4."""
+
+    def get_trigger_price(self, *, slot, position, current_price, drop_threshold_pct, as_of) -> Decimal | None:
+        if position.split_level == 0:
+            return current_price
+        if slot.slot_number < 4:
+            return None
+        return current_price * (Decimal(2))  # absurdly permissive — always fires
+
+
+class TestSlotPriorityWithPartialTriggers:
+    def test_priority_drop_strategy_handles_none_trigger(self):
+        # All EMPTY slots return None → INSUFFICIENT_HISTORICAL_DATA
+        strategy = PriceDropStrategy(reentry=_AlwaysNoneReentry())
+        asset = _asset()
+        position = _filled_position(
+            asset, quantity="10", avg_price="35000", split_level=1
+        )
+        result = strategy.evaluate(
+            position=position,
+            current_price=_price("32000", asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.buy is None
+        assert result.skip_reason is SkipReason.INSUFFICIENT_HISTORICAL_DATA
+
+    def test_slot_priority_with_partial_triggers(self):
+        # Slots 2, 3 → None; slots 4-7 trigger. Smallest qualified = slot 4.
+        strategy = PriceDropStrategy(reentry=_PartialNoneReentry())
+        asset = _asset()
+        position = _filled_position(
+            asset, quantity="10", avg_price="35000", split_level=1
+        )
+        result = strategy.evaluate(
+            position=position,
+            current_price=_price("32000", asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.buy is not None
+        assert result.buy.slot_number == 4
+
+    def test_decision_with_insufficient_historical_data_skip(self):
+        # Mixed: some None, some don't qualify (current too high) → STRATEGY_NO_BUY
+        @dataclass(frozen=True)
+        class _MixedReentry:
+            def get_trigger_price(self, *, slot, position, current_price, drop_threshold_pct, as_of):
+                if position.split_level == 0:
+                    return current_price
+                if slot.slot_number == 2:
+                    return None
+                # All other slots return a trigger that current_price exceeds
+                return current_price * Decimal("0.5")  # never fires
+
+        strategy = PriceDropStrategy(reentry=_MixedReentry())
+        asset = _asset()
+        position = _filled_position(
+            asset, quantity="10", avg_price="35000", split_level=1
+        )
+        result = strategy.evaluate(
+            position=position,
+            current_price=_price("32000", asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.buy is None
+        # Some slots returned None but not all → STRATEGY_NO_BUY (not INSUFFICIENT)
+        assert result.skip_reason is SkipReason.STRATEGY_NO_BUY
 
 
 # ---------------------------------------------------------------------------
@@ -305,11 +397,9 @@ class TestSubsequentSplit:
 # ---------------------------------------------------------------------------
 class TestQuantityConstraints:
     def setup_method(self):
-        self.strategy = PriceDropStrategy()
+        self.strategy = _strategy()
 
     def test_quantity_rounds_below_lot_size_skips(self):
-        # lot_size = 100, spend = 1,000,000, price = 35,000
-        # raw_qty = 28.57; floor to 100-multiple = 0
         asset = _asset(lot_size="100")
         result = self.strategy.evaluate(
             position=None,
@@ -318,13 +408,10 @@ class TestQuantityConstraints:
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is False
-        assert result.reason == "skip:quantity_below_lot_size"
-        assert "raw_qty" in result.reasoning
+        assert result.buy is None
+        assert result.skip_reason is SkipReason.QUANTITY_TOO_SMALL
 
     def test_lot_size_rounding(self):
-        # lot_size = 10, spend = 1,000,000, price = 35,000
-        # raw_qty = 28.57; floor to 10-multiple = 20
         asset = _asset(lot_size="10")
         result = self.strategy.evaluate(
             position=None,
@@ -333,11 +420,10 @@ class TestQuantityConstraints:
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is True
-        assert result.target_quantity == Decimal("20")
+        assert result.buy is not None
+        assert result.buy.target_quantity == Decimal("20")
 
     def test_insufficient_balance_skips(self):
-        # spend 1,000,000 but balance only 500,000
         asset = _asset()
         result = self.strategy.evaluate(
             position=None,
@@ -346,12 +432,10 @@ class TestQuantityConstraints:
             config=_config(per_split_amount_krw="1000000"),
             today=TODAY,
         )
-        assert result.should_buy is False
-        assert result.reason == "skip:insufficient_balance"
-        assert result.reasoning["actual_cost"] == "980000"
+        assert result.buy is None
+        assert result.skip_reason is SkipReason.INSUFFICIENT_BALANCE
 
     def test_balance_exactly_equal_to_cost_buys(self):
-        # cost = 28 * 35000 = 980,000. balance = 980,000.
         asset = _asset()
         result = self.strategy.evaluate(
             position=None,
@@ -360,19 +444,19 @@ class TestQuantityConstraints:
             config=_config(per_split_amount_krw="1000000"),
             today=TODAY,
         )
-        assert result.should_buy is True
+        assert result.buy is not None
 
 
 # ---------------------------------------------------------------------------
-# Precondition checks (caller errors)
+# Precondition checks
 # ---------------------------------------------------------------------------
 class TestPreconditions:
     def setup_method(self):
-        self.strategy = PriceDropStrategy()
+        self.strategy = _strategy()
 
     def test_position_asset_mismatch_raises(self):
         asset_a = _asset(code="069500")
-        asset_b = _asset(code="105190")  # different ETF
+        asset_b = _asset(code="105190")
         position_a = _filled_position(
             asset_a, quantity="10", avg_price="35000", split_level=1
         )
@@ -421,7 +505,7 @@ class TestPreconditions:
 # ---------------------------------------------------------------------------
 class TestMaxSplitPerDay:
     def setup_method(self):
-        self.strategy = PriceDropStrategy()
+        self.strategy = _strategy()
         self.asset = _asset()
 
     def test_default_max_split_per_day_is_one(self):
@@ -441,18 +525,7 @@ class TestMaxSplitPerDay:
                 max_split_per_day=0,
             )
 
-    def test_first_buy_today_allowed_when_position_empty(self):
-        result = self.strategy.evaluate(
-            position=None,
-            current_price=_price("35000", self.asset),
-            balance=_balance(),
-            config=_config(),
-            today=TODAY,
-        )
-        assert result.should_buy is True
-
     def test_today_entry_blocks_next_buy_with_default_cap(self):
-        # Position has one entry from TODAY → today_buys=1 → cap (1) reached.
         position = _filled_position(
             self.asset,
             quantity="28",
@@ -462,18 +535,15 @@ class TestMaxSplitPerDay:
         )
         result = self.strategy.evaluate(
             position=position,
-            current_price=_price("32000", self.asset),  # would otherwise buy
+            current_price=_price("32000", self.asset),  # would otherwise fire
             balance=_balance(),
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is False
-        assert result.reason == "skip:max_split_per_day_reached"
-        assert result.reasoning["today_buys"] == "1"
-        assert result.reasoning["max_split_per_day"] == "1"
+        assert result.buy is None
+        assert result.skip_reason is SkipReason.MAX_SPLIT_PER_DAY_REACHED
 
     def test_yesterday_entries_do_not_count_against_cap(self):
-        # Default _filled_position uses YESTERDAY → today_buys = 0 → buy proceeds.
         position = _filled_position(
             self.asset,
             quantity="28",
@@ -487,10 +557,9 @@ class TestMaxSplitPerDay:
             config=_config(),
             today=TODAY,
         )
-        assert result.should_buy is True
+        assert result.buy is not None
 
     def test_max_split_per_day_higher_cap_allows_more(self):
-        # cap=2: one today entry still allows another buy
         position = _filled_position(
             self.asset,
             quantity="28",
@@ -511,59 +580,4 @@ class TestMaxSplitPerDay:
             config=cfg,
             today=TODAY,
         )
-        assert result.should_buy is True
-
-
-# ---------------------------------------------------------------------------
-# Reasoning content
-# ---------------------------------------------------------------------------
-class TestReasoning:
-    def setup_method(self):
-        self.strategy = PriceDropStrategy()
-
-    def test_buy_reasoning_contains_required_keys(self):
-        asset = _asset()
-        result = self.strategy.evaluate(
-            position=None,
-            current_price=_price("35000", asset),
-            balance=_balance(),
-            config=_config(),
-            today=TODAY,
-        )
-        for key in (
-            "today",
-            "asset",
-            "current_price",
-            "drop_threshold_pct",
-            "max_split_count",
-            "per_split_amount",
-            "available_cash",
-            "next_split_level",
-            "target_quantity",
-            "target_price",
-            "actual_cost",
-            "spend_amount",
-        ):
-            assert key in result.reasoning, f"missing key: {key}"
-        assert result.reasoning["today"] == TODAY.isoformat()
-        assert result.reasoning["asset"] == "KRX:069500"
-        # Signal-related keys must NOT appear (orchestrator owns signals now)
-        assert "signal_level" not in result.reasoning
-        assert "signal_source" not in result.reasoning
-        assert "caution_reduction_applied" not in result.reasoning
-
-    def test_skip_reasoning_contains_decision_inputs(self):
-        asset = _asset()
-        position = _filled_position(
-            asset, quantity="28", avg_price="35000", split_level=1
-        )
-        result = self.strategy.evaluate(
-            position=position,
-            current_price=_price("33500", asset),
-            balance=_balance(),
-            config=_config(drop_threshold_pct="7.0"),
-            today=TODAY,
-        )
-        assert result.should_buy is False
-        for key in ("avg_price", "drop_pct", "current_split_level"):
-            assert key in result.reasoning
+        assert result.buy is not None

@@ -200,7 +200,13 @@ class BacktestRunner:
         )
         market_data = MockMarketData(ohlcv_by_asset=self._ohlcv_by_asset)
         signal = self._signal_factory()
-        strategy = PriceDropStrategy()
+        # Phase 0.5 step 0.5.10: hardcode HybridTimeBasedReentry until
+        # YAML config (step 0.5.20) wires policy choice through.
+        from src.domain.strategies.reentry import HybridTimeBasedReentry
+
+        strategy = PriceDropStrategy(
+            reentry=HybridTimeBasedReentry(cooldown_days=60),
+        )
         shared_uow = InMemoryUnitOfWork()
 
         orchestrator = DailyOrchestrator(

@@ -24,6 +24,7 @@ from src.domain.constants import KST
 from src.domain.exceptions import IntegrityError
 from src.domain.models import Balance
 from src.domain.strategies.price_drop import PriceDropStrategy
+from src.domain.strategies.reentry import HybridTimeBasedReentry
 from src.infrastructure.db import connect
 from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
 from src.use_cases.daily_orchestrator import DailyOrchestrator
@@ -139,7 +140,12 @@ def build_paper_components(
         broker=broker,
         market_data=market_data,
         signal=NullSignal(),
-        strategy=PriceDropStrategy(),
+        # Phase 0.5 step 0.5.10: hardcode HybridTimeBasedReentry until
+        # YAML config (step 0.5.20) lets the user pick policy + window/
+        # cooldown via strategies-D.yaml / strategies-F.yaml.
+        strategy=PriceDropStrategy(
+            reentry=HybridTimeBasedReentry(cooldown_days=60),
+        ),
         config=strategy_config,
         asset=asset,
         clock=clock,

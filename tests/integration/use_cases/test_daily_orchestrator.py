@@ -45,7 +45,15 @@ from src.domain.models import (
     SplitSlot,
 )
 from src.domain.strategies.price_drop import PriceDropStrategy, SplitStrategyConfig
+from src.domain.strategies.reentry import HybridTimeBasedReentry
 from src.use_cases.daily_orchestrator import DailyOrchestrator, SkipReason
+
+
+def _strategy() -> PriceDropStrategy:
+    """Phase 0.5 default for orchestrator tests — Hybrid policy preserves
+    Phase 0 avg_price drop semantics for fresh slots (ADR §4.3)."""
+    return PriceDropStrategy(reentry=HybridTimeBasedReentry(cooldown_days=60))
+
 
 TODAY = date(2026, 4, 30)
 
@@ -281,7 +289,7 @@ def _make_real_orchestrator(
     )
     market_data = MockMarketData(ohlcv_by_asset={asset: bars})
     signal = NullSignal()
-    strategy = PriceDropStrategy()
+    strategy = _strategy()
 
     orchestrator = DailyOrchestrator(
         broker=broker,
@@ -331,7 +339,8 @@ class TestNormalBuyFlow:
         )
         decision = orch.run_for_date(TODAY)
         assert decision.action_kinds() == ["buy_split_2"]
-        assert decision.reasoning["next_split_level"] == "2"
+        assert decision.buy_action is not None
+        assert decision.buy_action.slot_number == 2
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +358,7 @@ class TestCircuitBreaker:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(level=level, at=clock_at)),
-            strategy=PriceDropStrategy(),
+            strategy=_strategy(),
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
@@ -385,7 +394,7 @@ class TestCircuitBreaker:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(level=SignalLevel.CAUTION, at=clock_at)),
-            strategy=PriceDropStrategy(),
+            strategy=_strategy(),
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
@@ -409,7 +418,7 @@ class TestCircuitBreaker:
             broker=MockBroker(initial_balance=balance, clock=lambda: clock_at),
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(level=SignalLevel.CAUTION, at=clock_at)),
-            strategy=PriceDropStrategy(),
+            strategy=_strategy(),
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
@@ -426,6 +435,8 @@ class TestCircuitBreaker:
 # ---------------------------------------------------------------------------
 class TestStrategySkipMapping:
     def test_max_split_reached_maps_to_strategy_no_buy(self):
+        # Phase 0.5: all slots FILLED → STRATEGY_NO_BUY (no EMPTY slots
+        # to evaluate).
         asset = _asset()
         bars = [_bar(asset, date(2026, 4, 29), "20000")]
         orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
@@ -438,11 +449,14 @@ class TestStrategySkipMapping:
         )
         decision = orch.run_for_date(TODAY)
         assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
-        assert decision.reasoning["strategy_reason"] == "skip:max_split_reached"
+        assert decision.reasoning.get("max_split_reached") == "True"
 
     def test_drop_insufficient_maps_to_strategy_no_buy(self):
+        # Phase 0.5 with HybridTimeBasedReentry: fresh slot fallback
+        # uses avg_price anchor → trigger = 35000 * 0.93 = 32550. Current
+        # 33500 > 32550 → no fire → STRATEGY_NO_BUY.
         asset = _asset()
-        bars = [_bar(asset, date(2026, 4, 29), "33500")]  # only 4.28% drop
+        bars = [_bar(asset, date(2026, 4, 29), "33500")]
         orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
         broker._positions[asset.fqn] = _seeded_position(
             asset,
@@ -453,13 +467,12 @@ class TestStrategySkipMapping:
         )
         decision = orch.run_for_date(TODAY)
         assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
-        assert decision.reasoning["strategy_reason"] == "skip:drop_insufficient"
 
-    def test_max_split_per_day_reached_maps_to_strategy_no_buy(self):
-        # ADR §7.11: today_buys >= max_split_per_day → strategy says
-        # "skip:max_split_per_day_reached" → orchestrator maps to STRATEGY_NO_BUY.
+    def test_max_split_per_day_reached_emits_dedicated_skip_reason(self):
+        # Phase 0.5: strategy emits SkipReason.MAX_SPLIT_PER_DAY_REACHED
+        # directly (no orchestrator remap to STRATEGY_NO_BUY).
         asset = _asset()
-        bars = [_bar(asset, date(2026, 4, 29), "32000")]  # would otherwise buy
+        bars = [_bar(asset, date(2026, 4, 29), "32000")]
         orch, broker = _make_real_orchestrator(asset=asset, bars=bars)
         broker._positions[asset.fqn] = _seeded_position(
             asset,
@@ -469,18 +482,16 @@ class TestStrategySkipMapping:
             last_buy_at=_utc_after_close(TODAY),  # entry_date == TODAY
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
-        assert decision.reasoning["strategy_reason"] == "skip:max_split_per_day_reached"
+        assert decision.skip_reason is SkipReason.MAX_SPLIT_PER_DAY_REACHED
         assert decision.reasoning["today_buys"] == "1"
         assert decision.reasoning["max_split_per_day"] == "1"
 
     def test_quantity_below_lot_size_maps_to_quantity_too_small(self):
-        asset = _asset(lot_size="100")  # huge lot
+        asset = _asset(lot_size="100")
         bars = [_bar(asset, date(2026, 4, 29), "35000")]
         orch, _ = _make_real_orchestrator(asset=asset, bars=bars)
         decision = orch.run_for_date(TODAY)
         assert decision.skip_reason is SkipReason.QUANTITY_TOO_SMALL
-        assert decision.reasoning["strategy_reason"] == "skip:quantity_below_lot_size"
 
     def test_insufficient_balance_maps_directly(self):
         asset = _asset()
@@ -491,7 +502,6 @@ class TestStrategySkipMapping:
         )
         decision = orch.run_for_date(TODAY)
         assert decision.skip_reason is SkipReason.INSUFFICIENT_BALANCE
-        assert decision.reasoning["strategy_reason"] == "skip:insufficient_balance"
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +540,7 @@ class TestExternalErrors:
             broker=broker,
             market_data=market_data_obj,
             signal=signal_obj,
-            strategy=PriceDropStrategy(),
+            strategy=_strategy(),
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
@@ -614,7 +624,7 @@ class TestOrderPlacement:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(at=clock_at)),
-            strategy=PriceDropStrategy(),
+            strategy=_strategy(),
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
@@ -754,7 +764,7 @@ class TestIntegrityErrorPropagation:
             ),
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=signal,
-            strategy=PriceDropStrategy(),
+            strategy=_strategy(),
             config=_config(),
             asset=asset,
             clock=lambda: clock_at,
@@ -786,7 +796,7 @@ class TestPersistence:
             broker=broker,
             market_data=market_data,
             signal=signal,
-            strategy=PriceDropStrategy(),
+            strategy=_strategy(),
             config=_config(),
             asset=_asset(),
             clock=lambda: clock_at,

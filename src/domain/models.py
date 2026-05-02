@@ -207,6 +207,7 @@ class SkipReason(StrEnum):
     NO_ACTION_TAKEN = "no_action_taken"
     ALL_SLOTS_EMPTY_NO_TRIGGER = "all_slots_empty_no_trigger"
     ALL_SLOTS_FILLED_NO_PROFIT = "all_slots_filled_no_profit"
+    INSUFFICIENT_HISTORICAL_DATA = "insufficient_historical_data"
 
 
 # ---------------------------------------------------------------------------

@@ -55,9 +55,9 @@ if TYPE_CHECKING:
         Position,
     )
     from src.domain.strategies.price_drop import (
+        BuyDecision,
         PriceDropStrategy,
         SplitStrategyConfig,
-        StrategyEvaluation,
     )
     from src.ports.broker import BrokerPort
     from src.ports.market_data import MarketDataPort
@@ -76,18 +76,9 @@ _CAUTION_REDUCTION: Final = Decimal("0.5")
 __all__ = ["DailyOrchestrator", "SkipReason"]
 
 
-# Map strategy-side skip reason strings to orchestrator SkipReason values.
-# Anything not listed defaults to STRATEGY_NO_BUY (granular detail kept in
-# reasoning["strategy_reason"]). Per ADR §7.11, the max_split_per_day skip
-# routes through STRATEGY_NO_BUY at the orchestrator while preserving the
-# granular reason in reasoning.
-_STRATEGY_REASON_MAP: Final[dict[str, SkipReason]] = {
-    "skip:max_split_reached": SkipReason.STRATEGY_NO_BUY,
-    "skip:drop_insufficient": SkipReason.STRATEGY_NO_BUY,
-    "skip:max_split_per_day_reached": SkipReason.STRATEGY_NO_BUY,
-    "skip:quantity_below_lot_size": SkipReason.QUANTITY_TOO_SMALL,
-    "skip:insufficient_balance": SkipReason.INSUFFICIENT_BALANCE,
-}
+# Phase 0.5 (ADR 0002 §4.11): PriceDropStrategy emits SkipReason directly
+# via BuyEvaluationResult.skip_reason. The Phase 0 string→enum mapping
+# (_STRATEGY_REASON_MAP) is no longer needed.
 
 
 @dataclass(frozen=True)
@@ -221,7 +212,7 @@ class DailyOrchestrator:
         # the Phase 0 "pending_partial" warning fragment is no longer
         # surfaced — the slot model has no pending-partial concept.
 
-        # 4. Strategy
+        # 4. Strategy → BuyEvaluationResult (ADR 0002 §4.11)
         evaluation = self._strategy.evaluate(
             position=position,
             current_price=current_price,
@@ -230,30 +221,25 @@ class DailyOrchestrator:
             today=today,
         )
 
-        if not evaluation.should_buy:
-            skip_reason = _STRATEGY_REASON_MAP.get(
-                evaluation.reason, SkipReason.STRATEGY_NO_BUY
-            )
+        if evaluation.skip_reason is not None:
             return _Outcome(
                 decision=self._build_skip_decision(
                     as_of,
-                    skip_reason=skip_reason,
+                    skip_reason=evaluation.skip_reason,
                     reasoning={
                         **evaluation.reasoning,
                         **self._signal_info(signal),
-                        "strategy_reason": evaluation.reason,
                     },
                 )
             )
 
-        # mypy narrowing: should_buy=True implies these are non-None
-        assert evaluation.target_quantity is not None
-        assert evaluation.target_price is not None
+        assert evaluation.buy is not None  # invariant: skip XOR buy
+        intent = evaluation.buy
 
         # 5. Adjust quantity per signal level (CAUTION halves; HALT/EMERGENCY
         #    already short-circuited above)
         adjusted_qty = self._adjust_quantity(
-            signal.level, evaluation.target_quantity, self._asset.lot_size
+            signal.level, intent.target_quantity, self._asset.lot_size
         )
         if adjusted_qty <= 0:
             return _Outcome(
@@ -263,8 +249,7 @@ class DailyOrchestrator:
                     reasoning={
                         **evaluation.reasoning,
                         **self._signal_info(signal),
-                        "strategy_reason": evaluation.reason,
-                        "pre_adjust_quantity": str(evaluation.target_quantity),
+                        "pre_adjust_quantity": str(intent.target_quantity),
                         "adjusted_quantity": str(adjusted_qty),
                     },
                 )
@@ -278,7 +263,7 @@ class DailyOrchestrator:
             side=OrderSide.BUY,
             order_type=OrderType.LIMIT,
             quantity=adjusted_qty,
-            target_price=evaluation.target_price,
+            target_price=intent.target_price,
         )
 
         try:
@@ -293,7 +278,6 @@ class DailyOrchestrator:
                         reasoning={
                             **evaluation.reasoning,
                             **self._signal_info(signal),
-                            "strategy_reason": evaluation.reason,
                             "idempotency_key": idempotency_key,
                             "error": str(e),
                         },
@@ -308,7 +292,6 @@ class DailyOrchestrator:
                     reasoning={
                         **evaluation.reasoning,
                         **self._signal_info(signal),
-                        "strategy_reason": evaluation.reason,
                         "idempotency_key": idempotency_key,
                         "error": str(e),
                     },
@@ -317,19 +300,16 @@ class DailyOrchestrator:
 
         # 7. We have an OrderResult — build Decision, Order record, and
         #    optionally fetch the updated Position to persist.
-        target_slot_number = (
-            position.next_empty_slot_number() if position is not None else 1
-        )
         prior_split_level = position.split_level if position is not None else 0
         decision = self._decision_from_result(
             as_of,
-            evaluation,
-            signal,
-            order_result,
-            pre_adjust_quantity=evaluation.target_quantity,
+            evaluation_reasoning=evaluation.reasoning,
+            intent=intent,
+            signal=signal,
+            result=order_result,
+            pre_adjust_quantity=intent.target_quantity,
             adjusted_quantity=adjusted_qty,
             idempotency_key=idempotency_key,
-            target_slot_number=target_slot_number,
             prior_split_level=prior_split_level,
         )
         order = Order.from_request_result(request, order_result)
@@ -388,20 +368,19 @@ class DailyOrchestrator:
     def _decision_from_result(
         self,
         as_of: datetime,
-        evaluation: StrategyEvaluation,
+        *,
+        evaluation_reasoning: dict[str, str],
+        intent: BuyDecision,
         signal: CircuitBreakerSignal,
         result: OrderResult,
-        *,
         pre_adjust_quantity: Decimal,
         adjusted_quantity: Decimal,
         idempotency_key: str,
-        target_slot_number: int | None,
         prior_split_level: int,
     ) -> Decision:
         base_reasoning = {
-            **evaluation.reasoning,
+            **evaluation_reasoning,
             **self._signal_info(signal),
-            "strategy_reason": evaluation.reason,
             "pre_adjust_quantity": str(pre_adjust_quantity),
             "adjusted_quantity": str(adjusted_quantity),
             "broker_order_id": result.broker_order_id or "",
@@ -413,26 +392,16 @@ class DailyOrchestrator:
         }
 
         if result.status is OrderStatus.FILLED:
-            assert target_slot_number is not None, (
-                "target_slot_number must be known for a FILLED buy"
-            )
             assert result.filled_price is not None
             buy_action = BuyActionRecord(
-                slot_number=target_slot_number,
+                slot_number=intent.slot_number,
                 split_level_after=prior_split_level + 1,
                 filled_quantity=result.filled_quantity,
                 filled_price=result.filled_price,
-                # Phase 0.5 step 0.5.4: target_price = strategy's intended buy
-                # price (current market). Step 0.5.13 will swap this for the
-                # ReentryPriceStrategy output.
-                target_price=evaluation.target_price
-                if evaluation.target_price is not None
-                else result.filled_price,
+                target_price=intent.target_price,
                 idempotency_key=idempotency_key,
                 order_id=result.broker_order_id,
-                reasoning={
-                    "strategy_reason": evaluation.reason,
-                },
+                reasoning=intent.reasoning,
             )
             return self._build_buy_decision(
                 as_of,
