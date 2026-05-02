@@ -183,6 +183,32 @@ class SlotState(StrEnum):
     FILLED = "FILLED"
 
 
+class SkipReason(StrEnum):
+    """Why a Decision recorded no sell/buy actions (ADR 0002 §5.6).
+
+    Phase 0 strings preserved for log continuity; Phase 0.5 adds three
+    dormancy-tracking values (NO_ACTION_TAKEN / ALL_SLOTS_EMPTY_NO_TRIGGER
+    / ALL_SLOTS_FILLED_NO_PROFIT) so the retrospective can quantify
+    capital-rotation efficiency.
+    """
+
+    # Phase 0 (preserved values)
+    MARKET_CLOSED = "market_closed"
+    CIRCUIT_BREAKER_HALT = "circuit_breaker_halt"
+    MARKET_DATA_UNAVAILABLE = "market_data_unavailable"
+    STRATEGY_NO_BUY = "strategy_no_buy"
+    MAX_SPLIT_PER_DAY_REACHED = "max_split_per_day_reached"
+    QUANTITY_TOO_SMALL = "quantity_too_small"
+    INSUFFICIENT_BALANCE = "insufficient_balance"
+    BROKER_REJECTED = "broker_rejected"
+    BROKER_TIMEOUT = "broker_timeout"
+    DATA_INTEGRITY_ISSUE = "data_integrity_issue"
+    # Phase 0.5 (ADR 0002 §5.6)
+    NO_ACTION_TAKEN = "no_action_taken"
+    ALL_SLOTS_EMPTY_NO_TRIGGER = "all_slots_empty_no_trigger"
+    ALL_SLOTS_FILLED_NO_PROFIT = "all_slots_filled_no_profit"
+
+
 # ---------------------------------------------------------------------------
 # Value objects
 # ---------------------------------------------------------------------------
@@ -962,24 +988,135 @@ class Order(DomainModel):
         )
 
 
-class Decision(DomainModel):
-    """Daily decision log entry (CLAUDE.md §8.1).
+class SellActionRecord(ValueObject):
+    """One executed sell on a single slot (Phase 0.5 / ADR 0002 §5.4).
 
-    `reasoning` MUST contain every input value that contributed to the decision,
-    so the decision can be replayed/debugged six months later. Values are
-    stringified for stable JSON storage; richer types come at adapter boundary.
+    Captures the slot identity, fill economics, and the per-slot trigger
+    reasoning. ``idempotency_key`` is the OrderRequest key that produced
+    this fill — kept on the record per ADR 0002 §5.4.2 (point-in-time
+    integrity, no separate join table).
+    """
+
+    slot_number: int = Field(ge=1, le=7)
+    filled_quantity: Decimal = Field(gt=Decimal(0))
+    filled_price: Decimal = Field(gt=Decimal(0))
+    profit_pct: Decimal  # (filled - entry) / entry * 100; sign is meaningful
+    idempotency_key: str = Field(min_length=1, max_length=64)
+    order_id: str | None = None
+    reasoning: dict[str, str]
+
+    @field_validator("filled_quantity", "filled_price", "profit_pct", mode="before")
+    @classmethod
+    def _coerce_decimal(cls, v: object) -> Decimal:
+        return _to_decimal(v)
+
+
+class BuyActionRecord(ValueObject):
+    """One executed buy filling a single slot (Phase 0.5 / ADR 0002 §5.4)."""
+
+    slot_number: int = Field(ge=1, le=7)
+    split_level_after: int = Field(ge=1, le=7)
+    filled_quantity: Decimal = Field(gt=Decimal(0))
+    filled_price: Decimal = Field(gt=Decimal(0))
+    target_price: Decimal = Field(gt=Decimal(0))  # ReentryPriceStrategy output
+    idempotency_key: str = Field(min_length=1, max_length=64)
+    order_id: str | None = None
+    reasoning: dict[str, str]
+
+    @field_validator("filled_quantity", "filled_price", "target_price", mode="before")
+    @classmethod
+    def _coerce_decimal(cls, v: object) -> Decimal:
+        return _to_decimal(v)
+
+
+class Decision(DomainModel):
+    """One day's decision aggregate (Phase 0.5 / ADR 0002 §5.4).
+
+    A Decision is the persistent record of what the system decided on a
+    given evaluation. It always carries timestamp + asset + reasoning, plus
+    EITHER zero+ sell actions and an optional buy action OR a non-None
+    skip_reason (mutually exclusive — see invariants).
+
+    Invariants enforced (model_validator):
+        1. skip_reason is not None ⇔ sell_actions == [] AND buy_action is None
+        2. sell_actions slot_numbers are unique
+        3. buy_action.slot_number ∉ {sa.slot_number for sa in sell_actions}
+
+    `reasoning` (top-level dict) carries the evaluation context shared by
+    every action (current_price, balance, signal info, …). Per-action
+    reasoning lives on each SellActionRecord / BuyActionRecord. CLAUDE.md
+    §8.1 — every input value contributing to the decision is preserved.
     """
 
     timestamp: datetime
     asset: Asset
-    action: str = Field(min_length=1, max_length=100)
+    sell_actions: list[SellActionRecord] = Field(default_factory=list)
+    buy_action: BuyActionRecord | None = None
+    skip_reason: SkipReason | None = None
     reasoning: dict[str, str]
-    resulting_order_id: str | None = None
 
     @field_validator("timestamp")
     @classmethod
     def _utc_only(cls, v: datetime) -> datetime:
         return _ensure_utc(v)
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> Decision:
+        has_sells = bool(self.sell_actions)
+        has_buy = self.buy_action is not None
+        has_skip = self.skip_reason is not None
+
+        # Invariant 1: skip ⇔ both empty (both directions enforced)
+        if has_skip and (has_sells or has_buy):
+            raise ValueError(
+                "skip_reason set requires sell_actions=[] AND buy_action=None"
+            )
+        if not has_skip and not has_sells and not has_buy:
+            raise ValueError(
+                "Decision must record at least one sell, a buy, or a skip_reason"
+            )
+
+        # Invariant 2: sell slot uniqueness
+        if has_sells:
+            slots = [sa.slot_number for sa in self.sell_actions]
+            if len(set(slots)) != len(slots):
+                raise ValueError(
+                    f"sell_actions has duplicate slot_numbers: {sorted(slots)}"
+                )
+
+        # Invariant 3: buy slot must not collide with any sell slot
+        if has_buy and has_sells:
+            sell_slots = {sa.slot_number for sa in self.sell_actions}
+            assert self.buy_action is not None  # narrow for type checker
+            if self.buy_action.slot_number in sell_slots:
+                raise ValueError(
+                    f"buy_action.slot_number ({self.buy_action.slot_number}) "
+                    f"collides with sell slot_numbers {sorted(sell_slots)}"
+                )
+
+        return self
+
+    # ------------------------------------------------------------------
+    # Accessors used by output_formatter / backtest_runner / equivalence
+    # ------------------------------------------------------------------
+    def is_skip(self) -> bool:
+        return self.skip_reason is not None
+
+    def action_kinds(self) -> list[str]:
+        """Human-readable labels for every action in this Decision.
+
+        Returns ``["skip:..."]`` for skip rows, otherwise zero or more
+        ``"sell_slot_N"`` entries followed by an optional ``"buy_split_M"``.
+        Used by Counter-style aggregation in BacktestResult and CLI output.
+        """
+        if self.skip_reason is not None:
+            return [f"skip:{self.skip_reason.value}"]
+        kinds: list[str] = [
+            f"sell_slot_{sa.slot_number}" for sa in self.sell_actions
+        ]
+        if self.buy_action is not None:
+            kinds.append(f"buy_split_{self.buy_action.slot_number}")
+        return kinds
 
 
 class CircuitBreakerSignal(DomainModel):

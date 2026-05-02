@@ -83,21 +83,39 @@ def _backtest_result_to_text(result: BacktestResult) -> str:
     lines.append(f"  Sharpe ratio:  {result.sharpe_ratio:.4f}")
     lines.append(f"  Calmar ratio:  {result.calmar_ratio:.4f}")
     lines.append("")
-    counts = Counter(d.action for d in result.decisions)
+    counts = Counter(
+        kind for d in result.decisions for kind in d.action_kinds()
+    )
     if counts:
         lines.append("Decisions by action:")
         for action, count in sorted(counts.items()):
             lines.append(f"  {action:48s} {count:>3d}")
         lines.append("")
-    buys = [d for d in result.decisions if d.action.startswith("buy_")]
+    buys = [
+        d for d in result.decisions if d.buy_action is not None
+    ]
     if buys:
         lines.append(f"Buy decisions ({len(buys)}):")
         for d in buys:
+            assert d.buy_action is not None
             lines.append(
-                f"  {d.timestamp.date()}  {d.action:18s} "
-                f"qty={d.reasoning.get('filled_quantity', '?'):>3} "
-                f"price={d.reasoning.get('filled_price', '?'):>6}"
+                f"  {d.timestamp.date()}  buy_split_{d.buy_action.slot_number:<2d}      "
+                f"qty={d.buy_action.filled_quantity!s:>3} "
+                f"price={d.buy_action.filled_price!s:>6}"
             )
+        lines.append("")
+    sells = [d for d in result.decisions if d.sell_actions]
+    if sells:
+        n_sell_actions = sum(len(d.sell_actions) for d in sells)
+        lines.append(f"Sell decisions ({n_sell_actions} sells across {len(sells)} days):")
+        for d in sells:
+            for sa in d.sell_actions:
+                lines.append(
+                    f"  {d.timestamp.date()}  sell_slot_{sa.slot_number:<2d}      "
+                    f"qty={sa.filled_quantity!s:>3} "
+                    f"price={sa.filled_price!s:>6} "
+                    f"profit={sa.profit_pct:.2f}%"
+                )
         lines.append("")
     return "\n".join(lines)
 
@@ -123,9 +141,20 @@ def format_paper_decision(
     lines.append(f"Paper trading — {decision.asset.fqn}")
     lines.append("=" * 64)
     lines.append(f"Date:            {snapshot.snapshot_date}")
-    lines.append(f"Decision:        {decision.action}")
-    if decision.resulting_order_id:
-        lines.append(f"Order id:        {decision.resulting_order_id}")
+    lines.append(f"Decision:        {' / '.join(decision.action_kinds())}")
+    for sa in decision.sell_actions:
+        lines.append(
+            f"  Sell slot {sa.slot_number}: qty={sa.filled_quantity} "
+            f"@ {sa.filled_price} (profit {sa.profit_pct:.2f}%, "
+            f"order={sa.order_id or '-'})"
+        )
+    if decision.buy_action is not None:
+        ba = decision.buy_action
+        lines.append(
+            f"  Buy slot {ba.slot_number}: qty={ba.filled_quantity} "
+            f"@ {ba.filled_price} (level after={ba.split_level_after}, "
+            f"order={ba.order_id or '-'})"
+        )
     lines.append(
         f"Cash:            {snapshot.cash.amount} {snapshot.cash.currency.value}"
     )

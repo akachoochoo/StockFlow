@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from src.domain.exceptions import (
@@ -34,6 +33,7 @@ from src.domain.exceptions import (
     MarketDataUnavailableError,
 )
 from src.domain.models import (
+    BuyActionRecord,
     Decision,
     Order,
     OrderRequest,
@@ -41,6 +41,7 @@ from src.domain.models import (
     OrderStatus,
     OrderType,
     SignalLevel,
+    SkipReason,
 )
 
 if TYPE_CHECKING:
@@ -67,24 +68,12 @@ if TYPE_CHECKING:
 _CAUTION_REDUCTION: Final = Decimal("0.5")
 
 
-class SkipReason(StrEnum):
-    """Skip reasons used in Decision.action.
-
-    Strategy returns granular reasons (e.g. "skip:max_split_reached"); the
-    orchestrator maps those to SkipReason values for the persisted Decision
-    while preserving the strategy-side string in reasoning["strategy_reason"].
-    """
-
-    MARKET_CLOSED = "market_closed"
-    CIRCUIT_BREAKER_HALT = "circuit_breaker_halt"
-    MARKET_DATA_UNAVAILABLE = "market_data_unavailable"
-    STRATEGY_NO_BUY = "strategy_no_buy"
-    MAX_SPLIT_PER_DAY_REACHED = "max_split_per_day_reached"
-    QUANTITY_TOO_SMALL = "quantity_too_small"
-    INSUFFICIENT_BALANCE = "insufficient_balance"
-    BROKER_REJECTED = "broker_rejected"
-    BROKER_TIMEOUT = "broker_timeout"
-    DATA_INTEGRITY_ISSUE = "data_integrity_issue"
+# SkipReason now lives in src.domain.models (ADR 0002 §5.6 — Phase 0.5
+# extends with NO_ACTION_TAKEN / ALL_SLOTS_EMPTY_NO_TRIGGER /
+# ALL_SLOTS_FILLED_NO_PROFIT for retrospective analysis). Re-exported here
+# for backward-compat with any caller that did
+# ``from src.use_cases.daily_orchestrator import SkipReason``.
+__all__ = ["DailyOrchestrator", "SkipReason"]
 
 
 # Map strategy-side skip reason strings to orchestrator SkipReason values.
@@ -246,15 +235,14 @@ class DailyOrchestrator:
                 evaluation.reason, SkipReason.STRATEGY_NO_BUY
             )
             return _Outcome(
-                decision=self._build_decision(
+                decision=self._build_skip_decision(
                     as_of,
-                    action=f"skip:{skip_reason.value}",
+                    skip_reason=skip_reason,
                     reasoning={
                         **evaluation.reasoning,
                         **self._signal_info(signal),
                         "strategy_reason": evaluation.reason,
                     },
-                    resulting_order_id=None,
                 )
             )
 
@@ -269,9 +257,9 @@ class DailyOrchestrator:
         )
         if adjusted_qty <= 0:
             return _Outcome(
-                decision=self._build_decision(
+                decision=self._build_skip_decision(
                     as_of,
-                    action=f"skip:{SkipReason.QUANTITY_TOO_SMALL.value}",
+                    skip_reason=SkipReason.QUANTITY_TOO_SMALL,
                     reasoning={
                         **evaluation.reasoning,
                         **self._signal_info(signal),
@@ -279,7 +267,6 @@ class DailyOrchestrator:
                         "pre_adjust_quantity": str(evaluation.target_quantity),
                         "adjusted_quantity": str(adjusted_qty),
                     },
-                    resulting_order_id=None,
                 )
             )
 
@@ -300,9 +287,9 @@ class DailyOrchestrator:
             recovered = self._try_recover_order(idempotency_key)
             if recovered is None:
                 return _Outcome(
-                    decision=self._build_decision(
+                    decision=self._build_skip_decision(
                         as_of,
-                        action=f"skip:{SkipReason.BROKER_TIMEOUT.value}",
+                        skip_reason=SkipReason.BROKER_TIMEOUT,
                         reasoning={
                             **evaluation.reasoning,
                             **self._signal_info(signal),
@@ -310,15 +297,14 @@ class DailyOrchestrator:
                             "idempotency_key": idempotency_key,
                             "error": str(e),
                         },
-                        resulting_order_id=None,
                     )
                 )
             order_result = recovered
         except BrokerOrderError as e:
             return _Outcome(
-                decision=self._build_decision(
+                decision=self._build_skip_decision(
                     as_of,
-                    action=f"skip:{SkipReason.BROKER_REJECTED.value}",
+                    skip_reason=SkipReason.BROKER_REJECTED,
                     reasoning={
                         **evaluation.reasoning,
                         **self._signal_info(signal),
@@ -326,12 +312,15 @@ class DailyOrchestrator:
                         "idempotency_key": idempotency_key,
                         "error": str(e),
                     },
-                    resulting_order_id=None,
                 )
             )
 
         # 7. We have an OrderResult — build Decision, Order record, and
         #    optionally fetch the updated Position to persist.
+        target_slot_number = (
+            position.next_empty_slot_number() if position is not None else 1
+        )
+        prior_split_level = position.split_level if position is not None else 0
         decision = self._decision_from_result(
             as_of,
             evaluation,
@@ -339,6 +328,9 @@ class DailyOrchestrator:
             order_result,
             pre_adjust_quantity=evaluation.target_quantity,
             adjusted_quantity=adjusted_qty,
+            idempotency_key=idempotency_key,
+            target_slot_number=target_slot_number,
+            prior_split_level=prior_split_level,
         )
         order = Order.from_request_result(request, order_result)
         updated_position = None
@@ -402,8 +394,10 @@ class DailyOrchestrator:
         *,
         pre_adjust_quantity: Decimal,
         adjusted_quantity: Decimal,
+        idempotency_key: str,
+        target_slot_number: int | None,
+        prior_split_level: int,
     ) -> Decision:
-        next_split_level = evaluation.reasoning.get("next_split_level", "?")
         base_reasoning = {
             **evaluation.reasoning,
             **self._signal_info(signal),
@@ -419,25 +413,43 @@ class DailyOrchestrator:
         }
 
         if result.status is OrderStatus.FILLED:
-            return self._build_decision(
+            assert target_slot_number is not None, (
+                "target_slot_number must be known for a FILLED buy"
+            )
+            assert result.filled_price is not None
+            buy_action = BuyActionRecord(
+                slot_number=target_slot_number,
+                split_level_after=prior_split_level + 1,
+                filled_quantity=result.filled_quantity,
+                filled_price=result.filled_price,
+                # Phase 0.5 step 0.5.4: target_price = strategy's intended buy
+                # price (current market). Step 0.5.13 will swap this for the
+                # ReentryPriceStrategy output.
+                target_price=evaluation.target_price
+                if evaluation.target_price is not None
+                else result.filled_price,
+                idempotency_key=idempotency_key,
+                order_id=result.broker_order_id,
+                reasoning={
+                    "strategy_reason": evaluation.reason,
+                },
+            )
+            return self._build_buy_decision(
                 as_of,
-                action=f"buy_split_{next_split_level}",
+                buy_action=buy_action,
                 reasoning=base_reasoning,
-                resulting_order_id=result.broker_order_id,
             )
         if result.status is OrderStatus.REJECTED:
-            return self._build_decision(
+            return self._build_skip_decision(
                 as_of,
-                action=f"skip:{SkipReason.BROKER_REJECTED.value}",
+                skip_reason=SkipReason.BROKER_REJECTED,
                 reasoning=base_reasoning,
-                resulting_order_id=result.broker_order_id,
             )
         # PENDING / CANCELED / EXPIRED / UNKNOWN → broker-timeout class
-        return self._build_decision(
+        return self._build_skip_decision(
             as_of,
-            action=f"skip:{SkipReason.BROKER_TIMEOUT.value}",
+            skip_reason=SkipReason.BROKER_TIMEOUT,
             reasoning=base_reasoning,
-            resulting_order_id=result.broker_order_id,
         )
 
     def _skip(
@@ -452,25 +464,40 @@ class DailyOrchestrator:
             "asset": self._asset.fqn,
             **extra_reasoning,
         }
-        return self._build_decision(
+        return self._build_skip_decision(
             as_of,
-            action=f"skip:{reason.value}",
+            skip_reason=reason,
             reasoning=reasoning,
-            resulting_order_id=None,
         )
 
-    def _build_decision(
+    def _build_skip_decision(
         self,
         as_of: datetime,
         *,
-        action: str,
+        skip_reason: SkipReason,
         reasoning: dict[str, str],
-        resulting_order_id: str | None,
     ) -> Decision:
         return Decision(
             timestamp=as_of,
             asset=self._asset,
-            action=action,
+            sell_actions=[],
+            buy_action=None,
+            skip_reason=skip_reason,
             reasoning=reasoning,
-            resulting_order_id=resulting_order_id,
+        )
+
+    def _build_buy_decision(
+        self,
+        as_of: datetime,
+        *,
+        buy_action: BuyActionRecord,
+        reasoning: dict[str, str],
+    ) -> Decision:
+        return Decision(
+            timestamp=as_of,
+            asset=self._asset,
+            sell_actions=[],
+            buy_action=buy_action,
+            skip_reason=None,
+            reasoning=reasoning,
         )

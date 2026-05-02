@@ -191,7 +191,8 @@ class TestPaper:
         )
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
-        assert payload["decision"]["action"] == "buy_split_1"
+        assert payload["decision"]["buy_action"]["slot_number"] == 1
+        assert payload["decision"]["skip_reason"] is None
         assert payload["snapshot"]["snapshot_date"] == "2026-04-29"
         assert payload["snapshot"]["cash"]["currency"] == "KRW"
         # Decimal precision survives the round-trip

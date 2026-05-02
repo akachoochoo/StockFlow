@@ -122,10 +122,10 @@ class TestBacktestRunner:
         assert len(result.snapshots) == 5
 
         # Day 1: first split buy
-        assert result.decisions[0].action == "buy_split_1"
+        assert result.decisions[0].action_kinds() == ["buy_split_1"]
         # Days 2-5: drop insufficient → strategy_no_buy
         for decision in result.decisions[1:]:
-            assert decision.action.startswith("skip:")
+            assert decision.is_skip()
 
         # Final snapshot: 28 shares @ 35000 (1M/35000 floor lot=1) at last
         # close 33500 → market_value 28*33500 = 938000.
@@ -158,10 +158,11 @@ class TestBacktestRunner:
 
         assert result.n_trading_days == 1
         decision = result.decisions[0]
-        assert decision.action == "buy_split_1"
+        assert decision.action_kinds() == ["buy_split_1"]
         # Decisive evidence the runner used T-1 data:
-        assert decision.reasoning["filled_quantity"] == "20"
-        assert decision.reasoning["filled_price"] == "50000"
+        assert decision.buy_action is not None
+        assert decision.buy_action.filled_quantity == Decimal("20")
+        assert decision.buy_action.filled_price == Decimal("50000")
         assert decision.reasoning["current_price"] == "50000"
 
         # And the snapshot at Day1 close uses the T close (30000) → 20*30000.
@@ -242,14 +243,14 @@ class TestBacktestRunner:
         result = runner.run(start=days[1], end=days[6])
 
         assert result.n_trading_days == 6
-        actions = [d.action for d in result.decisions]
-        assert actions[0] == "buy_split_1"
-        assert actions[1].startswith("skip:")
-        assert actions[2] == "buy_split_2"
-        assert actions[3] == "buy_split_3"
+        actions = [d.action_kinds() for d in result.decisions]
+        assert actions[0] == ["buy_split_1"]
+        assert result.decisions[1].is_skip()
+        assert actions[2] == ["buy_split_2"]
+        assert actions[3] == ["buy_split_3"]
         # Days 5 & 6: max_split_reached
         for idx in (4, 5):
-            assert actions[idx].startswith("skip:")
+            assert result.decisions[idx].is_skip()
             assert (
                 result.decisions[idx].reasoning["strategy_reason"]
                 == "skip:max_split_reached"
@@ -285,7 +286,7 @@ class TestBacktestRunner:
 
         assert result.n_trading_days == 5
         for decision in result.decisions:
-            assert decision.action == "skip:circuit_breaker_halt"
+            assert decision.action_kinds() == ["skip:circuit_breaker_halt"]
 
         # Cash never moves; no positions ever opened.
         initial_cash = _capital().amount

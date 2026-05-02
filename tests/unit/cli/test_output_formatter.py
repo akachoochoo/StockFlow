@@ -13,12 +13,14 @@ from src.cli.output_formatter import (
 from src.domain.models import (
     Asset,
     AssetClass,
+    BuyActionRecord,
     Currency,
     Decision,
     Exchange,
     Money,
     PortfolioSnapshot,
     PositionValuation,
+    SkipReason,
 )
 
 
@@ -38,16 +40,30 @@ def _krw(amount: str) -> Money:
     return Money(amount=Decimal(amount), currency=Currency.KRW)
 
 
-def _decision(action: str = "buy_split_1") -> Decision:
+def _buy_decision(slot_number: int = 1) -> Decision:
     return Decision(
         timestamp=datetime(2026, 4, 30, 6, 30, tzinfo=UTC),
         asset=_asset(),
-        action=action,
-        reasoning={
-            "filled_quantity": "28",
-            "filled_price": "35000",
-        },
-        resulting_order_id="mock-1",
+        buy_action=BuyActionRecord(
+            slot_number=slot_number,
+            split_level_after=slot_number,
+            filled_quantity=Decimal("28"),
+            filled_price=Decimal("35000"),
+            target_price=Decimal("35000"),
+            idempotency_key=f"buy-{slot_number}",
+            order_id="mock-1",
+            reasoning={"strategy_reason": f"buy_split_{slot_number}"},
+        ),
+        reasoning={"current_price": "35000"},
+    )
+
+
+def _skip_decision(reason: SkipReason = SkipReason.CIRCUIT_BREAKER_HALT) -> Decision:
+    return Decision(
+        timestamp=datetime(2026, 4, 30, 6, 30, tzinfo=UTC),
+        asset=_asset(),
+        skip_reason=reason,
+        reasoning={"signal_level": "HALT"},
     )
 
 
@@ -92,7 +108,7 @@ def _backtest_result() -> BacktestResult:
         start_date=date(2026, 4, 30),
         end_date=date(2026, 4, 30),
         initial_capital=_krw("4000000"),
-        decisions=[_decision()],
+        decisions=[_buy_decision()],
         snapshots=[_snapshot_with_pos()],
     )
 
@@ -140,9 +156,13 @@ class TestFormatBacktestResultJSON:
         assert isinstance(payload["max_drawdown_pct"], str)
         assert isinstance(payload["sharpe_ratio"], str)
         assert isinstance(payload["calmar_ratio"], str)
-        # Nested decisions / snapshots included
+        # Nested decisions / snapshots — new Phase 0.5 shape
         assert len(payload["decisions"]) == 1
-        assert payload["decisions"][0]["action"] == "buy_split_1"
+        decision = payload["decisions"][0]
+        assert decision["buy_action"]["slot_number"] == 1
+        assert decision["buy_action"]["filled_quantity"] == "28"
+        assert decision["sell_actions"] == []
+        assert decision["skip_reason"] is None
         assert len(payload["snapshots"]) == 1
 
 
@@ -152,7 +172,7 @@ class TestFormatBacktestResultJSON:
 class TestFormatPaperDecisionText:
     def test_text_with_position(self):
         out = format_paper_decision(
-            _decision(),
+            _buy_decision(),
             _snapshot_with_pos(),
             as_json=False,
         )
@@ -163,7 +183,7 @@ class TestFormatPaperDecisionText:
 
     def test_text_without_position(self):
         out = format_paper_decision(
-            _decision(action="skip:circuit_breaker_halt"),
+            _skip_decision(),
             _snapshot_no_pos(),
             as_json=False,
         )
@@ -174,10 +194,11 @@ class TestFormatPaperDecisionText:
 class TestFormatPaperDecisionJSON:
     def test_json_round_trips(self):
         out = format_paper_decision(
-            _decision(),
+            _buy_decision(),
             _snapshot_with_pos(),
             as_json=True,
         )
         payload = json.loads(out)
-        assert payload["decision"]["action"] == "buy_split_1"
+        assert payload["decision"]["buy_action"]["slot_number"] == 1
+        assert payload["decision"]["skip_reason"] is None
         assert payload["snapshot"]["snapshot_date"] == "2026-04-30"

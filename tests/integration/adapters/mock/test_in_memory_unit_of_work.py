@@ -26,6 +26,7 @@ from src.domain.models import (
     OrderType,
     PortfolioSnapshot,
     Position,
+    SkipReason,
     SplitEntry,
     SplitSlot,
 )
@@ -107,13 +108,13 @@ def _position(asset: Asset) -> Position:
     )
 
 
-def _decision(asset: Asset, *, ts: datetime = UTC_NOW, action: str = "buy_split_1") -> Decision:
+def _decision(asset: Asset, *, ts: datetime = UTC_NOW) -> Decision:
+    # Phase 0.5: skip-shape Decision suffices for repo round-trip tests.
     return Decision(
         timestamp=ts,
         asset=asset,
-        action=action,
+        skip_reason=SkipReason.STRATEGY_NO_BUY,
         reasoning={"current_price": "35000"},
-        resulting_order_id="bid-1",
     )
 
 

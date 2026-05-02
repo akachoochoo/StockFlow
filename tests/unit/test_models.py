@@ -15,6 +15,7 @@ from src.domain.models import (
     Asset,
     AssetClass,
     Balance,
+    BuyActionRecord,
     CircuitBreakerSignal,
     Currency,
     Decision,
@@ -30,8 +31,10 @@ from src.domain.models import (
     Position,
     PositionValuation,
     Price,
+    SellActionRecord,
     SignalLevel,
     SignalSource,
+    SkipReason,
     SlotState,
     SplitEntry,
     SplitSlot,
@@ -1478,27 +1481,106 @@ class TestOrder:
 # ---------------------------------------------------------------------------
 # Decision
 # ---------------------------------------------------------------------------
-class TestDecision:
-    def test_construct_with_order(self):
-        d = Decision(
-            timestamp=UTC_NOW,
-            asset=make_asset(),
-            action="buy_split_2",
-            reasoning={"current_price": "35000", "drop_pct": "7.5"},
-            resulting_order_id="ord-1",
-        )
-        assert d.action == "buy_split_2"
-        assert d.reasoning["current_price"] == "35000"
-        assert d.resulting_order_id == "ord-1"
+def _buy(slot_number: int = 1) -> BuyActionRecord:
+    return BuyActionRecord(
+        slot_number=slot_number,
+        split_level_after=slot_number,
+        filled_quantity=Decimal("10"),
+        filled_price=Decimal("35000"),
+        target_price=Decimal("35000"),
+        idempotency_key=f"buy-{slot_number}",
+        order_id="ord-1",
+        reasoning={"strategy_reason": "buy_split_1"},
+    )
 
-    def test_construct_without_order(self):
+
+def _sell(slot_number: int) -> SellActionRecord:
+    return SellActionRecord(
+        slot_number=slot_number,
+        filled_quantity=Decimal("10"),
+        filled_price=Decimal("38500"),
+        profit_pct=Decimal("10"),
+        idempotency_key=f"sell-{slot_number}",
+        order_id=f"ord-s{slot_number}",
+        reasoning={"trigger": "profit_target"},
+    )
+
+
+class TestDecision:
+    def test_construct_buy_only(self):
         d = Decision(
             timestamp=UTC_NOW,
             asset=make_asset(),
-            action="skip:max_split_reached",
-            reasoning={"current_split_level": "7"},
+            buy_action=_buy(slot_number=2),
+            reasoning={"current_price": "35000"},
         )
-        assert d.resulting_order_id is None
+        assert d.buy_action is not None
+        assert d.buy_action.slot_number == 2
+        assert d.skip_reason is None
+        assert d.sell_actions == []
+        assert d.action_kinds() == ["buy_split_2"]
+        assert d.is_skip() is False
+
+    def test_construct_skip(self):
+        d = Decision(
+            timestamp=UTC_NOW,
+            asset=make_asset(),
+            skip_reason=SkipReason.STRATEGY_NO_BUY,
+            reasoning={"strategy_reason": "skip:no_drop"},
+        )
+        assert d.is_skip()
+        assert d.action_kinds() == ["skip:strategy_no_buy"]
+
+    def test_construct_sells_then_buy(self):
+        d = Decision(
+            timestamp=UTC_NOW,
+            asset=make_asset(),
+            sell_actions=[_sell(slot_number=2), _sell(slot_number=4)],
+            buy_action=_buy(slot_number=3),
+            reasoning={"current_price": "35000"},
+        )
+        assert d.action_kinds() == [
+            "sell_slot_2",
+            "sell_slot_4",
+            "buy_split_3",
+        ]
+
+    def test_skip_with_actions_rejected(self):
+        with pytest.raises(ValidationError, match=r"skip_reason"):
+            Decision(
+                timestamp=UTC_NOW,
+                asset=make_asset(),
+                buy_action=_buy(),
+                skip_reason=SkipReason.STRATEGY_NO_BUY,
+                reasoning={"k": "v"},
+            )
+
+    def test_empty_decision_rejected(self):
+        with pytest.raises(ValidationError, match=r"at least one"):
+            Decision(
+                timestamp=UTC_NOW,
+                asset=make_asset(),
+                reasoning={"k": "v"},
+            )
+
+    def test_duplicate_sell_slot_rejected(self):
+        with pytest.raises(ValidationError, match=r"duplicate slot_numbers"):
+            Decision(
+                timestamp=UTC_NOW,
+                asset=make_asset(),
+                sell_actions=[_sell(slot_number=2), _sell(slot_number=2)],
+                reasoning={"k": "v"},
+            )
+
+    def test_buy_collides_with_sell_rejected(self):
+        with pytest.raises(ValidationError, match=r"collides"):
+            Decision(
+                timestamp=UTC_NOW,
+                asset=make_asset(),
+                sell_actions=[_sell(slot_number=2)],
+                buy_action=_buy(slot_number=2),
+                reasoning={"k": "v"},
+            )
 
     def test_naive_timestamp_rejected(self):
         naive = datetime(2026, 4, 30, 6, 0, 0)
@@ -1506,16 +1588,7 @@ class TestDecision:
             Decision(
                 timestamp=naive,
                 asset=make_asset(),
-                action="x",
-                reasoning={"k": "v"},
-            )
-
-    def test_empty_action_rejected(self):
-        with pytest.raises(ValidationError):
-            Decision(
-                timestamp=UTC_NOW,
-                asset=make_asset(),
-                action="",
+                skip_reason=SkipReason.STRATEGY_NO_BUY,
                 reasoning={"k": "v"},
             )
 
@@ -1523,11 +1596,63 @@ class TestDecision:
         d = Decision(
             timestamp=UTC_NOW,
             asset=make_asset(),
-            action="x",
+            skip_reason=SkipReason.STRATEGY_NO_BUY,
             reasoning={"k": "v"},
         )
         with pytest.raises(ValidationError):
-            d.action = "y"
+            d.skip_reason = SkipReason.MARKET_CLOSED
+
+
+class TestSellActionRecord:
+    def test_construct_happy_path(self):
+        sa = _sell(slot_number=3)
+        assert sa.slot_number == 3
+        assert sa.filled_quantity == Decimal("10")
+        assert sa.profit_pct == Decimal("10")
+
+    def test_negative_profit_pct_allowed(self):
+        # Sells at a loss are technically possible (Phase 1+ stop loss); the
+        # ValueObject must not reject negative profit_pct.
+        sa = SellActionRecord(
+            slot_number=1,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("30000"),
+            profit_pct=Decimal("-5"),
+            idempotency_key="k",
+            reasoning={},
+        )
+        assert sa.profit_pct == Decimal("-5")
+
+    def test_zero_quantity_rejected(self):
+        with pytest.raises(ValidationError):
+            SellActionRecord(
+                slot_number=1,
+                filled_quantity=Decimal(0),
+                filled_price=Decimal("30000"),
+                profit_pct=Decimal(0),
+                idempotency_key="k",
+                reasoning={},
+            )
+
+
+class TestBuyActionRecord:
+    def test_construct_happy_path(self):
+        ba = _buy(slot_number=4)
+        assert ba.slot_number == 4
+        assert ba.split_level_after == 4
+        assert ba.target_price == Decimal("35000")
+
+    def test_zero_target_price_rejected(self):
+        with pytest.raises(ValidationError):
+            BuyActionRecord(
+                slot_number=1,
+                split_level_after=1,
+                filled_quantity=Decimal("10"),
+                filled_price=Decimal("30000"),
+                target_price=Decimal(0),
+                idempotency_key="k",
+                reasoning={},
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -304,8 +304,8 @@ class TestNormalBuyFlow:
         orch, broker = _make_real_orchestrator()
         decision = orch.run_for_date(TODAY)
         assert isinstance(decision, Decision)
-        assert decision.action == "buy_split_1"
-        assert decision.resulting_order_id is not None
+        assert decision.action_kinds() == ["buy_split_1"]
+        assert decision.buy_action is not None and decision.buy_action.order_id is not None
         assert decision.reasoning["order_status"] == OrderStatus.FILLED.value
         assert decision.reasoning["filled_quantity"] == "28"
         # Idempotency key reflected
@@ -330,7 +330,7 @@ class TestNormalBuyFlow:
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == "buy_split_2"
+        assert decision.action_kinds() == ["buy_split_2"]
         assert decision.reasoning["next_split_level"] == "2"
 
 
@@ -360,14 +360,14 @@ class TestCircuitBreaker:
     def test_halt_short_circuits_before_broker_calls(self):
         orch, broker = self._make_with_signal(SignalLevel.HALT)
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.CIRCUIT_BREAKER_HALT.value}"
-        assert decision.resulting_order_id is None
+        assert decision.skip_reason is SkipReason.CIRCUIT_BREAKER_HALT
+        assert decision.buy_action is None and not decision.sell_actions
         assert broker.placed == []  # broker was never asked to place anything
 
     def test_emergency_short_circuits(self):
         orch, broker = self._make_with_signal(SignalLevel.EMERGENCY)
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.CIRCUIT_BREAKER_HALT.value}"
+        assert decision.skip_reason is SkipReason.CIRCUIT_BREAKER_HALT
         assert broker.placed == []
 
     def test_caution_halves_quantity(self):
@@ -392,7 +392,7 @@ class TestCircuitBreaker:
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == "buy_split_1"
+        assert decision.action_kinds() == ["buy_split_1"]
         # 28 / 2 = 14 (lot_size = 1)
         assert decision.reasoning["filled_quantity"] == "14"
         assert decision.reasoning["pre_adjust_quantity"] == "28"
@@ -416,7 +416,7 @@ class TestCircuitBreaker:
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.QUANTITY_TOO_SMALL.value}"
+        assert decision.skip_reason is SkipReason.QUANTITY_TOO_SMALL
         assert decision.reasoning["pre_adjust_quantity"] == "20"
         assert decision.reasoning["adjusted_quantity"] == "0"
 
@@ -437,7 +437,7 @@ class TestStrategySkipMapping:
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.STRATEGY_NO_BUY.value}"
+        assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
         assert decision.reasoning["strategy_reason"] == "skip:max_split_reached"
 
     def test_drop_insufficient_maps_to_strategy_no_buy(self):
@@ -452,7 +452,7 @@ class TestStrategySkipMapping:
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.STRATEGY_NO_BUY.value}"
+        assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
         assert decision.reasoning["strategy_reason"] == "skip:drop_insufficient"
 
     def test_max_split_per_day_reached_maps_to_strategy_no_buy(self):
@@ -469,7 +469,7 @@ class TestStrategySkipMapping:
             last_buy_at=_utc_after_close(TODAY),  # entry_date == TODAY
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.STRATEGY_NO_BUY.value}"
+        assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
         assert decision.reasoning["strategy_reason"] == "skip:max_split_per_day_reached"
         assert decision.reasoning["today_buys"] == "1"
         assert decision.reasoning["max_split_per_day"] == "1"
@@ -479,7 +479,7 @@ class TestStrategySkipMapping:
         bars = [_bar(asset, date(2026, 4, 29), "35000")]
         orch, _ = _make_real_orchestrator(asset=asset, bars=bars)
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.QUANTITY_TOO_SMALL.value}"
+        assert decision.skip_reason is SkipReason.QUANTITY_TOO_SMALL
         assert decision.reasoning["strategy_reason"] == "skip:quantity_below_lot_size"
 
     def test_insufficient_balance_maps_directly(self):
@@ -490,7 +490,7 @@ class TestStrategySkipMapping:
             asset=asset, bars=bars, initial_balance=small_balance,
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.INSUFFICIENT_BALANCE.value}"
+        assert decision.skip_reason is SkipReason.INSUFFICIENT_BALANCE
         assert decision.reasoning["strategy_reason"] == "skip:insufficient_balance"
 
 
@@ -543,7 +543,7 @@ class TestExternalErrors:
             signal=_FakeSignal(raise_error=MarketDataUnavailableError("signal down")),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.MARKET_DATA_UNAVAILABLE.value}"
+        assert decision.skip_reason is SkipReason.MARKET_DATA_UNAVAILABLE
         assert decision.reasoning["stage"] == "signal_collect"
 
     def test_market_data_unavailable_skips(self):
@@ -554,7 +554,7 @@ class TestExternalErrors:
         )
         orch, _ = self._wired(market_data=fake_md)
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.MARKET_DATA_UNAVAILABLE.value}"
+        assert decision.skip_reason is SkipReason.MARKET_DATA_UNAVAILABLE
         assert "signal_level" in decision.reasoning  # signal info preserved
 
     def test_data_integrity_skips(self):
@@ -565,14 +565,14 @@ class TestExternalErrors:
         )
         orch, _ = self._wired(market_data=fake_md)
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.DATA_INTEGRITY_ISSUE.value}"
+        assert decision.skip_reason is SkipReason.DATA_INTEGRITY_ISSUE
 
     def test_broker_balance_failure_skips(self):
         orch, _ = self._wired(
             broker_kwargs={"balance_error": BrokerConnectionError("network down")},
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_TIMEOUT.value}"
+        assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
         assert decision.reasoning["stage"] == "account_state"
 
 
@@ -638,8 +638,8 @@ class TestOrderPlacement:
             ),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == "buy_split_1"
-        assert decision.resulting_order_id == "bid-recovered"
+        assert decision.action_kinds() == ["buy_split_1"]
+        assert decision.buy_action is not None and decision.buy_action.order_id == "bid-recovered"
 
     def test_timeout_recovery_returns_none_skips(self):
         orch, _ = self._wire(
@@ -647,7 +647,7 @@ class TestOrderPlacement:
             get_status_result=None,
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_TIMEOUT.value}"
+        assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
 
     def test_timeout_recovery_get_status_also_fails_skips(self):
         orch, _ = self._wire(
@@ -655,14 +655,14 @@ class TestOrderPlacement:
             get_status_error=BrokerConnectionError("status query down"),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_TIMEOUT.value}"
+        assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
 
     def test_broker_order_error_maps_to_rejected(self):
         orch, _ = self._wire(
             place_error=BrokerOrderError("validation failed"),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_REJECTED.value}"
+        assert decision.skip_reason is SkipReason.BROKER_REJECTED
 
     def test_rejected_order_status_skips(self):
         clock_at = _utc_after_close(TODAY)
@@ -679,7 +679,7 @@ class TestOrderPlacement:
             ),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_REJECTED.value}"
+        assert decision.skip_reason is SkipReason.BROKER_REJECTED
 
     def test_unknown_order_status_skips_as_timeout(self):
         clock_at = _utc_after_close(TODAY)
@@ -696,7 +696,7 @@ class TestOrderPlacement:
             ),
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_TIMEOUT.value}"
+        assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
 
     # Phase 0.5 (ADR 0002 §3.2.1) blocks partial fills end-to-end so the
     # PARTIALLY_FILLED → "buy_split_X_partial" action label can no longer
@@ -813,12 +813,12 @@ class TestPersistence:
             clock_at=clock_at,
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == "buy_split_1"
+        assert decision.action_kinds() == ["buy_split_1"]
 
         # Decision saved
         saved_decisions = uow.decisions.list_by_date_range(TODAY, TODAY)
         assert len(saved_decisions) == 1
-        assert saved_decisions[0].action == "buy_split_1"
+        assert saved_decisions[0].action_kinds() == ["buy_split_1"]
 
         # Order saved (FILLED)
         saved_order = uow.orders.get_by_idempotency_key(
@@ -849,7 +849,7 @@ class TestPersistence:
             clock_at=clock_at,
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action.startswith("skip:")
+        assert decision.is_skip()
 
         # Decision saved
         assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
@@ -876,7 +876,7 @@ class TestPersistence:
             clock_at=clock_at,
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_TIMEOUT.value}"
+        assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
         # Decision saved, but no Order or Position
         assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
         assert uow.orders.get_by_idempotency_key(
@@ -902,7 +902,7 @@ class TestPersistence:
             clock_at=clock_at,
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_REJECTED.value}"
+        assert decision.skip_reason is SkipReason.BROKER_REJECTED
         assert uow.orders.get_by_idempotency_key(
             "KRX:069500:2026-04-30"
         ) is None
@@ -936,7 +936,7 @@ class TestPersistence:
             clock_at=clock_at,
         )
         decision = orch.run_for_date(TODAY)
-        assert decision.action == f"skip:{SkipReason.BROKER_REJECTED.value}"
+        assert decision.skip_reason is SkipReason.BROKER_REJECTED
         # Order saved with REJECTED status — audit trail
         saved = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30")
         assert saved is not None

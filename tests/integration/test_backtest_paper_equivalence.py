@@ -97,11 +97,23 @@ def _decision_keys(decisions):
     """
     keys = []
     for d in decisions:
+        if d.buy_action is not None:
+            buy_summary = (
+                d.buy_action.slot_number,
+                str(d.buy_action.filled_quantity),
+                str(d.buy_action.filled_price),
+            )
+        else:
+            buy_summary = None
+        sells_summary = tuple(
+            (sa.slot_number, str(sa.filled_quantity), str(sa.filled_price))
+            for sa in d.sell_actions
+        )
         keys.append((
             d.timestamp.date(),
-            d.action,
-            d.reasoning.get("filled_quantity"),
-            d.reasoning.get("filled_price"),
+            tuple(d.action_kinds()),
+            sells_summary,
+            buy_summary,
         ))
     return keys
 
@@ -165,7 +177,7 @@ def test_backtest_and_paper_produce_identical_outcomes(tmp_path, csv_path):
     # The fixture is engineered for ≥ 4 buys — a too-quiet sequence would
     # let a regression hide. Lock that floor in.
     buy_count = sum(
-        1 for d in bt_result.decisions if d.action.startswith("buy_")
+        1 for d in bt_result.decisions if d.buy_action is not None
     )
     assert buy_count >= 4, (
         f"fixture produced only {buy_count} buys — strengthen scenario"

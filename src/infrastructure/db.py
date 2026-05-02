@@ -75,13 +75,15 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         timestamp TEXT NOT NULL,
         asset_fqn TEXT NOT NULL,
         asset_json TEXT NOT NULL,
-        action TEXT NOT NULL,
-        reasoning TEXT NOT NULL,
-        resulting_order_id TEXT
+        sell_actions_json TEXT NOT NULL DEFAULT '[]',
+        buy_action_json TEXT,
+        skip_reason TEXT,
+        reasoning TEXT NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_decisions_asset_fqn ON decisions(asset_fqn)",
+    "CREATE INDEX IF NOT EXISTS idx_decisions_skip_reason ON decisions(skip_reason)",
     """
     CREATE TABLE IF NOT EXISTS portfolio_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

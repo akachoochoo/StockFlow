@@ -17,6 +17,7 @@ from src.domain.models import (
     OrderStatus,
     OrderType,
     Position,
+    SkipReason,
     SplitEntry,
     SplitSlot,
 )
@@ -75,12 +76,12 @@ def _position(asset: Asset) -> Position:
 
 
 def _decision(asset: Asset) -> Decision:
+    # Phase 0.5: skip-shaped Decision (sells/buy empty, skip_reason set).
     return Decision(
         timestamp=UTC_NOW,
         asset=asset,
-        action="buy_split_1",
+        skip_reason=SkipReason.STRATEGY_NO_BUY,
         reasoning={"current_price": "35000"},
-        resulting_order_id="bid-1",
     )
 
 

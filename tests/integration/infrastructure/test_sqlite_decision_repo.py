@@ -7,9 +7,12 @@ from decimal import Decimal
 from src.domain.models import (
     Asset,
     AssetClass,
+    BuyActionRecord,
     Currency,
     Decision,
     Exchange,
+    SellActionRecord,
+    SkipReason,
 )
 from src.infrastructure.repositories.sqlite_decision_repo import (
     SqliteDecisionRepo,
@@ -28,20 +31,42 @@ def _asset(code: str = "069500") -> Asset:
     )
 
 
-def _decision(
+def _buy_decision(
     *,
     timestamp: datetime,
     asset: Asset | None = None,
-    action: str = "buy_split_1",
+    slot_number: int = 1,
     reasoning: dict[str, str] | None = None,
-    resulting_order_id: str | None = "bid-1",
 ) -> Decision:
     return Decision(
         timestamp=timestamp,
         asset=asset or _asset(),
-        action=action,
+        buy_action=BuyActionRecord(
+            slot_number=slot_number,
+            split_level_after=slot_number,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            target_price=Decimal("35000"),
+            idempotency_key=f"buy-{timestamp.isoformat()}",
+            order_id="bid-1",
+            reasoning={"strategy_reason": "buy_split_1"},
+        ),
         reasoning=reasoning or {"current_price": "35000"},
-        resulting_order_id=resulting_order_id,
+    )
+
+
+def _skip_decision(
+    *,
+    timestamp: datetime,
+    asset: Asset | None = None,
+    skip_reason: SkipReason = SkipReason.STRATEGY_NO_BUY,
+    reasoning: dict[str, str] | None = None,
+) -> Decision:
+    return Decision(
+        timestamp=timestamp,
+        asset=asset or _asset(),
+        skip_reason=skip_reason,
+        reasoning=reasoning or {"strategy_reason": "skip:max_split_reached"},
     )
 
 
@@ -49,7 +74,7 @@ class TestSqliteDecisionRepoRoundTrip:
     def test_save_then_query_returns_equal(self, conn):
         repo = SqliteDecisionRepo(conn)
         ts = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
-        original = _decision(
+        original = _buy_decision(
             timestamp=ts,
             reasoning={
                 "current_price": "35000",
@@ -62,18 +87,53 @@ class TestSqliteDecisionRepoRoundTrip:
         assert len(loaded) == 1
         assert loaded[0] == original
 
-    def test_skip_decision_with_no_order_id(self, conn):
+    def test_skip_decision_round_trip(self, conn):
         repo = SqliteDecisionRepo(conn)
         ts = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
-        original = _decision(
+        original = _skip_decision(
             timestamp=ts,
-            action="skip:strategy_no_buy",
-            reasoning={"strategy_reason": "skip:max_split_reached"},
-            resulting_order_id=None,
+            skip_reason=SkipReason.ALL_SLOTS_FILLED_NO_PROFIT,
+            reasoning={"strategy_reason": "skip:no_profit_target_met"},
         )
         repo.save(original)
         loaded = repo.list_by_date_range(date(2026, 4, 30), date(2026, 4, 30))
-        assert loaded[0].resulting_order_id is None
+        assert loaded[0] == original
+        assert loaded[0].skip_reason is SkipReason.ALL_SLOTS_FILLED_NO_PROFIT
+        assert loaded[0].sell_actions == []
+        assert loaded[0].buy_action is None
+
+    def test_sells_and_buy_round_trip(self, conn):
+        repo = SqliteDecisionRepo(conn)
+        ts = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
+        original = Decision(
+            timestamp=ts,
+            asset=_asset(),
+            sell_actions=[
+                SellActionRecord(
+                    slot_number=2,
+                    filled_quantity=Decimal("10"),
+                    filled_price=Decimal("38500"),
+                    profit_pct=Decimal("10"),
+                    idempotency_key="sell-1",
+                    order_id="ord-s2",
+                    reasoning={"trigger": "profit_target"},
+                ),
+            ],
+            buy_action=BuyActionRecord(
+                slot_number=3,
+                split_level_after=2,
+                filled_quantity=Decimal("12"),
+                filled_price=Decimal("32000"),
+                target_price=Decimal("32500"),
+                idempotency_key="buy-1",
+                order_id="ord-b3",
+                reasoning={"strategy_reason": "buy_split_3"},
+            ),
+            reasoning={"current_price": "32500"},
+        )
+        repo.save(original)
+        loaded = repo.list_by_date_range(date(2026, 4, 30), date(2026, 4, 30))[0]
+        assert loaded == original
 
     def test_reasoning_round_trip_preserves_keys(self, conn):
         repo = SqliteDecisionRepo(conn)
@@ -84,7 +144,7 @@ class TestSqliteDecisionRepoRoundTrip:
             "key_m": "m",
             "key_with_special_chars": "value with \"quotes\" and \\backslash",
         }
-        original = _decision(timestamp=ts, reasoning=reasoning)
+        original = _buy_decision(timestamp=ts, reasoning=reasoning)
         repo.save(original)
         loaded = repo.list_by_date_range(date(2026, 4, 30), date(2026, 4, 30))[0]
         assert loaded.reasoning == reasoning
@@ -93,10 +153,10 @@ class TestSqliteDecisionRepoRoundTrip:
 class TestSqliteDecisionRepoFilters:
     def test_list_by_date_range_filters(self, conn):
         repo = SqliteDecisionRepo(conn)
-        repo.save(_decision(timestamp=datetime(2026, 4, 28, 6, 0, 0, tzinfo=UTC)))
-        repo.save(_decision(timestamp=datetime(2026, 4, 29, 6, 0, 0, tzinfo=UTC)))
-        repo.save(_decision(timestamp=datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)))
-        repo.save(_decision(timestamp=datetime(2026, 5, 1, 6, 0, 0, tzinfo=UTC)))
+        repo.save(_buy_decision(timestamp=datetime(2026, 4, 28, 6, 0, 0, tzinfo=UTC)))
+        repo.save(_buy_decision(timestamp=datetime(2026, 4, 29, 6, 0, 0, tzinfo=UTC)))
+        repo.save(_buy_decision(timestamp=datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)))
+        repo.save(_buy_decision(timestamp=datetime(2026, 5, 1, 6, 0, 0, tzinfo=UTC)))
         result = repo.list_by_date_range(date(2026, 4, 29), date(2026, 4, 30))
         assert len(result) == 2
 
@@ -104,8 +164,8 @@ class TestSqliteDecisionRepoFilters:
         repo = SqliteDecisionRepo(conn)
         late = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
         early = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
-        repo.save(_decision(timestamp=late))
-        repo.save(_decision(timestamp=early))
+        repo.save(_buy_decision(timestamp=late))
+        repo.save(_buy_decision(timestamp=early))
         result = repo.list_by_date_range(date(2026, 4, 30), date(2026, 4, 30))
         assert [d.timestamp for d in result] == [early, late]
 
@@ -117,9 +177,9 @@ class TestSqliteDecisionRepoFilters:
         repo = SqliteDecisionRepo(conn)
         a = _asset(code="069500")
         b = _asset(code="105190")
-        repo.save(_decision(timestamp=datetime(2026, 4, 28, 6, 0, 0, tzinfo=UTC), asset=a))
-        repo.save(_decision(timestamp=datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC), asset=a))
-        repo.save(_decision(timestamp=datetime(2026, 4, 29, 6, 0, 0, tzinfo=UTC), asset=b))
+        repo.save(_buy_decision(timestamp=datetime(2026, 4, 28, 6, 0, 0, tzinfo=UTC), asset=a))
+        repo.save(_buy_decision(timestamp=datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC), asset=a))
+        repo.save(_buy_decision(timestamp=datetime(2026, 4, 29, 6, 0, 0, tzinfo=UTC), asset=b))
         last = repo.get_last_for_asset(a.fqn)
         assert last is not None
         assert last.timestamp == datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
