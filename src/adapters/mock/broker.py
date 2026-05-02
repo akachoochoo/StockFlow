@@ -287,6 +287,19 @@ class MockBroker:
         )
 
     # ------------------------------------------------------------------
+    # State injection (ADR §10.3 / §10.7 — paper trading composition)
+    # ------------------------------------------------------------------
+    def set_position(self, position: Position) -> None:
+        """Inject a Position into broker state.
+
+        Used by paper trading composition root to restore positions from
+        the SqlitePositionRepo before the day's run. After this call the
+        broker treats the position as if it had placed the original
+        buy orders itself.
+        """
+        self._positions[position.asset.fqn] = position
+
+    # ------------------------------------------------------------------
     # Test inspection helpers
     # ------------------------------------------------------------------
     def all_orders(self) -> list[Order]:
