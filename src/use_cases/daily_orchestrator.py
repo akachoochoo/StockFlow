@@ -108,7 +108,7 @@ class _Outcome:
     `decision` is always set. `order` is set whenever we obtained a real
     OrderResult (any status — REJECTED orders are still worth persisting
     for audit). `updated_position` is set only when broker state actually
-    changed (FILLED / PARTIALLY_FILLED).
+    changed (FILLED — partial fills blocked in Phase 0.5 / ADR 0002 §3.2.1).
     """
 
     decision: Decision
@@ -228,10 +228,9 @@ class DailyOrchestrator:
             (p for p in positions if p.asset == self._asset), None
         )
 
-        # ADR §7.9: surface any pending partial fill so downstream Decision
-        # logs the warning. Computed once and merged into every post-position
-        # reasoning dict below.
-        pending_info = self._pending_partial_info(position)
+        # Phase 0.5 (ADR 0002 §3.2.1) blocks partial fills end-to-end, so
+        # the Phase 0 "pending_partial" warning fragment is no longer
+        # surfaced — the slot model has no pending-partial concept.
 
         # 4. Strategy
         evaluation = self._strategy.evaluate(
@@ -254,7 +253,6 @@ class DailyOrchestrator:
                         **evaluation.reasoning,
                         **self._signal_info(signal),
                         "strategy_reason": evaluation.reason,
-                        **pending_info,
                     },
                     resulting_order_id=None,
                 )
@@ -280,7 +278,6 @@ class DailyOrchestrator:
                         "strategy_reason": evaluation.reason,
                         "pre_adjust_quantity": str(evaluation.target_quantity),
                         "adjusted_quantity": str(adjusted_qty),
-                        **pending_info,
                     },
                     resulting_order_id=None,
                 )
@@ -312,7 +309,6 @@ class DailyOrchestrator:
                             "strategy_reason": evaluation.reason,
                             "idempotency_key": idempotency_key,
                             "error": str(e),
-                            **pending_info,
                         },
                         resulting_order_id=None,
                     )
@@ -329,7 +325,6 @@ class DailyOrchestrator:
                         "strategy_reason": evaluation.reason,
                         "idempotency_key": idempotency_key,
                         "error": str(e),
-                        **pending_info,
                     },
                     resulting_order_id=None,
                 )
@@ -344,13 +339,11 @@ class DailyOrchestrator:
             order_result,
             pre_adjust_quantity=evaluation.target_quantity,
             adjusted_quantity=adjusted_qty,
-            pending_info=pending_info,
         )
         order = Order.from_request_result(request, order_result)
         updated_position = None
-        if order_result.status in (
-            OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED,
-        ):
+        if order_result.status is OrderStatus.FILLED:
+            # Phase 0.5: only FILLED reaches here (partial fills blocked).
             updated_position = self._fetch_updated_position()
         return _Outcome(
             decision=decision,
@@ -400,15 +393,6 @@ class DailyOrchestrator:
         positions = self._broker.get_positions()
         return next((p for p in positions if p.asset == self._asset), None)
 
-    def _pending_partial_info(self, position: Position | None) -> dict[str, str]:
-        """Reasoning fragment surfacing any pending partial fill (ADR §7.9)."""
-        if position is None or not position.has_pending_partial():
-            return {}
-        return {
-            "pending_partial_quantity": str(position.pending_partial_quantity),
-            "pending_partial_warning": "True",
-        }
-
     def _decision_from_result(
         self,
         as_of: datetime,
@@ -418,7 +402,6 @@ class DailyOrchestrator:
         *,
         pre_adjust_quantity: Decimal,
         adjusted_quantity: Decimal,
-        pending_info: dict[str, str],
     ) -> Decision:
         next_split_level = evaluation.reasoning.get("next_split_level", "?")
         base_reasoning = {
@@ -433,24 +416,16 @@ class DailyOrchestrator:
             "filled_price": (
                 str(result.filled_price) if result.filled_price is not None else ""
             ),
-            **pending_info,
         }
 
-        if result.status == OrderStatus.FILLED:
+        if result.status is OrderStatus.FILLED:
             return self._build_decision(
                 as_of,
                 action=f"buy_split_{next_split_level}",
                 reasoning=base_reasoning,
                 resulting_order_id=result.broker_order_id,
             )
-        if result.status == OrderStatus.PARTIALLY_FILLED:
-            return self._build_decision(
-                as_of,
-                action=f"buy_split_{next_split_level}_partial",
-                reasoning=base_reasoning,
-                resulting_order_id=result.broker_order_id,
-            )
-        if result.status == OrderStatus.REJECTED:
+        if result.status is OrderStatus.REJECTED:
             return self._build_decision(
                 as_of,
                 action=f"skip:{SkipReason.BROKER_REJECTED.value}",

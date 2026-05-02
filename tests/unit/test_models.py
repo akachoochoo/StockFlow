@@ -32,7 +32,9 @@ from src.domain.models import (
     Price,
     SignalLevel,
     SignalSource,
+    SlotState,
     SplitEntry,
+    SplitSlot,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,6 +76,63 @@ def make_entries(
         )
         for i, (q, p) in enumerate(quantities_prices)
     ]
+
+
+def make_slots(
+    *quantities_prices: tuple[str, str],
+    max_split_count: int = 7,
+    entry_date: date | None = None,
+) -> list[SplitSlot]:
+    """Build a list of SplitSlots — first N FILLED, then EMPTY up to max.
+
+    `make_slots(("10", "35000"))` returns [FILLED slot 1, EMPTY 2..7].
+    """
+    if len(quantities_prices) > max_split_count:
+        raise ValueError("more entries than max_split_count")
+    entries = make_entries(*quantities_prices, entry_date=entry_date)
+    slots: list[SplitSlot] = [SplitSlot.filled(entry=e) for e in entries]
+    slots.extend(
+        SplitSlot.empty(slot_number=i)
+        for i in range(len(entries) + 1, max_split_count + 1)
+    )
+    return slots
+
+
+def make_position(
+    *quantities_prices: tuple[str, str],
+    asset: Asset | None = None,
+    max_split_count: int = 7,
+    last_buy_at: datetime | None = None,
+    entry_date: date | None = None,
+) -> Position:
+    """Build a Position with N FILLED slots (1..N) + EMPTY slots up to max.
+
+    quantity / avg_price / split_level are derived from the entries.
+    """
+    a = asset or make_asset()
+    n = len(quantities_prices)
+    if n == 0:
+        return Position.empty(a, max_split_count=max_split_count)
+    slots = make_slots(
+        *quantities_prices,
+        max_split_count=max_split_count,
+        entry_date=entry_date,
+    )
+    total_qty = sum(
+        (Decimal(q) for q, _ in quantities_prices), Decimal(0)
+    )
+    total_cost = sum(
+        (Decimal(q) * Decimal(p) for q, p in quantities_prices),
+        Decimal(0),
+    )
+    return Position(
+        asset=a,
+        quantity=total_qty,
+        avg_price=total_cost / total_qty,
+        split_level=n,
+        last_buy_at=last_buy_at or UTC_NOW,
+        slots=slots,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -593,20 +652,26 @@ class TestPosition:
         assert p.avg_price == Decimal(0)
         assert p.split_level == 0
         assert p.last_buy_at is None
+        assert len(p.slots) == 7
+        assert all(s.state is SlotState.EMPTY for s in p.slots)
+
+    def test_empty_with_custom_max_split_count(self):
+        p = Position.empty(make_asset(), max_split_count=3)
+        assert len(p.slots) == 3
+        assert [s.slot_number for s in p.slots] == [1, 2, 3]
+
+    def test_empty_with_invalid_max_split_count(self):
+        with pytest.raises(ValueError, match=r"max_split_count"):
+            Position.empty(make_asset(), max_split_count=8)
 
     def test_filled_position(self):
-        a = make_asset()
-        p = Position(
-            asset=a,
-            quantity=Decimal("10"),
-            avg_price=Decimal("35000"),
-            split_level=2,
-            last_buy_at=UTC_NOW,
-            entries=make_entries(("4", "36000"), ("6", "34000")),
-        )
+        # Two FILLED slots (1, 2) + five EMPTY slots
+        p = make_position(("4", "36000"), ("6", "34000"))
         assert p.quantity == Decimal("10")
         assert p.split_level == 2
-        assert len(p.entries) == 2
+        assert len(p.slots) == 7
+        assert len(p.filled_slots) == 2
+        assert len(p.empty_slots) == 5
 
     def test_split_level_negative_rejected(self):
         a = make_asset()
@@ -616,17 +681,20 @@ class TestPosition:
                 quantity=Decimal(0),
                 avg_price=Decimal(0),
                 split_level=-1,
+                slots=[SplitSlot.empty(slot_number=1)],
             )
 
     def test_split_level_above_max_rejected(self):
         a = make_asset()
         with pytest.raises(ValidationError):
+            # Field constraint le=7 catches this before the slot-count check.
             Position(
                 asset=a,
                 quantity=Decimal("10"),
                 avg_price=Decimal("35000"),
                 split_level=8,
                 last_buy_at=UTC_NOW,
+                slots=make_slots(("10", "35000")),
             )
 
     def test_negative_quantity_rejected(self):
@@ -638,6 +706,7 @@ class TestPosition:
                 avg_price=Decimal("35000"),
                 split_level=1,
                 last_buy_at=UTC_NOW,
+                slots=make_slots(("10", "35000")),
             )
 
     def test_negative_avg_price_rejected(self):
@@ -649,64 +718,56 @@ class TestPosition:
                 avg_price=Decimal("-1"),
                 split_level=1,
                 last_buy_at=UTC_NOW,
+                slots=make_slots(("10", "35000")),
             )
 
-    def test_qty_positive_with_split_level_zero_allowed(self):
-        # Partial-only position: quantity > 0 but no split has fully filled yet.
-        # Per CLAUDE.md §4.4, partial fills do not increment split_level.
-        a = make_asset()
-        p = Position(
-            asset=a,
-            quantity=Decimal("10"),
-            avg_price=Decimal("35000"),
-            split_level=0,
-            last_buy_at=UTC_NOW,
-        )
-        assert p.quantity == Decimal("10")
-        assert p.split_level == 0
-
     def test_qty_positive_requires_avg_price_positive(self):
+        # avg_price must equal weighted-avg of FILLED slots (Phase 0.5
+        # equality invariant); zero avg_price + non-zero entry price is
+        # impossible by construction so the avg-mismatch error fires first.
         a = make_asset()
-        with pytest.raises(ValidationError, match="avg_price"):
+        with pytest.raises(ValidationError, match=r"avg_price"):
             Position(
                 asset=a,
                 quantity=Decimal("10"),
                 avg_price=Decimal(0),
                 split_level=1,
                 last_buy_at=UTC_NOW,
-                entries=make_entries(("10", "35000")),
+                slots=make_slots(("10", "35000")),
             )
 
     def test_qty_positive_requires_last_buy_at(self):
         a = make_asset()
-        with pytest.raises(ValidationError, match="last_buy_at"):
+        with pytest.raises(ValidationError, match=r"last_buy_at"):
             Position(
                 asset=a,
                 quantity=Decimal("10"),
                 avg_price=Decimal("35000"),
                 split_level=1,
                 last_buy_at=None,
-                entries=make_entries(("10", "35000")),
+                slots=make_slots(("10", "35000")),
             )
 
     def test_qty_zero_must_have_zero_split_level(self):
         a = make_asset()
-        with pytest.raises(ValidationError, match="split_level"):
+        with pytest.raises(ValidationError, match=r"split_level"):
             Position(
                 asset=a,
                 quantity=Decimal(0),
                 avg_price=Decimal(0),
                 split_level=2,
+                slots=[SplitSlot.empty(slot_number=i) for i in range(1, 3)],
             )
 
     def test_qty_zero_must_have_zero_avg_price(self):
         a = make_asset()
-        with pytest.raises(ValidationError, match="avg_price"):
+        with pytest.raises(ValidationError, match=r"avg_price"):
             Position(
                 asset=a,
                 quantity=Decimal(0),
                 avg_price=Decimal("100"),
                 split_level=0,
+                slots=[SplitSlot.empty(slot_number=1)],
             )
 
     def test_naive_last_buy_at_rejected(self):
@@ -719,287 +780,318 @@ class TestPosition:
                 avg_price=Decimal("35000"),
                 split_level=1,
                 last_buy_at=naive,
-                entries=make_entries(("10", "35000")),
+                slots=make_slots(("10", "35000")),
             )
 
     def test_immutable(self):
-        a = make_asset()
-        p = Position.empty(a)
+        p = Position.empty(make_asset())
         with pytest.raises(ValidationError):
             p.split_level = 1
 
 
 # ---------------------------------------------------------------------------
-# Position — new entries-related invariants and helpers (ADR §7.8)
+# SplitSlot value object (Phase 0.5 / ADR 0002 §3.1)
 # ---------------------------------------------------------------------------
-class TestPositionEntries:
-    def _filled(
-        self,
-        *,
-        quantity: str,
-        avg_price: str,
-        split_level: int,
-        entries: list[SplitEntry] | None = None,
-    ) -> Position:
-        a = make_asset()
-        if entries is None and split_level > 0:
-            qty = Decimal(quantity)
-            base = qty // Decimal(split_level)
-            remainder = qty - base * Decimal(split_level - 1)
-            entries = [
-                SplitEntry(
-                    split_number=i,
-                    entry_date=UTC_NOW.date(),
-                    quantity=base,
-                    entry_price=Decimal(avg_price),
-                    idempotency_key=f"k{i}",
-                )
-                for i in range(1, split_level)
-            ]
-            entries.append(
-                SplitEntry(
-                    split_number=split_level,
-                    entry_date=UTC_NOW.date(),
-                    quantity=remainder,
-                    entry_price=Decimal(avg_price),
-                    idempotency_key=f"k{split_level}",
-                )
-            )
-        return Position(
-            asset=a,
-            quantity=Decimal(quantity),
-            avg_price=Decimal(avg_price),
-            split_level=split_level,
-            last_buy_at=UTC_NOW if Decimal(quantity) > 0 else None,
-            entries=entries or [],
+class TestSplitSlot:
+    def test_empty_factory(self):
+        s = SplitSlot.empty(slot_number=3)
+        assert s.slot_number == 3
+        assert s.state is SlotState.EMPTY
+        assert s.entry is None
+        assert s.last_exit_price is None
+        assert s.last_exit_date is None
+
+    def test_empty_with_exit_history(self):
+        s = SplitSlot.empty(
+            slot_number=2,
+            last_exit_price=Decimal("33000"),
+            last_exit_date=date(2026, 3, 1),
         )
+        assert s.state is SlotState.EMPTY
+        assert s.last_exit_price == Decimal("33000")
+        assert s.last_exit_date == date(2026, 3, 1)
 
-    # ----------- invariant: split_level == len(entries) -----------
-    def test_split_level_below_entries_count_rejected(self):
-        a = make_asset()
-        with pytest.raises(ValidationError, match=r"split_level"):
-            Position(
-                asset=a,
-                quantity=Decimal("28"),
-                avg_price=Decimal("35000"),
-                split_level=1,
-                last_buy_at=UTC_NOW,
-                entries=make_entries(("14", "35000"), ("14", "35000")),
-            )
-
-    def test_split_level_above_entries_count_rejected(self):
-        a = make_asset()
-        with pytest.raises(ValidationError, match=r"split_level"):
-            Position(
-                asset=a,
-                quantity=Decimal("28"),
-                avg_price=Decimal("35000"),
-                split_level=2,
-                last_buy_at=UTC_NOW,
-                entries=make_entries(("28", "35000")),
-            )
-
-    # ----------- invariant: split_numbers sequential -----------
-    def test_entries_split_numbers_with_gap_rejected(self):
-        a = make_asset()
-        bad_entries = [
-            SplitEntry(
-                split_number=1,
-                entry_date=UTC_NOW.date(),
-                quantity=Decimal("10"),
-                entry_price=Decimal("35000"),
-                idempotency_key="k1",
-            ),
-            SplitEntry(
-                split_number=3,  # gap — should be 2
-                entry_date=UTC_NOW.date(),
-                quantity=Decimal("10"),
-                entry_price=Decimal("35000"),
-                idempotency_key="k3",
-            ),
-        ]
-        with pytest.raises(ValidationError, match=r"split_numbers must be"):
-            Position(
-                asset=a,
-                quantity=Decimal("20"),
-                avg_price=Decimal("35000"),
-                split_level=2,
-                last_buy_at=UTC_NOW,
-                entries=bad_entries,
-            )
-
-    def test_entries_split_numbers_out_of_order_rejected(self):
-        a = make_asset()
-        out_of_order = [
-            SplitEntry(
-                split_number=2,
-                entry_date=UTC_NOW.date(),
-                quantity=Decimal("10"),
-                entry_price=Decimal("35000"),
-                idempotency_key="k2",
-            ),
-            SplitEntry(
-                split_number=1,
-                entry_date=UTC_NOW.date(),
-                quantity=Decimal("10"),
-                entry_price=Decimal("35000"),
-                idempotency_key="k1",
-            ),
-        ]
-        with pytest.raises(ValidationError, match=r"split_numbers must be"):
-            Position(
-                asset=a,
-                quantity=Decimal("20"),
-                avg_price=Decimal("35000"),
-                split_level=2,
-                last_buy_at=UTC_NOW,
-                entries=out_of_order,
-            )
-
-    # ----------- invariant: quantity >= sum(entries.quantity) -----------
-    def test_quantity_below_entries_sum_rejected(self):
-        a = make_asset()
-        with pytest.raises(ValidationError, match=r"sum of entries"):
-            Position(
-                asset=a,
-                quantity=Decimal("10"),
-                avg_price=Decimal("35000"),
-                split_level=1,
-                last_buy_at=UTC_NOW,
-                entries=make_entries(("20", "35000")),  # entries sum > quantity
-            )
-
-    def test_quantity_above_entries_sum_allowed_as_pending_partial(self):
-        # quantity=15, entries sum=10 → pending_partial = 5 (partial fill above)
-        p = self._filled(
-            quantity="15",
-            avg_price="35000",
-            split_level=1,
-            entries=make_entries(("10", "35000")),
+    def test_filled_factory(self):
+        e = SplitEntry(
+            split_number=4,
+            entry_date=date(2026, 4, 1),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k4",
         )
-        assert p.pending_partial_quantity == Decimal("5")
-        assert p.has_pending_partial() is True
+        s = SplitSlot.filled(entry=e)
+        assert s.slot_number == 4
+        assert s.state is SlotState.FILLED
+        assert s.entry is e
 
-    # ----------- invariant: qty == 0 implies split_level == 0 -----------
-    def test_qty_zero_with_split_level_above_zero_rejected(self):
+    def test_filled_state_requires_entry(self):
+        with pytest.raises(ValidationError, match=r"FILLED slot"):
+            SplitSlot(
+                slot_number=1,
+                state=SlotState.FILLED,
+                entry=None,
+            )
+
+    def test_empty_state_must_not_carry_entry(self):
+        e = SplitEntry(
+            split_number=1,
+            entry_date=date(2026, 4, 1),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k",
+        )
+        with pytest.raises(ValidationError, match=r"EMPTY slot"):
+            SplitSlot(
+                slot_number=1,
+                state=SlotState.EMPTY,
+                entry=e,
+            )
+
+    def test_entry_split_number_must_match_slot_number(self):
+        e = SplitEntry(
+            split_number=2,
+            entry_date=date(2026, 4, 1),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k",
+        )
+        with pytest.raises(ValidationError, match=r"split_number"):
+            SplitSlot(
+                slot_number=3,
+                state=SlotState.FILLED,
+                entry=e,
+            )
+
+    def test_last_exit_date_without_price_rejected(self):
+        with pytest.raises(ValidationError, match=r"last_exit_price"):
+            SplitSlot(
+                slot_number=1,
+                state=SlotState.EMPTY,
+                last_exit_date=date(2026, 4, 1),
+            )
+
+    def test_negative_last_exit_price_rejected(self):
+        with pytest.raises(ValidationError, match=r"last_exit_price"):
+            SplitSlot(
+                slot_number=1,
+                state=SlotState.EMPTY,
+                last_exit_price=Decimal("-1"),
+            )
+
+    def test_immutable(self):
+        s = SplitSlot.empty(slot_number=1)
+        with pytest.raises(ValidationError):
+            s.slot_number = 2
+
+
+# ---------------------------------------------------------------------------
+# Position — slot-based invariants and helpers (Phase 0.5)
+# ---------------------------------------------------------------------------
+class TestPositionSlots:
+    # ----------- invariant: slot_number sequence -----------
+    def test_slots_must_be_sequential_from_one(self):
         a = make_asset()
-        # split_level=2 with no entries to make split_level mismatch fire first
-        with pytest.raises(ValidationError, match=r"split_level"):
+        bad = [
+            SplitSlot.empty(slot_number=2),
+            SplitSlot.empty(slot_number=3),
+        ]
+        with pytest.raises(ValidationError, match=r"sequential"):
             Position(
                 asset=a,
                 quantity=Decimal(0),
                 avg_price=Decimal(0),
-                split_level=2,
-                last_buy_at=None,
-                entries=[],  # mismatched split_level vs len(entries)
+                split_level=0,
+                slots=bad,
             )
 
-    # ----------- properties -----------
-    def test_total_quantity_from_entries_empty(self):
+    def test_slots_with_duplicate_numbers_rejected(self):
         a = make_asset()
-        p = Position.empty(a)
-        assert p.total_quantity_from_entries == Decimal(0)
+        with pytest.raises(ValidationError, match=r"sequential"):
+            Position(
+                asset=a,
+                quantity=Decimal(0),
+                avg_price=Decimal(0),
+                split_level=0,
+                slots=[
+                    SplitSlot.empty(slot_number=1),
+                    SplitSlot.empty(slot_number=1),
+                ],
+            )
 
-    def test_total_quantity_from_entries_with_entries(self):
-        p = self._filled(
-            quantity="28",
-            avg_price="35000",
-            split_level=2,
-            entries=make_entries(("14", "36000"), ("14", "34000")),
-        )
-        assert p.total_quantity_from_entries == Decimal("28")
-
-    def test_avg_price_from_entries_empty_returns_zero(self):
+    # ----------- invariant: split_level == FILLED count -----------
+    def test_split_level_below_filled_count_rejected(self):
         a = make_asset()
-        p = Position.empty(a)
-        assert p.avg_price_from_entries == Decimal(0)
+        with pytest.raises(ValidationError, match=r"split_level"):
+            Position(
+                asset=a,
+                quantity=Decimal("28"),
+                avg_price=Decimal("35000"),
+                split_level=1,
+                last_buy_at=UTC_NOW,
+                slots=make_slots(("14", "35000"), ("14", "35000")),
+            )
 
-    def test_avg_price_from_entries_weighted_average(self):
-        # 14 @ 36000 + 14 @ 34000 = total cost 980000, total qty 28 → avg 35000
-        p = self._filled(
-            quantity="28",
-            avg_price="35000",
+    def test_split_level_above_filled_count_rejected(self):
+        a = make_asset()
+        with pytest.raises(ValidationError, match=r"split_level"):
+            Position(
+                asset=a,
+                quantity=Decimal("28"),
+                avg_price=Decimal("35000"),
+                split_level=2,
+                last_buy_at=UTC_NOW,
+                slots=make_slots(("28", "35000")),
+            )
+
+    # ----------- invariant: sparse slot_number allowed -----------
+    def test_sparse_filled_pattern_allowed(self):
+        # Slot 2 EMPTY while slot 3 FILLED is valid — captures "sold slot 2,
+        # then bought slot 3" cycles in Phase 0.5.
+        a = make_asset()
+        e1 = SplitEntry(
+            split_number=1,
+            entry_date=UTC_NOW.date(),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k1",
+        )
+        e3 = SplitEntry(
+            split_number=3,
+            entry_date=UTC_NOW.date(),
+            quantity=Decimal("8"),
+            entry_price=Decimal("28000"),
+            idempotency_key="k3",
+        )
+        slots = [
+            SplitSlot.filled(entry=e1),
+            SplitSlot.empty(
+                slot_number=2,
+                last_exit_price=Decimal("33000"),
+                last_exit_date=date(2026, 3, 15),
+            ),
+            SplitSlot.filled(entry=e3),
+            SplitSlot.empty(slot_number=4),
+            SplitSlot.empty(slot_number=5),
+            SplitSlot.empty(slot_number=6),
+            SplitSlot.empty(slot_number=7),
+        ]
+        total_qty = Decimal("18")
+        total_cost = Decimal(10) * Decimal(30000) + Decimal(8) * Decimal(28000)
+        p = Position(
+            asset=a,
+            quantity=total_qty,
+            avg_price=total_cost / total_qty,
             split_level=2,
-            entries=make_entries(("14", "36000"), ("14", "34000")),
+            last_buy_at=UTC_NOW,
+            slots=slots,
         )
-        assert p.avg_price_from_entries == Decimal("35000")
+        assert p.split_level == 2
+        assert [s.slot_number for s in p.filled_slots] == [1, 3]
+        assert p.next_empty_slot_number() == 2
 
-    def test_pending_partial_quantity_zero_when_no_partial(self):
-        p = self._filled(
-            quantity="28",
-            avg_price="35000",
-            split_level=1,
-            entries=make_entries(("28", "35000")),
-        )
-        assert p.pending_partial_quantity == Decimal(0)
-        assert p.has_pending_partial() is False
+    # ----------- invariant: quantity equality -----------
+    def test_quantity_below_filled_sum_rejected(self):
+        a = make_asset()
+        with pytest.raises(ValidationError, match=r"FILLED slot quantities"):
+            Position(
+                asset=a,
+                quantity=Decimal("10"),
+                avg_price=Decimal("35000"),
+                split_level=1,
+                last_buy_at=UTC_NOW,
+                slots=make_slots(("20", "35000")),
+            )
 
-    def test_pending_partial_quantity_positive_with_partial(self):
-        p = self._filled(
-            quantity="20",
-            avg_price="35000",
-            split_level=1,
-            entries=make_entries(("15", "35000")),
-        )
-        assert p.pending_partial_quantity == Decimal("5")
-        assert p.has_pending_partial() is True
+    def test_quantity_above_filled_sum_rejected(self):
+        # Phase 0.5 equality (no partial-fill carry).
+        a = make_asset()
+        with pytest.raises(ValidationError, match=r"FILLED slot quantities"):
+            Position(
+                asset=a,
+                quantity=Decimal("15"),
+                avg_price=Decimal("35000"),
+                split_level=1,
+                last_buy_at=UTC_NOW,
+                slots=make_slots(("10", "35000")),
+            )
 
-    # ----------- get_entry -----------
-    def test_get_entry_returns_match(self):
-        p = self._filled(
-            quantity="28",
-            avg_price="35000",
-            split_level=2,
-            entries=make_entries(("14", "36000"), ("14", "34000")),
-        )
+    # ----------- invariant: avg_price equality -----------
+    def test_avg_price_must_equal_weighted_average(self):
+        a = make_asset()
+        # 14 @ 36000 + 14 @ 34000 → weighted avg 35000. Set 35001 to fail.
+        with pytest.raises(ValidationError, match=r"weighted average"):
+            Position(
+                asset=a,
+                quantity=Decimal("28"),
+                avg_price=Decimal("35001"),
+                split_level=2,
+                last_buy_at=UTC_NOW,
+                slots=make_slots(("14", "36000"), ("14", "34000")),
+            )
+
+    # ----------- properties: filled_slots / empty_slots / next_empty -----------
+    def test_filled_and_empty_slot_partitions(self):
+        p = make_position(("10", "30000"), ("8", "28000"))
+        assert [s.slot_number for s in p.filled_slots] == [1, 2]
+        assert [s.slot_number for s in p.empty_slots] == [3, 4, 5, 6, 7]
+
+    def test_next_empty_slot_number_first_buy(self):
+        p = Position.empty(make_asset())
+        assert p.next_empty_slot_number() == 1
+
+    def test_next_empty_slot_number_after_fills(self):
+        p = make_position(("10", "30000"), ("8", "28000"))
+        assert p.next_empty_slot_number() == 3
+
+    def test_next_empty_slot_number_when_all_filled(self):
+        p = make_position(*[("1", "30000")] * 7)
+        assert p.next_empty_slot_number() is None
+
+    # ----------- get_slot / get_entry -----------
+    def test_get_slot_returns_match(self):
+        p = make_position(("10", "30000"))
+        s = p.get_slot(1)
+        assert s is not None
+        assert s.state is SlotState.FILLED
+
+    def test_get_slot_returns_none_when_out_of_range(self):
+        p = make_position(("10", "30000"))
+        assert p.get_slot(99) is None
+
+    def test_get_entry_returns_filled_entry(self):
+        p = make_position(("14", "36000"), ("14", "34000"))
         e1 = p.get_entry(1)
         assert e1 is not None
-        assert e1.split_number == 1
         assert e1.entry_price == Decimal("36000")
 
-    def test_get_entry_returns_none_for_missing(self):
-        p = self._filled(
-            quantity="28",
-            avg_price="35000",
-            split_level=1,
-            entries=make_entries(("28", "35000")),
-        )
-        assert p.get_entry(7) is None
+    def test_get_entry_none_for_empty_slot(self):
+        p = make_position(("10", "30000"))
+        assert p.get_entry(3) is None  # slot 3 is EMPTY
 
     # ----------- split_pnl / split_pnl_pct -----------
-    def test_split_pnl_empty_entries(self):
-        a = make_asset()
-        p = Position.empty(a)
+    def test_split_pnl_empty_position(self):
+        p = Position.empty(make_asset())
         assert p.split_pnl(Decimal("35000")) == {}
         assert p.split_pnl_pct(Decimal("35000")) == {}
 
-    def test_split_pnl_with_entries(self):
-        # split 1: 14 @ 36000, current 35000 → (35000-36000)*14 = -14000
-        # split 2: 14 @ 34000, current 35000 → (35000-34000)*14 = +14000
-        p = self._filled(
-            quantity="28",
-            avg_price="35000",
-            split_level=2,
-            entries=make_entries(("14", "36000"), ("14", "34000")),
-        )
+    def test_split_pnl_filled_slots(self):
+        # slot 1: 14 @ 36000, current 35000 → (35000-36000)*14 = -14000
+        # slot 2: 14 @ 34000, current 35000 → (35000-34000)*14 = +14000
+        p = make_position(("14", "36000"), ("14", "34000"))
         pnl = p.split_pnl(Decimal("35000"))
         assert pnl == {1: Decimal("-14000"), 2: Decimal("14000")}
 
-    def test_split_pnl_pct_with_entries(self):
-        # split 1: (35000-36000)/36000*100 = -2.7777...
-        # split 2: (35000-34000)/34000*100 = +2.9411...
-        p = self._filled(
-            quantity="28",
-            avg_price="35000",
-            split_level=2,
-            entries=make_entries(("14", "36000"), ("14", "34000")),
-        )
+    def test_split_pnl_pct_filled_slots(self):
+        p = make_position(("14", "36000"), ("14", "34000"))
         pct = p.split_pnl_pct(Decimal("35000"))
-        # check signs and approximate magnitude
         assert pct[1] < 0
         assert pct[2] > 0
         assert pct[1] == (Decimal("35000") - Decimal("36000")) / Decimal("36000") * Decimal(100)
         assert pct[2] == (Decimal("35000") - Decimal("34000")) / Decimal("34000") * Decimal(100)
+
+    def test_max_split_count_property(self):
+        p = Position.empty(make_asset(), max_split_count=5)
+        assert p.max_split_count == 5
 
 
 # ---------------------------------------------------------------------------
@@ -1590,15 +1682,7 @@ class TestPositionValuation:
 
     # ---- from_position factory ----
     def test_from_position_factory(self):
-        a = make_asset()
-        position = Position(
-            asset=a,
-            quantity=Decimal("10"),
-            avg_price=Decimal("35000"),
-            split_level=1,
-            last_buy_at=UTC_NOW,
-            entries=make_entries(("10", "35000")),
-        )
+        position = make_position(("10", "35000"))
         v = PositionValuation.from_position(position, market_price=Decimal("36000"))
         assert v.market_price == Decimal("36000")
         assert v.market_value.amount == Decimal("360000")
@@ -1611,27 +1695,18 @@ class TestPositionValuation:
         with pytest.raises(ValueError, match="non-positive"):
             PositionValuation.from_position(empty, market_price=Decimal("36000"))
 
-    def test_from_position_uses_full_quantity_including_pending_partial(self):
-        # ADR §8.6 option A: PositionValuation uses position.quantity even
-        # when there's a pending partial fill above the entries' sum. The
-        # full quantity is the single source of truth for valuation.
-        a = make_asset()
-        position = Position(
-            asset=a,
-            quantity=Decimal("20"),  # 10 in entries + 10 pending partial
-            avg_price=Decimal("35000"),
-            split_level=1,
-            last_buy_at=UTC_NOW,
-            entries=make_entries(("10", "35000")),  # sum = 10
-        )
-        # Sanity: position has the partial leftover
-        assert position.has_pending_partial() is True
-        assert position.pending_partial_quantity == Decimal("10")
-
+    def test_from_position_aggregates_multiple_filled_slots(self):
+        # Phase 0.5 (ADR 0002 §3.2): Position.quantity equals the sum of
+        # FILLED slot quantities exactly. PositionValuation must reflect
+        # that aggregate, not just the first slot. Use clean numbers so
+        # the weighted-average is exact in Decimal (no precision drift).
+        # Slot 1: 10 @ 35000, Slot 2: 10 @ 31000 → avg = 33000 exactly.
+        position = make_position(("10", "35000"), ("10", "31000"))
         v = PositionValuation.from_position(position, market_price=Decimal("36000"))
-        assert v.quantity == Decimal("20")  # full Position.quantity, not entries-sum
+        assert v.quantity == Decimal("20")
         assert v.market_value.amount == Decimal("720000")  # 20 * 36000
-        assert v.unrealized_pnl.amount == Decimal("20000")  # (36000-35000)*20
+        # PnL = (36000 - 33000) * 20 = 60000
+        assert v.unrealized_pnl.amount == Decimal("60000")
 
 
 # ---------------------------------------------------------------------------
@@ -1841,12 +1916,11 @@ class TestPortfolioSnapshot:
         with pytest.raises(ValidationError):
             snap.snapshot_date = date(2026, 5, 1)
 
-    def test_partial_fill_position_reflected_in_snapshot_totals(self):
-        # ADR §8.6 option A in PortfolioSnapshot context: a Position with
-        # pending_partial flows through PositionValuation (full Position.quantity)
-        # into snapshot totals.
+    def test_aggregate_valuation_reflected_in_snapshot_totals(self):
+        # ADR §8.6: PositionValuation flows through into snapshot totals
+        # using the full position quantity (Phase 0.5 equality invariant —
+        # no partial-fill carry).
         a = make_asset()
-        # Use a valuation with a "partial-bearing" quantity (20 = 10 entries + 10 pending)
         v = PositionValuation(
             asset=a,
             quantity=Decimal("20"),

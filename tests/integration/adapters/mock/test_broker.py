@@ -78,12 +78,38 @@ class _FixedClock:
 class TestConstruction:
     @pytest.mark.parametrize(
         "param",
-        ["simulate_timeout_rate", "simulate_rejection_rate", "simulate_partial_fill_rate"],
+        ["simulate_timeout_rate", "simulate_rejection_rate"],
     )
     def test_invalid_rate_rejected(self, param):
         kwargs = {"initial_balance": _balance(), "clock": lambda: UTC_NOW, param: 1.5}
         with pytest.raises(ValueError, match=param):
             MockBroker(**kwargs)
+
+    def test_partial_fill_rate_must_be_zero(self):
+        # ADR 0002 §3.2.1: Phase 0.5 blocks partial fills end-to-end.
+        with pytest.raises(ValueError, match="simulate_partial_fill_rate"):
+            MockBroker(
+                initial_balance=_balance(),
+                clock=lambda: UTC_NOW,
+                simulate_partial_fill_rate=0.5,
+            )
+
+    def test_partial_fill_rate_zero_accepted(self):
+        # 0.0 explicitly is the only allowed value.
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=lambda: UTC_NOW,
+            simulate_partial_fill_rate=0.0,
+        )
+        assert broker.get_balance() == _balance()
+
+    def test_max_split_count_out_of_range_rejected(self):
+        with pytest.raises(ValueError, match="max_split_count"):
+            MockBroker(
+                initial_balance=_balance(),
+                clock=lambda: UTC_NOW,
+                max_split_count=8,
+            )
 
     def test_default_rng_used_when_not_provided(self):
         # Should not raise; default rng is created
@@ -233,65 +259,21 @@ class TestTimeout:
 # ---------------------------------------------------------------------------
 # Simulated partial fill (CLAUDE.md §4.4)
 # ---------------------------------------------------------------------------
-class TestPartialFill:
-    def test_partial_fill_at_rate_one(self):
-        a = _asset()
-        broker = MockBroker(
-            initial_balance=_balance("100000000"),
-            clock=_FixedClock(UTC_NOW),
-            rng=random.Random(42),
-            simulate_partial_fill_rate=1.0,
-        )
-        result = broker.place_order(
-            _request(a, quantity="10", target_price="35000")
-        )
-        # Half rounded down to lot_size = 5
-        assert result.status is OrderStatus.PARTIALLY_FILLED
-        assert result.filled_quantity == Decimal("5")
-        # Position updated, but split_level stays at 0 (per CLAUDE.md §4.4)
-        position = broker.get_positions()[0]
-        assert position.quantity == Decimal("5")
-        assert position.split_level == 0
+class TestPartialFillBlocked:
+    """Phase 0.5 (ADR 0002 §3.2.1) blocks partial fills end-to-end.
 
-    def test_partial_fill_falls_through_to_filled_when_unachievable(self):
-        # When request.quantity is below lot_size threshold for partial,
-        # fall through to FILLED.
-        a = _asset(lot_size="1")
-        broker = MockBroker(
-            initial_balance=_balance(),
-            clock=_FixedClock(UTC_NOW),
-            rng=random.Random(42),
-            simulate_partial_fill_rate=1.0,
-        )
-        # quantity=1 → half=0 → not achievable → falls through to FILLED
-        result = broker.place_order(_request(a, quantity="1"))
-        assert result.status is OrderStatus.FILLED
-        assert result.filled_quantity == Decimal("1")
+    The constructor raises on any non-zero ``simulate_partial_fill_rate``;
+    no test path can produce a PARTIALLY_FILLED OrderResult. Phase 1 KIS
+    will reintroduce partial-fill handling with a slot-aware redesign.
+    """
 
-    def test_partial_then_full_keeps_split_level_correct(self):
-        # 1st: partial → split_level stays 0
-        # 2nd: full   → split_level becomes 1 (counts as the first complete split)
-        a = _asset()
-        broker = MockBroker(
-            initial_balance=_balance(),
-            clock=_FixedClock(UTC_NOW),
-            rng=random.Random(42),
-            simulate_partial_fill_rate=1.0,
-        )
-        broker.place_order(
-            _request(a, idempotency_key="p1", quantity="10", target_price="35000")
-        )
-        # Reset partial rate so next call is full fill
-        broker._partial_fill_rate = 0.0  # test-only access
-        broker.place_order(
-            _request(a, idempotency_key="p2", quantity="10", target_price="34000")
-        )
-        position = broker.get_positions()[0]
-        # qty = 5 (partial) + 10 (full) = 15
-        # cost = 5*35000 + 10*34000 = 175000 + 340000 = 515000
-        # avg = 515000 / 15 = 34333.33...
-        assert position.quantity == Decimal("15")
-        assert position.split_level == 1  # only the full fill counted
+    def test_constructor_blocks_nonzero_rate(self):
+        with pytest.raises(ValueError, match="simulate_partial_fill_rate"):
+            MockBroker(
+                initial_balance=_balance(),
+                clock=lambda: UTC_NOW,
+                simulate_partial_fill_rate=1.0,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +309,12 @@ class TestCashSafety:
 # ---------------------------------------------------------------------------
 # SplitEntry recording on Position (ADR §7.5/§7.9)
 # ---------------------------------------------------------------------------
-class TestSplitEntryRecording:
-    def test_first_fill_records_split_entry(self):
+class TestSlotRecording:
+    """Phase 0.5 (ADR 0002 §3.1 / §4.4): each FILLED order lands in the
+    smallest EMPTY slot; ``last_exit_*`` history is preserved across the
+    refill so the HybridTimeBasedReentry policy can use it."""
+
+    def test_first_fill_lands_in_slot_one(self):
         a = _asset()
         broker = MockBroker(
             initial_balance=_balance(),
@@ -339,14 +325,17 @@ class TestSplitEntryRecording:
             _request(a, idempotency_key="k1", quantity="10", target_price="35000")
         )
         p = broker.get_positions()[0]
-        assert len(p.entries) == 1
-        e = p.entries[0]
-        assert e.split_number == 1
-        assert e.quantity == Decimal("10")
-        assert e.entry_price == Decimal("35000")
-        assert e.idempotency_key == "k1"
+        assert len(p.slots) == 7
+        assert p.split_level == 1
+        slot1 = p.get_slot(1)
+        assert slot1 is not None
+        assert slot1.entry is not None
+        assert slot1.entry.split_number == 1
+        assert slot1.entry.quantity == Decimal("10")
+        assert slot1.entry.entry_price == Decimal("35000")
+        assert slot1.entry.idempotency_key == "k1"
 
-    def test_subsequent_fill_appends_split_entry(self):
+    def test_subsequent_fill_lands_in_slot_two(self):
         a = _asset()
         broker = MockBroker(
             initial_balance=_balance(),
@@ -360,60 +349,15 @@ class TestSplitEntryRecording:
             _request(a, idempotency_key="k2", quantity="5", target_price="32000")
         )
         p = broker.get_positions()[0]
-        assert [e.split_number for e in p.entries] == [1, 2]
-        assert p.entries[1].quantity == Decimal("5")
-        assert p.entries[1].entry_price == Decimal("32000")
-        assert p.entries[1].idempotency_key == "k2"
-        assert p.has_pending_partial() is False
+        assert p.split_level == 2
+        assert [s.slot_number for s in p.filled_slots] == [1, 2]
+        slot2 = p.get_slot(2)
+        assert slot2 is not None and slot2.entry is not None
+        assert slot2.entry.quantity == Decimal("5")
+        assert slot2.entry.entry_price == Decimal("32000")
+        assert slot2.entry.idempotency_key == "k2"
 
-    def test_partial_fill_does_not_create_split_entry(self):
-        a = _asset()
-        broker = MockBroker(
-            initial_balance=_balance(),
-            clock=_FixedClock(UTC_NOW),
-            rng=random.Random(42),
-            simulate_partial_fill_rate=1.0,
-        )
-        broker.place_order(
-            _request(a, idempotency_key="p1", quantity="10", target_price="35000")
-        )
-        p = broker.get_positions()[0]
-        # No split entry created on partial; entries stay empty
-        assert p.entries == []
-        assert p.split_level == 0
-        # The partial 5-share fill is exposed via pending_partial_quantity
-        assert p.pending_partial_quantity == Decimal("5")
-        assert p.has_pending_partial() is True
-
-    def test_partial_then_full_only_full_appears_in_entries(self):
-        # Partial leaves pending_partial; subsequent full only adds 1 entry
-        # (CLAUDE.md §4.4 / ADR §7.5 — partial is never retroactively promoted).
-        a = _asset()
-        broker = MockBroker(
-            initial_balance=_balance(),
-            clock=_FixedClock(UTC_NOW),
-            rng=random.Random(42),
-            simulate_partial_fill_rate=1.0,
-        )
-        broker.place_order(
-            _request(a, idempotency_key="p1", quantity="10", target_price="35000")
-        )
-        broker._partial_fill_rate = 0.0
-        broker.place_order(
-            _request(a, idempotency_key="p2", quantity="10", target_price="34000")
-        )
-        p = broker.get_positions()[0]
-        # Only the full fill became a SplitEntry
-        assert len(p.entries) == 1
-        assert p.entries[0].split_number == 1
-        assert p.entries[0].quantity == Decimal("10")
-        assert p.entries[0].entry_price == Decimal("34000")
-        assert p.entries[0].idempotency_key == "p2"
-        # Partial 5 still pending on top of 10 in entries → quantity = 15
-        assert p.quantity == Decimal("15")
-        assert p.pending_partial_quantity == Decimal("5")
-
-    def test_split_entry_idempotency_key_matches_request(self):
+    def test_idempotency_key_persists_on_filled_slot(self):
         a = _asset()
         broker = MockBroker(
             initial_balance=_balance(),
@@ -424,9 +368,11 @@ class TestSplitEntryRecording:
             _request(a, idempotency_key="unique-key-99", quantity="10", target_price="35000")
         )
         p = broker.get_positions()[0]
-        assert p.entries[0].idempotency_key == "unique-key-99"
+        slot1 = p.get_slot(1)
+        assert slot1 is not None and slot1.entry is not None
+        assert slot1.entry.idempotency_key == "unique-key-99"
 
-    def test_split_entry_entry_date_uses_kst_business_date(self):
+    def test_entry_date_uses_kst_business_date(self):
         # 06:00 UTC = 15:00 KST (within KRX hours; same calendar date both ways).
         a = _asset()
         broker = MockBroker(
@@ -438,11 +384,12 @@ class TestSplitEntryRecording:
             _request(a, quantity="10", target_price="35000")
         )
         p = broker.get_positions()[0]
-        assert p.entries[0].entry_date == UTC_NOW.astimezone(KST).date()
+        slot1 = p.get_slot(1)
+        assert slot1 is not None and slot1.entry is not None
+        assert slot1.entry.entry_date == UTC_NOW.astimezone(KST).date()
 
     def test_seven_full_fills_reach_max_split(self):
-        # Position invariant caps split_level at 7 (Field le=7). Seven full
-        # fills land at split_level=7 with seven entries.
+        # All seven slots get FILLED; further buys would fail (no EMPTY slot).
         a = _asset()
         broker = MockBroker(
             initial_balance=_balance("100000000"),
@@ -455,6 +402,21 @@ class TestSplitEntryRecording:
             )
         p = broker.get_positions()[0]
         assert p.split_level == 7
-        assert [e.split_number for e in p.entries] == [1, 2, 3, 4, 5, 6, 7]
-        # No pending partial
-        assert p.pending_partial_quantity == Decimal(0)
+        assert [s.slot_number for s in p.filled_slots] == [1, 2, 3, 4, 5, 6, 7]
+        assert p.next_empty_slot_number() is None
+
+    def test_eighth_fill_with_all_slots_filled_raises(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("100000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        for i in range(1, 8):
+            broker.place_order(
+                _request(a, idempotency_key=f"s{i}", quantity="1", target_price="1000")
+            )
+        with pytest.raises(BrokerConnectionError, match=r"all .* slots already FILLED"):
+            broker.place_order(
+                _request(a, idempotency_key="overflow", quantity="1", target_price="1000")
+            )

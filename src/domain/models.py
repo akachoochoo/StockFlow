@@ -170,6 +170,19 @@ class SignalSource(StrEnum):
     MANUAL = "MANUAL"  # operator override
 
 
+class SlotState(StrEnum):
+    """SplitSlot state (Phase 0.5 / ADR 0002 §3.1).
+
+    EMPTY  — no current entry; slot may carry last_exit_* history for
+             reentry policy F (HybridTimeBasedReentry).
+    FILLED — entry holds a SplitEntry. quantity/avg_price/split_level
+             include this slot.
+    """
+
+    EMPTY = "EMPTY"
+    FILLED = "FILLED"
+
+
 # ---------------------------------------------------------------------------
 # Value objects
 # ---------------------------------------------------------------------------
@@ -349,6 +362,101 @@ class SplitEntry(ValueObject):
         return _to_decimal(v)
 
 
+class SplitSlot(ValueObject):
+    """One of N split slots in a Position (Phase 0.5 / ADR 0002 §3.1).
+
+    Represents the "one of seven accounts" of 세븐 스플릿 explicitly. Each
+    slot transitions EMPTY ↔ FILLED across sell-and-reentry cycles. When a
+    slot is sold, ``state`` becomes EMPTY and ``last_exit_price`` /
+    ``last_exit_date`` capture the exit so a HybridTimeBasedReentry can
+    decide whether to use the exit price or current market price as the
+    reentry trigger anchor.
+
+    Invariants (model_validator):
+    - state == FILLED ⇔ entry is not None
+    - state == FILLED ⇒ entry.split_number == slot_number
+    - last_exit_date is not None ⇒ last_exit_price is not None
+
+    sparse split_number is allowed: a Position may have slot 2 EMPTY while
+    slot 3 is FILLED. The Phase 0 ``1, 2, …, split_level`` sequential
+    invariant is dropped.
+    """
+
+    slot_number: int = Field(ge=1, le=7)
+    state: SlotState
+    entry: SplitEntry | None = None
+    last_exit_price: Decimal | None = None
+    last_exit_date: date | None = None
+
+    @field_validator("last_exit_price", mode="before")
+    @classmethod
+    def _coerce_exit_price(cls, v: object) -> Decimal | None:
+        if v is None:
+            return None
+        out = _to_decimal(v)
+        if out <= 0:
+            raise ValueError(f"last_exit_price must be > 0, got {out}")
+        return out
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> SplitSlot:
+        if self.state is SlotState.FILLED:
+            if self.entry is None:
+                raise ValueError(
+                    f"FILLED slot {self.slot_number} requires entry"
+                )
+            if self.entry.split_number != self.slot_number:
+                raise ValueError(
+                    f"slot.entry.split_number ({self.entry.split_number}) "
+                    f"must equal slot_number ({self.slot_number})"
+                )
+        elif self.entry is not None:
+            raise ValueError(
+                f"EMPTY slot {self.slot_number} must not carry an entry"
+            )
+        if self.last_exit_date is not None and self.last_exit_price is None:
+            raise ValueError(
+                "last_exit_date is set but last_exit_price is None"
+            )
+        return self
+
+    @classmethod
+    def empty(
+        cls,
+        slot_number: int,
+        *,
+        last_exit_price: Decimal | None = None,
+        last_exit_date: date | None = None,
+    ) -> SplitSlot:
+        """Build an EMPTY slot, optionally carrying exit history."""
+        return cls(
+            slot_number=slot_number,
+            state=SlotState.EMPTY,
+            entry=None,
+            last_exit_price=last_exit_price,
+            last_exit_date=last_exit_date,
+        )
+
+    @classmethod
+    def filled(
+        cls,
+        entry: SplitEntry,
+        *,
+        last_exit_price: Decimal | None = None,
+        last_exit_date: date | None = None,
+    ) -> SplitSlot:
+        """Build a FILLED slot from an entry. slot_number is taken from
+        entry.split_number to enforce the consistency invariant up-front.
+        """
+        return cls(
+            slot_number=entry.split_number,
+            state=SlotState.FILLED,
+            entry=entry,
+            last_exit_price=last_exit_price,
+            last_exit_date=last_exit_date,
+        )
+
+
 class PositionValuation(ValueObject):
     """Mark-to-market snapshot of a single Position.
 
@@ -447,31 +555,31 @@ class PositionValuation(ValueObject):
 # Entities
 # ---------------------------------------------------------------------------
 class Position(DomainModel):
-    """Current holding for one asset, with per-split entry records.
+    """Current holding for one asset, with per-slot state (Phase 0.5).
 
-    `split_level` tracks how many split-buys have *fully* completed (0 = none,
-    1~7 = 1st through 7th split filled). Per CLAUDE.md §4.4, only fully FILLED
-    orders increment split_level and append a SplitEntry; PARTIALLY_FILLED
-    fills do NOT.
+    Phase 0.5 (ADR 0002 §3) replaces the Phase 0 ``entries: list[SplitEntry]``
+    with ``slots: list[SplitSlot]`` to support per-slot independent
+    sell-and-reentry. Each slot transitions EMPTY ↔ FILLED across cycles;
+    its ``last_exit_*`` history feeds HybridTimeBasedReentry.
 
-    Partial-fill policy (ADR §7.5/§7.9):
-        - PARTIALLY_FILLED updates `quantity`, `avg_price`, `last_buy_at` only.
-        - `entries` and `split_level` remain unchanged on partial fills.
-        - The leftover (`pending_partial_quantity`) shows as `quantity` in
-          excess of `sum(e.quantity for e in entries)`. The orchestrator
-          surfaces this via Decision.reasoning when present.
-        - Partial fills are NEVER retroactively promoted into a SplitEntry.
+    ``split_level`` is the count of FILLED slots — it can both increase
+    (new buy) and decrease (sell). ``slots`` always holds
+    ``max_split_count`` entries with ``slot_number`` 1..N (sparse
+    FILLED/EMPTY pattern is allowed).
+
+    Partial-fill policy (ADR 0002 §3.2.1):
+        Phase 0.5 BLOCKS partial fills end-to-end (MockBroker enforces
+        ``simulate_partial_fill_rate == 0``). The Phase 0 carry-over
+        (``quantity > sum(entries)``) is dropped. This invariant is now
+        an equality.
 
     Invariants enforced (model_validator):
-        - split_level == len(entries)
-        - entries' split_numbers form the sequence 1, 2, ..., split_level
-        - quantity >= sum(e.quantity for e in entries)   (lower bound only)
+        - len(slots) ∈ [1, 7]; slot_numbers are exactly 1..len(slots)
+        - split_level == count(s for s in slots if s.state == FILLED)
+        - quantity == sum(s.entry.quantity for FILLED slots)   (equality, no carry)
+        - avg_price weighted-average matches FILLED slots when split_level > 0
         - quantity > 0 ⇒ avg_price > 0 and last_buy_at is set
-        - quantity == 0 ⇒ split_level == 0 and avg_price == 0 and entries == []
-
-    NOT enforced (intentional, ADR §7.8 option-A limit):
-        - avg_price weighted-average match against entries
-          (because partial fills affect avg_price but never appear in entries).
+        - quantity == 0 ⇒ avg_price == 0 (last_buy_at may persist as history)
     """
 
     asset: Asset
@@ -479,7 +587,7 @@ class Position(DomainModel):
     avg_price: Decimal
     split_level: int = Field(ge=0, le=7)
     last_buy_at: datetime | None = None
-    entries: list[SplitEntry] = Field(default_factory=list)
+    slots: list[SplitSlot]
 
     @field_validator("quantity", "avg_price", mode="before")
     @classmethod
@@ -509,34 +617,54 @@ class Position(DomainModel):
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Position:
-        # split_level <-> entries length
-        if self.split_level != len(self.entries):
-            raise ValueError(
-                f"split_level ({self.split_level}) must equal "
-                f"len(entries) ({len(self.entries)})"
-            )
-
-        # entries' split_numbers must be 1..split_level sequential
-        expected = list(range(1, self.split_level + 1))
-        actual = [e.split_number for e in self.entries]
+        # 1. slots length and slot_number sequence
+        n = len(self.slots)
+        if not 1 <= n <= 7:
+            raise ValueError(f"len(slots) must be in [1, 7], got {n}")
+        expected = list(range(1, n + 1))
+        actual = [s.slot_number for s in self.slots]
         if actual != expected:
             raise ValueError(
-                f"entries split_numbers must be {expected}, got {actual}"
+                f"slot_numbers must be sequential {expected}, got {actual}"
             )
 
-        # quantity must be >= sum of entries quantity (partial fills sit above)
-        total_from_entries = self.total_quantity_from_entries
-        if self.quantity < total_from_entries:
+        # 2. split_level == FILLED count
+        filled = [s for s in self.slots if s.state is SlotState.FILLED]
+        if self.split_level != len(filled):
             raise ValueError(
-                f"quantity ({self.quantity}) must be >= sum of entries "
-                f"quantity ({total_from_entries})"
+                f"split_level ({self.split_level}) must equal FILLED count "
+                f"({len(filled)})"
             )
 
-        # legacy invariants for the qty>0 case (avg_price/last_buy_at). The
-        # symmetric "qty==0 ⇒ split_level==0" rule is subsumed by the new
-        # entries invariants: entries each have qty > 0, so sum > 0 whenever
-        # split_level > 0, which would already fail the quantity-vs-sum check
-        # above. So only the avg_price=0 check remains for the qty==0 branch.
+        # 3. quantity equals sum of FILLED slot quantities (no partial carry)
+        expected_qty = sum(
+            (s.entry.quantity for s in filled if s.entry is not None),
+            Decimal(0),
+        )
+        if self.quantity != expected_qty:
+            raise ValueError(
+                f"quantity ({self.quantity}) must equal sum of FILLED slot "
+                f"quantities ({expected_qty})"
+            )
+
+        # 4. avg_price weighted-average match (when there's any position)
+        if filled:
+            total_cost = sum(
+                (
+                    s.entry.quantity * s.entry.entry_price
+                    for s in filled
+                    if s.entry is not None
+                ),
+                Decimal(0),
+            )
+            expected_avg = total_cost / expected_qty
+            if self.avg_price != expected_avg:
+                raise ValueError(
+                    f"avg_price ({self.avg_price}) must equal weighted "
+                    f"average of FILLED slots ({expected_avg})"
+                )
+
+        # 5. invariants tied to quantity sign
         has_qty = self.quantity > 0
         if has_qty:
             if self.avg_price <= 0:
@@ -548,77 +676,94 @@ class Position(DomainModel):
         return self
 
     @classmethod
-    def empty(cls, asset: Asset) -> Position:
-        """Construct an empty (no-position) holding for the given asset."""
+    def empty(cls, asset: Asset, *, max_split_count: int = 7) -> Position:
+        """Construct an empty (no-position) holding with N EMPTY slots.
+
+        Default max_split_count=7 matches the Phase 0.5 single-asset
+        configuration. Phase 0.7 will plumb this through per-asset config.
+        """
+        if not 1 <= max_split_count <= 7:
+            raise ValueError(
+                f"max_split_count must be in [1, 7], got {max_split_count}"
+            )
         return cls(
             asset=asset,
             quantity=Decimal(0),
             avg_price=Decimal(0),
             split_level=0,
             last_buy_at=None,
-            entries=[],
+            slots=[
+                SplitSlot.empty(slot_number=i)
+                for i in range(1, max_split_count + 1)
+            ],
         )
 
     # ------------------------------------------------------------------
-    # Derived quantities
+    # Derived accessors
     # ------------------------------------------------------------------
     @property
-    def total_quantity_from_entries(self) -> Decimal:
-        """Sum of `entries.quantity`. Excludes any pending partial fill."""
-        return sum((e.quantity for e in self.entries), Decimal(0))
+    def max_split_count(self) -> int:
+        """Number of slots configured for this Position. == len(self.slots)."""
+        return len(self.slots)
 
     @property
-    def avg_price_from_entries(self) -> Decimal:
-        """Weighted-average price based only on `entries`. 0 when entries empty.
-
-        Differs from `avg_price` when there is a pending partial fill, since
-        partial fills update `avg_price` but do NOT appear in `entries`.
-        """
-        if not self.entries:
-            return Decimal(0)
-        total_cost = sum(
-            (e.quantity * e.entry_price for e in self.entries), Decimal(0)
-        )
-        return total_cost / self.total_quantity_from_entries
+    def filled_slots(self) -> list[SplitSlot]:
+        """Slots in FILLED state, ordered by slot_number."""
+        return [s for s in self.slots if s.state is SlotState.FILLED]
 
     @property
-    def pending_partial_quantity(self) -> Decimal:
-        """Quantity present on the position but not yet captured in a SplitEntry.
+    def empty_slots(self) -> list[SplitSlot]:
+        """Slots in EMPTY state, ordered by slot_number."""
+        return [s for s in self.slots if s.state is SlotState.EMPTY]
 
-        Equals `quantity - total_quantity_from_entries`. Always >= 0 by the
-        Position invariant.
+    def next_empty_slot_number(self) -> int | None:
+        """Smallest slot_number in EMPTY state, or None when all FILLED.
+
+        Phase 0.5 uses this to decide which slot a new buy fills (lowest
+        slot_number first — keeps the seven-account ordering deterministic).
         """
-        return self.quantity - self.total_quantity_from_entries
-
-    def has_pending_partial(self) -> bool:
-        """True iff a partial fill remains outside `entries`."""
-        return self.pending_partial_quantity > 0
-
-    def get_entry(self, split_number: int) -> SplitEntry | None:
-        """Return the SplitEntry for a given split_number, or None if absent."""
-        for entry in self.entries:
-            if entry.split_number == split_number:
-                return entry
+        for s in self.slots:
+            if s.state is SlotState.EMPTY:
+                return s.slot_number
         return None
 
+    def get_slot(self, slot_number: int) -> SplitSlot | None:
+        """Return the slot with the given slot_number, or None if out of range."""
+        for s in self.slots:
+            if s.slot_number == slot_number:
+                return s
+        return None
+
+    def get_entry(self, slot_number: int) -> SplitEntry | None:
+        """Return the SplitEntry of slot ``slot_number`` if FILLED, else None."""
+        slot = self.get_slot(slot_number)
+        if slot is None or slot.state is not SlotState.FILLED:
+            return None
+        return slot.entry
+
     def split_pnl(self, current_price: Decimal) -> dict[int, Decimal]:
-        """Per-split unrealized PnL in price units.
+        """Per-slot unrealized PnL in price units (FILLED slots only).
 
         Visualizes the seven-account view of 세븐 스플릿 within the
         single-account model. Caller passes the current spot price.
         """
         return {
-            e.split_number: (current_price - e.entry_price) * e.quantity
-            for e in self.entries
+            s.entry.split_number: (current_price - s.entry.entry_price)
+            * s.entry.quantity
+            for s in self.filled_slots
+            if s.entry is not None
         }
 
     def split_pnl_pct(self, current_price: Decimal) -> dict[int, Decimal]:
-        """Per-split unrealized return percent (price-only, no fees)."""
+        """Per-slot unrealized return percent (price-only, no fees)."""
         return {
-            e.split_number: (
-                (current_price - e.entry_price) / e.entry_price * Decimal(100)
+            s.entry.split_number: (
+                (current_price - s.entry.entry_price)
+                / s.entry.entry_price
+                * Decimal(100)
             )
-            for e in self.entries
+            for s in self.filled_slots
+            if s.entry is not None
         }
 
 

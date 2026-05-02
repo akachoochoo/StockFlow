@@ -42,6 +42,7 @@ from src.domain.models import (
     SignalLevel,
     SignalSource,
     SplitEntry,
+    SplitSlot,
 )
 from src.domain.strategies.price_drop import PriceDropStrategy, SplitStrategyConfig
 from src.use_cases.daily_orchestrator import DailyOrchestrator, SkipReason
@@ -93,41 +94,46 @@ def _seeded_position(
     avg_price: str,
     split_level: int,
     last_buy_at: datetime,
+    max_split_count: int = 7,
 ) -> Position:
-    """Build a Position with auto-generated entries summing to `quantity`."""
+    """Build a Position with `split_level` FILLED slots + EMPTY rest."""
     qty = Decimal(quantity)
     avg = Decimal(avg_price)
     if split_level == 0:
-        entries: list[SplitEntry] = []
-    else:
-        base = qty // Decimal(split_level)
-        remainder = qty - base * Decimal(split_level - 1)
-        entries = [
-            SplitEntry(
-                split_number=i,
-                entry_date=last_buy_at.date(),
-                quantity=base,
-                entry_price=avg,
-                idempotency_key=f"seed-{i}",
-            )
-            for i in range(1, split_level)
-        ]
-        entries.append(
-            SplitEntry(
-                split_number=split_level,
-                entry_date=last_buy_at.date(),
-                quantity=remainder,
-                entry_price=avg,
-                idempotency_key=f"seed-{split_level}",
-            )
+        return Position.empty(asset, max_split_count=max_split_count)
+    base = qty // Decimal(split_level)
+    remainder = qty - base * Decimal(split_level - 1)
+    entries = [
+        SplitEntry(
+            split_number=i,
+            entry_date=last_buy_at.date(),
+            quantity=base,
+            entry_price=avg,
+            idempotency_key=f"seed-{i}",
         )
+        for i in range(1, split_level)
+    ]
+    entries.append(
+        SplitEntry(
+            split_number=split_level,
+            entry_date=last_buy_at.date(),
+            quantity=remainder,
+            entry_price=avg,
+            idempotency_key=f"seed-{split_level}",
+        )
+    )
+    slots: list[SplitSlot] = [SplitSlot.filled(entry=e) for e in entries]
+    slots.extend(
+        SplitSlot.empty(slot_number=i)
+        for i in range(split_level + 1, max_split_count + 1)
+    )
     return Position(
         asset=asset,
         quantity=qty,
         avg_price=avg,
         split_level=split_level,
         last_buy_at=last_buy_at,
-        entries=entries,
+        slots=slots,
     )
 
 
@@ -248,9 +254,14 @@ def _make_real_orchestrator(
     rng_seed: int = 42,
     timeout_rate: float = 0.0,
     rejection_rate: float = 0.0,
-    partial_fill_rate: float = 0.0,
     clock_at: datetime | None = None,
 ) -> tuple[DailyOrchestrator, MockBroker]:
+    """Build a DailyOrchestrator wired to a real MockBroker.
+
+    Phase 0.5 (ADR 0002 §3.2.1) blocks partial fills end-to-end, so this
+    helper does not expose a partial-fill knob. Tests that previously
+    relied on partial fills are obsolete.
+    """
     asset = asset or _asset()
     bars = bars or [
         _bar(asset, date(2026, 4, 28), "35000"),
@@ -267,7 +278,6 @@ def _make_real_orchestrator(
         rng=random.Random(rng_seed),
         simulate_timeout_rate=timeout_rate,
         simulate_rejection_rate=rejection_rate,
-        simulate_partial_fill_rate=partial_fill_rate,
     )
     market_data = MockMarketData(ohlcv_by_asset={asset: bars})
     signal = NullSignal()
@@ -688,23 +698,10 @@ class TestOrderPlacement:
         decision = orch.run_for_date(TODAY)
         assert decision.action == f"skip:{SkipReason.BROKER_TIMEOUT.value}"
 
-    def test_partial_fill_action_label(self):
-        clock_at = _utc_after_close(TODAY)
-        orch, _ = self._wire(
-            place_result=OrderResult(
-                idempotency_key="KRX:069500:2026-04-30",
-                asset=_asset(),
-                broker_order_id="bid-partial",
-                status=OrderStatus.PARTIALLY_FILLED,
-                filled_quantity=Decimal("14"),
-                filled_price=Decimal("35000"),
-                submitted_at=clock_at,
-                filled_at=clock_at,
-            ),
-        )
-        decision = orch.run_for_date(TODAY)
-        assert decision.action == "buy_split_1_partial"
-        assert decision.reasoning["filled_quantity"] == "14"
+    # Phase 0.5 (ADR 0002 §3.2.1) blocks partial fills end-to-end so the
+    # PARTIALLY_FILLED → "buy_split_X_partial" action label can no longer
+    # be produced. Phase 1 will reintroduce partial-fill labelling alongside
+    # the slot-aware partial-fill redesign.
 
 
 # ---------------------------------------------------------------------------
@@ -768,113 +765,8 @@ class TestIntegrityErrorPropagation:
 
 
 # ---------------------------------------------------------------------------
-# Pending partial fill (ADR §7.9)
-# ---------------------------------------------------------------------------
-class TestPendingPartial:
-    def test_partial_fill_does_not_become_split_entry_next_day(self):
-        # Day T: partial fill produces a partial-only Position
-        # (entries=[], pending_partial_quantity > 0).
-        # Day T+1: orchestrator runs again; entries must remain empty
-        # because partials are never retroactively promoted (CLAUDE.md §4.4).
-        asset = _asset()
-        bars_t = [_bar(asset, date(2026, 4, 29), "35000")]
-        balance = Balance(
-            cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
-        )
-        clock_t = _utc_after_close(TODAY)
-        broker = MockBroker(
-            initial_balance=balance,
-            clock=lambda: clock_t,
-            rng=random.Random(42),
-            simulate_partial_fill_rate=1.0,  # force partial
-        )
-        orch = DailyOrchestrator(
-            broker=broker,
-            market_data=MockMarketData(ohlcv_by_asset={asset: bars_t}),
-            signal=NullSignal(),
-            strategy=PriceDropStrategy(),
-            config=_config(),
-            asset=asset,
-            clock=lambda: clock_t,
-            uow_factory=lambda: InMemoryUnitOfWork(),
-        )
-        decision_t = orch.run_for_date(TODAY)
-        # Partial fill action and warning surfaced
-        assert decision_t.action.endswith("_partial")
-        position_after_t = broker.get_positions()[0]
-        assert position_after_t.entries == []
-        assert position_after_t.has_pending_partial() is True
-
-        # Day T+1: turn off partial-fill rate; price drops further (no buy
-        # because drop check uses avg_price, but even if buy fires, partial
-        # entries from T MUST NOT appear).
-        next_day = date(2026, 5, 1)
-        bars_tplus1 = [
-            *bars_t,
-            _bar(asset, next_day, "35100"),  # tiny up-move; no buy expected
-        ]
-        clock_tplus1 = _utc_after_close(next_day)
-        broker._partial_fill_rate = 0.0
-        # Re-wire orchestrator with the same broker (state persists) and
-        # the new clock + extended market data.
-        orch2 = DailyOrchestrator(
-            broker=broker,
-            market_data=MockMarketData(ohlcv_by_asset={asset: bars_tplus1}),
-            signal=NullSignal(),
-            strategy=PriceDropStrategy(),
-            config=_config(),
-            asset=asset,
-            clock=lambda: clock_tplus1,
-            uow_factory=lambda: InMemoryUnitOfWork(),
-        )
-        orch2.run_for_date(next_day)
-        position_after_tplus1 = broker.get_positions()[0]
-        # Entries STILL empty — partial from T was never promoted
-        assert position_after_tplus1.entries == []
-        assert position_after_tplus1.has_pending_partial() is True
-
-    def test_decision_logs_pending_partial_warning(self):
-        # Seed a Position with pending_partial > 0 (entries summing < quantity)
-        # and verify the orchestrator's Decision.reasoning carries the warning.
-        asset = _asset()
-        bars = [_bar(asset, date(2026, 4, 29), "35000")]
-        clock_at = _utc_after_close(TODAY)
-        balance = Balance(
-            cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
-        )
-        broker = MockBroker(
-            initial_balance=balance,
-            clock=lambda: clock_at,
-            rng=random.Random(42),
-        )
-        # Seed a partial-only position (entries empty; quantity > 0):
-        seed = Position(
-            asset=asset,
-            quantity=Decimal("5"),
-            avg_price=Decimal("35000"),
-            split_level=0,
-            last_buy_at=_utc_after_close(date(2026, 4, 28)),
-            entries=[],
-        )
-        broker._positions[asset.fqn] = seed
-        # Need to also pre-debit cash to keep balance consistent
-        # (5 shares @ 35000 = 175,000 cost). Skipping for test simplicity —
-        # balance still ample for next attempted order.
-        orch = DailyOrchestrator(
-            broker=broker,
-            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
-            signal=NullSignal(),
-            strategy=PriceDropStrategy(),
-            config=_config(),
-            asset=asset,
-            clock=lambda: clock_at,
-            uow_factory=lambda: InMemoryUnitOfWork(),
-        )
-        decision = orch.run_for_date(TODAY)
-        assert decision.reasoning.get("pending_partial_warning") == "True"
-        assert decision.reasoning.get("pending_partial_quantity") == "5"
-
-
+# (Phase 0 TestPendingPartial removed — Phase 0.5 / ADR 0002 §3.2.1 blocks
+# partial fills end-to-end, so the partial-fill carry tests no longer apply.)
 # ---------------------------------------------------------------------------
 # Persistence via uow_factory (ADR §8.5)
 # ---------------------------------------------------------------------------
@@ -1052,32 +944,7 @@ class TestPersistence:
         # No Position update on rejection
         assert uow.positions.get(asset.fqn) is None
 
-    def test_partial_fill_saves_order_and_updated_position(self):
-        # PARTIALLY_FILLED → Order saved + Position updated (quantity/avg_price).
-        asset = _asset()
-        bars = [_bar(asset, date(2026, 4, 29), "35000")]
-        clock_at = _utc_after_close(TODAY)
-        broker = MockBroker(
-            initial_balance=Balance(
-                cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
-            ),
-            clock=lambda: clock_at,
-            rng=random.Random(42),
-            simulate_partial_fill_rate=1.0,
-        )
-        orch, uow = self._orch_with_shared_uow(
-            broker=broker,
-            market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
-            signal=NullSignal(),
-            clock_at=clock_at,
-        )
-        decision = orch.run_for_date(TODAY)
-        assert decision.action.endswith("_partial")
-        order = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30")
-        assert order is not None
-        assert order.status is OrderStatus.PARTIALLY_FILLED
-        position = uow.positions.get(asset.fqn)
-        assert position is not None
-        assert position.quantity > 0
-        # entries empty per ADR §7.5 (partial fills don't add SplitEntry)
-        assert position.entries == []
+    # Phase 0 partial-fill persistence test removed — Phase 0.5 (ADR 0002
+    # §3.2.1) blocks partial fills end-to-end. Phase 1 will reintroduce
+    # both the broker capability and the persistence test alongside the
+    # slot-aware partial-fill redesign.

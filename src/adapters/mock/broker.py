@@ -33,7 +33,9 @@ from src.domain.models import (
     OrderResult,
     OrderStatus,
     Position,
+    SlotState,
     SplitEntry,
+    SplitSlot,
 )
 
 if TYPE_CHECKING:
@@ -55,14 +57,28 @@ class MockBroker:
         simulate_timeout_rate: float = 0.0,
         simulate_rejection_rate: float = 0.0,
         simulate_partial_fill_rate: float = 0.0,
+        max_split_count: int = 7,
     ) -> None:
         for name, rate in (
             ("simulate_timeout_rate", simulate_timeout_rate),
             ("simulate_rejection_rate", simulate_rejection_rate),
-            ("simulate_partial_fill_rate", simulate_partial_fill_rate),
         ):
             if not (0.0 <= rate <= 1.0):
                 raise ValueError(f"{name} must be in [0.0, 1.0], got {rate}")
+        # ADR 0002 §3.2.1: Phase 0.5 blocks partial fills end-to-end.
+        # Parameter kept in the signature so the boundary is loud — Phase 1
+        # KIS adapter will reintroduce partial-fill handling with a redesigned
+        # slot-aware policy.
+        if simulate_partial_fill_rate != 0.0:
+            raise ValueError(
+                "simulate_partial_fill_rate must be 0.0 in Phase 0.5 "
+                "(partial fills are blocked, ADR 0002 §3.2.1). Got "
+                f"{simulate_partial_fill_rate}."
+            )
+        if not 1 <= max_split_count <= 7:
+            raise ValueError(
+                f"max_split_count must be in [1, 7], got {max_split_count}"
+            )
 
         self._balance: Balance = initial_balance
         self._positions: dict[str, Position] = {}
@@ -72,7 +88,7 @@ class MockBroker:
         self._rng: random.Random = rng if rng is not None else random.Random()
         self._timeout_rate = simulate_timeout_rate
         self._rejection_rate = simulate_rejection_rate
-        self._partial_fill_rate = simulate_partial_fill_rate
+        self._max_split_count = max_split_count
 
     # ------------------------------------------------------------------
     # BrokerPort
@@ -117,25 +133,9 @@ class MockBroker:
             self._record_order(request, result)
             return result
 
-        # 3. Partial fill: only when achievable; else fall through to FILLED.
-        if self._rng.random() < self._partial_fill_rate:
-            partial_qty = self._compute_partial_quantity(request)
-            if 0 < partial_qty < request.quantity:
-                result = OrderResult(
-                    idempotency_key=request.idempotency_key,
-                    asset=request.asset,
-                    broker_order_id=broker_order_id,
-                    status=OrderStatus.PARTIALLY_FILLED,
-                    filled_quantity=partial_qty,
-                    filled_price=request.target_price,
-                    submitted_at=now,
-                    filled_at=now,
-                )
-                self._record_order(request, result)
-                self._update_state_on_fill(request, result)
-                return result
-
-        # 4. Default: FILLED.
+        # 3. Default: FILLED. Partial fills are blocked in Phase 0.5
+        # (constructor enforces simulate_partial_fill_rate == 0.0,
+        # ADR 0002 §3.2.1).
         result = self._build_filled_result(request, broker_order_id, now)
         self._record_order(request, result)
         self._update_state_on_fill(request, result)
@@ -173,19 +173,6 @@ class MockBroker:
             filled_at=now,
         )
 
-    def _compute_partial_quantity(self, request: OrderRequest) -> Decimal:
-        """Return a partial fill quantity (lot-aligned, < request.quantity).
-
-        Phase 0 simulates partials at exactly half the requested quantity,
-        rounded down to the asset's lot_size. Returns 0 if the result is not
-        smaller than the requested quantity (i.e. partial impossible).
-        """
-        lot = request.asset.lot_size
-        half = (request.quantity / Decimal(2) // lot) * lot
-        if half <= 0 or half >= request.quantity:
-            return Decimal(0)
-        return half
-
     def _record_order(self, request: OrderRequest, result: OrderResult) -> None:
         self._orders[request.idempotency_key] = Order.from_request_result(
             request, result
@@ -206,9 +193,12 @@ class MockBroker:
     def _update_state_on_fill(
         self, request: OrderRequest, result: OrderResult
     ) -> None:
-        # Caller responsibility: only invoke for FILLED / PARTIALLY_FILLED
-        # results (filled_quantity > 0). Order invariants then guarantee
-        # filled_price and filled_at are non-None.
+        # Phase 0.5: only FILLED reaches here (partial fills are blocked
+        # at the constructor; ADR 0002 §3.2.1). The assertion guards the
+        # invariant — if it fires, the caller broke the contract.
+        assert result.status is OrderStatus.FILLED, (
+            f"_update_state_on_fill expected FILLED, got {result.status}"
+        )
         assert result.filled_price is not None
         assert result.filled_at is not None
         cost = result.filled_quantity * result.filled_price
@@ -219,7 +209,6 @@ class MockBroker:
             result.filled_price,
             result.filled_at,
             idempotency_key=request.idempotency_key,
-            full_fill=(result.status == OrderStatus.FILLED),
         )
 
     def _debit_cash(self, amount: Decimal) -> None:
@@ -241,41 +230,69 @@ class MockBroker:
         now: datetime,
         *,
         idempotency_key: str,
-        full_fill: bool,
     ) -> None:
-        existing = self._positions.get(asset.fqn)
-        if existing is None or existing.quantity == 0:
-            new_qty = filled_qty
-            new_avg = filled_price
-            existing_entries: list[SplitEntry] = []
-        else:
-            new_qty = existing.quantity + filled_qty
-            total_cost = (
-                existing.quantity * existing.avg_price + filled_qty * filled_price
-            )
-            new_avg = total_cost / new_qty
-            existing_entries = list(existing.entries)
+        """Apply a fully-filled BUY into the smallest EMPTY slot.
 
-        # Per CLAUDE.md §4.4 / ADR §7.5: only FILLED creates a SplitEntry.
-        # PARTIALLY_FILLED updates quantity/avg_price/last_buy_at only.
-        if full_fill:
-            new_split_number = len(existing_entries) + 1
-            # KRX session is fully inside one UTC date (KST=UTC+9, hours
-            # 09:00-15:30 KST = 00:00-06:30 UTC), so KST date == UTC date
-            # for any in-session timestamp. Convert explicitly to keep the
-            # business-date semantic intact for off-hours fixtures.
-            new_entry = SplitEntry(
-                split_number=new_split_number,
-                entry_date=now.astimezone(KST).date(),
-                quantity=filled_qty,
-                entry_price=filled_price,
-                idempotency_key=idempotency_key,
-            )
-            new_entries = [*existing_entries, new_entry]
-            new_split_level = new_split_number
+        ADR 0002 §3.1 / §4.4. Slot allocation policy: lowest ``slot_number``
+        with EMPTY state wins (deterministic seven-account ordering).
+        Existing slots' ``last_exit_*`` history is preserved when the slot
+        is refilled — that history feeds the HybridTimeBasedReentry policy.
+        """
+        existing = self._positions.get(asset.fqn)
+        if existing is None:
+            slots: list[SplitSlot] = [
+                SplitSlot.empty(slot_number=i)
+                for i in range(1, self._max_split_count + 1)
+            ]
         else:
-            new_entries = existing_entries
-            new_split_level = len(existing_entries)
+            slots = list(existing.slots)
+
+        target_idx: int | None = None
+        for i, s in enumerate(slots):
+            if s.state is SlotState.EMPTY:
+                target_idx = i
+                break
+        if target_idx is None:
+            raise BrokerConnectionError(
+                f"all {len(slots)} slots already FILLED for {asset.fqn}; "
+                "refusing to place buy without first selling a slot"
+            )
+
+        target_slot = slots[target_idx]
+        # KRX session is fully inside one UTC date (KST=UTC+9, hours
+        # 09:00-15:30 KST = 00:00-06:30 UTC), so KST date == UTC date for
+        # any in-session timestamp. Convert explicitly to keep the
+        # business-date semantic intact for off-hours fixtures.
+        new_entry = SplitEntry(
+            split_number=target_slot.slot_number,
+            entry_date=now.astimezone(KST).date(),
+            quantity=filled_qty,
+            entry_price=filled_price,
+            idempotency_key=idempotency_key,
+        )
+        slots[target_idx] = SplitSlot(
+            slot_number=target_slot.slot_number,
+            state=SlotState.FILLED,
+            entry=new_entry,
+            last_exit_price=target_slot.last_exit_price,
+            last_exit_date=target_slot.last_exit_date,
+        )
+
+        filled = [s for s in slots if s.state is SlotState.FILLED]
+        new_qty = sum(
+            (s.entry.quantity for s in filled if s.entry is not None),
+            Decimal(0),
+        )
+        total_cost = sum(
+            (
+                s.entry.quantity * s.entry.entry_price
+                for s in filled
+                if s.entry is not None
+            ),
+            Decimal(0),
+        )
+        new_avg = total_cost / new_qty
+        new_split_level = len(filled)
 
         self._positions[asset.fqn] = Position(
             asset=asset,
@@ -283,7 +300,7 @@ class MockBroker:
             avg_price=new_avg,
             split_level=new_split_level,
             last_buy_at=now,
-            entries=new_entries,
+            slots=slots,
         )
 
     # ------------------------------------------------------------------

@@ -5,7 +5,7 @@ ADR §1 (no Alembic). Connecting to a path runs ``CREATE TABLE IF NOT EXISTS``
 for every schema object so the file is ready to use after a single call.
 
 PRAGMA settings:
-- ``foreign_keys = ON`` — required for the split_entries cascade to work
+- ``foreign_keys = ON`` — required for the split_slots cascade to work
   (sqlite3 disables FKs by default).
 
 All Decimal values are stored as TEXT, all datetimes as ISO 8601 UTC TEXT,
@@ -35,18 +35,21 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_positions_asset_fqn ON positions(asset_fqn)",
     """
-    CREATE TABLE IF NOT EXISTS split_entries (
+    CREATE TABLE IF NOT EXISTS split_slots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         position_id INTEGER NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
-        split_number INTEGER NOT NULL,
-        entry_date TEXT NOT NULL,
-        quantity TEXT NOT NULL,
-        entry_price TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL,
-        UNIQUE (position_id, split_number)
+        slot_number INTEGER NOT NULL,
+        state TEXT NOT NULL,                     -- EMPTY | FILLED
+        entry_date TEXT,                         -- nullable when EMPTY
+        entry_quantity TEXT,
+        entry_price TEXT,
+        entry_idempotency_key TEXT,
+        last_exit_price TEXT,                    -- nullable
+        last_exit_date TEXT,                     -- nullable
+        UNIQUE (position_id, slot_number)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_split_entries_position ON split_entries(position_id)",
+    "CREATE INDEX IF NOT EXISTS idx_split_slots_position ON split_slots(position_id)",
     """
     CREATE TABLE IF NOT EXISTS orders (
         idempotency_key TEXT PRIMARY KEY,

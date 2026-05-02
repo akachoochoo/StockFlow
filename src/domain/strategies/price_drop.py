@@ -144,12 +144,18 @@ class PriceDropStrategy:
         }
 
         # ------------------------------------------------------------------
-        # 0. max_split_per_day guard (ADR §7.11). Counts FULL fills today
-        #    via position.entries; partial fills aren't included
-        #    (CLAUDE.md §4.4 / ADR §7.5). Empty position → entries=[] → 0.
+        # 0. max_split_per_day guard (ADR §7.11 + ADR 0002 §3.1). Counts
+        #    FULL fills today by walking FILLED slots. Partial fills are
+        #    blocked at the broker level in Phase 0.5 (ADR 0002 §3.2.1) so
+        #    every FILLED slot is a fully-completed buy. Empty position →
+        #    no FILLED slots → 0.
         # ------------------------------------------------------------------
         today_buys = (
-            sum(1 for e in position.entries if e.entry_date == today)
+            sum(
+                1
+                for s in position.filled_slots
+                if s.entry is not None and s.entry.entry_date == today
+            )
             if position is not None
             else 0
         )

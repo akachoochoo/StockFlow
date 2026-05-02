@@ -1,4 +1,9 @@
-"""Tests for SqlitePositionRepo (round-trip + cascade + asset_json)."""
+"""Tests for SqlitePositionRepo (round-trip + cascade + asset_json).
+
+Phase 0.5 (ADR 0002 §3): the schema persists ``split_slots`` rows that
+carry ``state``, the optional ``entry_*`` columns when FILLED, and the
+optional ``last_exit_*`` history regardless of state.
+"""
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
@@ -10,7 +15,9 @@ from src.domain.models import (
     Currency,
     Exchange,
     Position,
+    SlotState,
     SplitEntry,
+    SplitSlot,
 )
 from src.infrastructure.repositories.sqlite_position_repo import (
     SqlitePositionRepo,
@@ -18,6 +25,7 @@ from src.infrastructure.repositories.sqlite_position_repo import (
 
 UTC_NOW = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
 TRADE_DATE = date(2026, 4, 29)
+EXIT_DATE = date(2026, 4, 27)
 
 
 def _asset(code: str = "069500", name: str = "KODEX 200") -> Asset:
@@ -44,20 +52,52 @@ def _split_entry(
     )
 
 
+def _build_position(
+    asset: Asset,
+    *entries: SplitEntry,
+    quantity: Decimal,
+    avg_price: Decimal,
+    last_buy_at: datetime | None = UTC_NOW,
+    extra_empty_slots: list[SplitSlot] | None = None,
+    max_split_count: int = 7,
+) -> Position:
+    """Build a Position from a sparse list of FILLED entries.
+
+    `entries` may have any slot_numbers in [1, max_split_count] without
+    needing to be sequential. Slots not covered by entries default to
+    EMPTY (no exit history); pass `extra_empty_slots` to override
+    individual EMPTY slots with last_exit_* metadata.
+    """
+    extras = {s.slot_number: s for s in (extra_empty_slots or [])}
+    filled_by_num = {e.split_number: SplitSlot.filled(entry=e) for e in entries}
+    slots: list[SplitSlot] = []
+    for i in range(1, max_split_count + 1):
+        if i in filled_by_num:
+            slots.append(filled_by_num[i])
+        elif i in extras:
+            slots.append(extras[i])
+        else:
+            slots.append(SplitSlot.empty(slot_number=i))
+    return Position(
+        asset=asset,
+        quantity=quantity,
+        avg_price=avg_price,
+        split_level=len(entries),
+        last_buy_at=last_buy_at,
+        slots=slots,
+    )
+
+
 class TestSqlitePositionRepoRoundTrip:
     def test_save_then_get_returns_equal_position(self, conn):
         repo = SqlitePositionRepo(conn)
         a = _asset()
-        original = Position(
-            asset=a,
+        original = _build_position(
+            a,
+            _split_entry(1, qty="14"),
+            _split_entry(2, qty="14", price="35000"),
             quantity=Decimal("28"),
             avg_price=Decimal("35000"),
-            split_level=2,
-            last_buy_at=UTC_NOW,
-            entries=[
-                _split_entry(1, qty="14"),
-                _split_entry(2, qty="14", price="35000"),
-            ],
         )
         repo.save(original)
         loaded = repo.get(a.fqn)
@@ -67,8 +107,12 @@ class TestSqlitePositionRepoRoundTrip:
         assert loaded.avg_price == Decimal("35000")
         assert loaded.split_level == 2
         assert loaded.last_buy_at == UTC_NOW
-        assert [e.split_number for e in loaded.entries] == [1, 2]
-        assert loaded.entries[0].entry_date == TRADE_DATE
+        assert [s.slot_number for s in loaded.filled_slots] == [1, 2]
+        slot1 = loaded.get_slot(1)
+        assert slot1 is not None and slot1.entry is not None
+        assert slot1.entry.entry_date == TRADE_DATE
+        # All seven slots round-trip (sequence 1..7)
+        assert [s.slot_number for s in loaded.slots] == [1, 2, 3, 4, 5, 6, 7]
 
     def test_get_returns_none_for_unknown_fqn(self, conn):
         repo = SqlitePositionRepo(conn)
@@ -82,44 +126,70 @@ class TestSqlitePositionRepoRoundTrip:
         loaded = repo.get(a.fqn)
         assert loaded is not None
         assert loaded.quantity == Decimal(0)
-        assert loaded.entries == []
+        assert loaded.split_level == 0
+        assert loaded.filled_slots == []
         assert loaded.last_buy_at is None
+
+    def test_round_trip_preserves_last_exit_history_on_empty_slots(
+        self, conn
+    ):
+        # Phase 0.5 (ADR 0002 §3.1): EMPTY slots may carry last_exit_*
+        # so the HybridTimeBasedReentry policy can decide a reentry trigger.
+        repo = SqlitePositionRepo(conn)
+        a = _asset()
+        original = _build_position(
+            a,
+            _split_entry(1, qty="10"),
+            quantity=Decimal("10"),
+            avg_price=Decimal("35000"),
+            extra_empty_slots=[
+                SplitSlot.empty(
+                    slot_number=2,
+                    last_exit_price=Decimal("33000"),
+                    last_exit_date=EXIT_DATE,
+                ),
+            ],
+        )
+        repo.save(original)
+        loaded = repo.get(a.fqn)
+        assert loaded is not None
+        slot2 = loaded.get_slot(2)
+        assert slot2 is not None
+        assert slot2.state is SlotState.EMPTY
+        assert slot2.last_exit_price == Decimal("33000")
+        assert slot2.last_exit_date == EXIT_DATE
 
 
 class TestSqlitePositionRepoUpsert:
-    def test_save_existing_position_replaces_entries(self, conn):
+    def test_save_existing_position_replaces_slots(self, conn):
         repo = SqlitePositionRepo(conn)
         a = _asset()
         # Initial save: split_level 1
         repo.save(
-            Position(
-                asset=a,
+            _build_position(
+                a,
+                _split_entry(1, qty="10"),
                 quantity=Decimal("10"),
                 avg_price=Decimal("35000"),
-                split_level=1,
-                last_buy_at=UTC_NOW,
-                entries=[_split_entry(1, qty="10")],
             )
         )
-        # Upsert: split_level 2 (entries replaced wholesale)
+        # Upsert: split_level 2 (slots replaced wholesale)
         repo.save(
-            Position(
-                asset=a,
+            _build_position(
+                a,
+                _split_entry(1, qty="10", price="35000"),
+                _split_entry(2, qty="10", price="31000", key_suffix="b"),
                 quantity=Decimal("20"),
                 avg_price=Decimal("33000"),
-                split_level=2,
-                last_buy_at=UTC_NOW,
-                entries=[
-                    _split_entry(1, qty="10", price="35000"),
-                    _split_entry(2, qty="10", price="31000", key_suffix="b"),
-                ],
             )
         )
         loaded = repo.get(a.fqn)
         assert loaded is not None
         assert loaded.split_level == 2
-        assert [e.split_number for e in loaded.entries] == [1, 2]
-        assert loaded.entries[1].idempotency_key == "k2b"
+        assert [s.slot_number for s in loaded.filled_slots] == [1, 2]
+        slot2 = loaded.get_slot(2)
+        assert slot2 is not None and slot2.entry is not None
+        assert slot2.entry.idempotency_key == "k2b"
 
     def test_asset_json_preserved_on_update(self, conn):
         # ADR §8.3: asset_json is point-in-time. Updates do NOT overwrite it.
@@ -161,26 +231,24 @@ class TestSqlitePositionRepoListAndDelete:
         repo = SqlitePositionRepo(conn)
         assert repo.delete("KRX:999999") is False
 
-    def test_delete_cascades_split_entries(self, conn):
+    def test_delete_cascades_split_slots(self, conn):
         repo = SqlitePositionRepo(conn)
         a = _asset()
         repo.save(
-            Position(
-                asset=a,
+            _build_position(
+                a,
+                _split_entry(1, qty="10"),
                 quantity=Decimal("10"),
                 avg_price=Decimal("35000"),
-                split_level=1,
-                last_buy_at=UTC_NOW,
-                entries=[_split_entry(1, qty="10")],
             )
         )
-        # Sanity: row exists
+        # Sanity: rows exist (one per slot, all 7 of them)
         count = conn.execute(
-            "SELECT COUNT(*) FROM split_entries"
+            "SELECT COUNT(*) FROM split_slots"
         ).fetchone()[0]
-        assert count == 1
+        assert count == 7
         repo.delete(a.fqn)
         count = conn.execute(
-            "SELECT COUNT(*) FROM split_entries"
+            "SELECT COUNT(*) FROM split_slots"
         ).fetchone()[0]
         assert count == 0

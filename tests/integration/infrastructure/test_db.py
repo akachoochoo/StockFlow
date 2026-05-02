@@ -7,7 +7,7 @@ from src.infrastructure.db import bootstrap_schema, connect
 
 _EXPECTED_TABLES = (
     "positions",
-    "split_entries",
+    "split_slots",
     "orders",
     "decisions",
     "portfolio_snapshots",
@@ -94,8 +94,8 @@ class TestBootstrapSchema:
         finally:
             conn.close()
 
-    def test_split_entries_cascade_delete(self):
-        # Verify FK cascade works: deleting a position removes its split_entries.
+    def test_split_slots_cascade_delete(self):
+        # Verify FK cascade works: deleting a position removes its split_slots.
         conn = connect(":memory:")
         try:
             cursor = conn.execute(
@@ -106,19 +106,20 @@ class TestBootstrapSchema:
             )
             position_id = cursor.lastrowid
             conn.execute(
-                "INSERT INTO split_entries (position_id, split_number, "
-                "entry_date, quantity, entry_price, idempotency_key) VALUES "
-                "(?, 1, '2026-04-30', '10', '35000', 'k1')",
+                "INSERT INTO split_slots (position_id, slot_number, state, "
+                "entry_date, entry_quantity, entry_price, "
+                "entry_idempotency_key) VALUES "
+                "(?, 1, 'FILLED', '2026-04-30', '10', '35000', 'k1')",
                 (position_id,),
             )
             conn.commit()
             assert conn.execute(
-                "SELECT COUNT(*) FROM split_entries"
+                "SELECT COUNT(*) FROM split_slots"
             ).fetchone()[0] == 1
             conn.execute("DELETE FROM positions WHERE id = ?", (position_id,))
             conn.commit()
             assert conn.execute(
-                "SELECT COUNT(*) FROM split_entries"
+                "SELECT COUNT(*) FROM split_slots"
             ).fetchone()[0] == 0
         finally:
             conn.close()

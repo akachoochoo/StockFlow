@@ -22,6 +22,7 @@ from src.domain.models import (
     Position,
     Price,
     SplitEntry,
+    SplitSlot,
 )
 from src.domain.strategies.price_drop import (
     PriceDropStrategy,
@@ -80,14 +81,14 @@ def _filled_position(
     avg_price: str,
     split_level: int,
     entry_date: date | None = None,
+    max_split_count: int = 7,
 ) -> Position:
-    """Build a Position with auto-generated entries summing to `quantity`.
+    """Build a Position with `split_level` FILLED slots (1..N) + EMPTY rest.
 
-    Distributes `quantity` across `split_level` entries (last entry takes
-    the remainder). Each entry uses `avg_price` as entry_price; this is a
-    test convenience and does NOT have to match the strategy's per-split
-    pricing model. Phase 0 strategy reads only quantity/avg_price/split_level
-    so the per-entry detail doesn't affect strategy logic (ADR §7.7).
+    All entries use `avg_price` as entry_price so the weighted-average
+    invariant trivially holds. Quantity is distributed across the FILLED
+    slots (base + remainder on the last). Phase 0.5 (ADR 0002 §3.2)
+    requires equality between Position.quantity and the FILLED slot sum.
 
     `entry_date` defaults to YESTERDAY so the §7.11 max_split_per_day check
     sees `today_buys == 0` for prior-day positions. Pass `entry_date=TODAY`
@@ -97,36 +98,41 @@ def _filled_position(
     avg = Decimal(avg_price)
     d = entry_date or YESTERDAY
     if split_level == 0:
-        entries: list[SplitEntry] = []
-    else:
-        base = qty // Decimal(split_level)
-        remainder = qty - base * Decimal(split_level - 1)
-        entries = [
-            SplitEntry(
-                split_number=i,
-                entry_date=d,
-                quantity=base,
-                entry_price=avg,
-                idempotency_key=f"k{i}",
-            )
-            for i in range(1, split_level)
-        ]
-        entries.append(
-            SplitEntry(
-                split_number=split_level,
-                entry_date=d,
-                quantity=remainder,
-                entry_price=avg,
-                idempotency_key=f"k{split_level}",
-            )
+        return Position.empty(asset, max_split_count=max_split_count)
+
+    base = qty // Decimal(split_level)
+    remainder = qty - base * Decimal(split_level - 1)
+    entries: list[SplitEntry] = [
+        SplitEntry(
+            split_number=i,
+            entry_date=d,
+            quantity=base,
+            entry_price=avg,
+            idempotency_key=f"k{i}",
         )
+        for i in range(1, split_level)
+    ]
+    entries.append(
+        SplitEntry(
+            split_number=split_level,
+            entry_date=d,
+            quantity=remainder,
+            entry_price=avg,
+            idempotency_key=f"k{split_level}",
+        )
+    )
+    slots: list[SplitSlot] = [SplitSlot.filled(entry=e) for e in entries]
+    slots.extend(
+        SplitSlot.empty(slot_number=i)
+        for i in range(split_level + 1, max_split_count + 1)
+    )
     return Position(
         asset=asset,
         quantity=qty,
         avg_price=avg,
         split_level=split_level,
         last_buy_at=UTC_NOW,
-        entries=entries,
+        slots=slots,
     )
 
 

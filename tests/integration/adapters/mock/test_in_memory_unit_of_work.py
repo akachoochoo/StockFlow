@@ -27,6 +27,7 @@ from src.domain.models import (
     PortfolioSnapshot,
     Position,
     SplitEntry,
+    SplitSlot,
 )
 
 UTC_NOW = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
@@ -87,21 +88,22 @@ def _order(
 
 
 def _position(asset: Asset) -> Position:
+    entry = SplitEntry(
+        split_number=1,
+        entry_date=UTC_NOW.date(),
+        quantity=Decimal("10"),
+        entry_price=Decimal("35000"),
+        idempotency_key="k1",
+    )
+    slots = [SplitSlot.filled(entry=entry)]
+    slots.extend(SplitSlot.empty(slot_number=i) for i in range(2, 8))
     return Position(
         asset=asset,
         quantity=Decimal("10"),
         avg_price=Decimal("35000"),
         split_level=1,
         last_buy_at=UTC_NOW,
-        entries=[
-            SplitEntry(
-                split_number=1,
-                entry_date=UTC_NOW.date(),
-                quantity=Decimal("10"),
-                entry_price=Decimal("35000"),
-                idempotency_key="k1",
-            )
-        ],
+        slots=slots,
     )
 
 
