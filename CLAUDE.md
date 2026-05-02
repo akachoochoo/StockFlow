@@ -600,25 +600,33 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 14. Phase별 범위 (현재: Phase 0)
+## 14. Phase별 범위 (현재: Phase 0.5)
 
-### Phase 0 범위
-- KR 인덱스 ETF 단일 종목 (KODEX 200)
-- PriceDropStrategy 1개
-- Mock Broker, Mock MarketData
-- NullSignal (차단기 없음)
-- 백테스트 + 페이퍼 트레이딩
-- SQLite 로컬 DB
+### Phase 0 (완료, 2026-05-02)
+회고: `docs/retrospectives/phase-0.md`. 결정: ADR 0001.
 
-### Phase 0에서 명시적으로 제외
-- 실제 KIS API 연결
-- AI 차단기
-- US 주식, BTC
-- 매도 로직 (분할 매수만)
-- 텔레그램 알림 (Console만)
-- 멀티 종목
-- 환율 처리
-- Hot reload (정적 설정만)
+### Phase 0.5 범위 (진행 중)
+- KR 인덱스 ETF 단일 종목 (KODEX 200) — Phase 0와 동일
+- PriceDropStrategy + 매도(`ProfitTargetSell`) + 재진입(`CurrentMarketReentry` / `HybridTimeBasedReentry`)
+- Mock Broker, Mock MarketData — Phase 0와 동일
+- NullSignal (차단기 없음) — Phase 0와 동일
+- 백테스트 + 페이퍼 트레이딩 — Phase 0와 동일 (회귀 테스트로 매도 흐름 보강)
+- SQLite 로컬 DB (Position.slots / Decision 다중 액션 schema 마이그레이션)
+- YAML 설정 파일 (Layer 2) + `--config` CLI 옵션
+- 결정: ADR 0002. 결과 박제: `docs/retrospectives/phase-0.5.md` (Phase 0.5 완료 시 작성)
+
+### Phase 0.5에서 명시적으로 제외
+- 실제 KIS API 연결 — Phase 1
+- AI 차단기 — Phase 2
+- US 주식, BTC — Phase 1+
+- 손절 로직 — Phase 1+
+- 부분 매도 — Phase 1+ (KIS partial fill과 함께)
+- 보조지표 기반 매도 (RSI, 볼린저밴드 등) — Phase 1+
+- 텔레그램 알림 (Console만) — Phase 1
+- 멀티 종목 — Phase 0.7
+- 종목 간 자본 배분 / 우선순위 — Phase 0.7
+- 환율 처리 — Phase 1 후반
+- Hot reload (재시작으로 설정 변경 적용) — Phase 1+ 검토
 
 이 범위를 벗어나는 코드 작성 시 사용자 확인 필수.
 
@@ -637,5 +645,38 @@ B) <옵션 2와 trade-off>
 
 ---
 
+## 16. Phase 0.7 호환성 의식 (Phase 0.5 동안만 적용)
+
+> **조건부 룰**. Phase 0.5 진행 중 단일 종목 가정으로 코드 작성하되,
+> Phase 0.7에서 멀티 종목 확장 예정이므로 다음을 의식한다.
+> Phase 0.7 시작 시 본 §16은 제거 또는 갱신.
+
+### 16.1 패턴 (의식 — 코드 추가는 금지)
+
+1. **Asset 단위 처리 로직 분리** — `DailyOrchestrator.run_for_date(today)`는
+   `_run_for_asset(asset, config, today)` 호출하는 wrapper 패턴.
+2. **단일 asset 시그니처 유지하되 내부 loop-ready** — `__init__`은
+   `asset: Asset` 단수 그대로. 내부에서 `[self.asset]` 처럼 list 컴프리헨션
+   가능하면 OK (단, 의도적 추상화 금지).
+3. **Config / position 종목별 독립 처리** — 이미 `SplitStrategyConfig`,
+   `Position`, Repository(`asset_fqn` 키)가 종목별 독립. 변경 불필요.
+
+### 16.2 금지 (Phase 0.5에서 작성하면 안 되는 것)
+
+- ❌ 종목 간 자본 배분 정책 코드
+- ❌ 종목 우선순위 코드
+- ❌ 종목 간 자본 이동 코드
+- ❌ "멀티 종목 대비 추상화"라는 이름의 미리 짠 디자인
+- ❌ "추후 확장 가능하게" 만든 unused parameter
+
+→ 모두 Phase 0.7 ADR 라운드에서 사용자와 명시적 결정 후 작성.
+
+### 16.3 의심 시 가이드
+
+단일 종목 가정 유지 + `# Phase 0.7에서 multi-asset 시 검토` 주석 추가.
+사용자 확인 없이 멀티 종목 인터페이스 짜기 금지 (CLAUDE.md §13.3 "친절한 추가 금지" 정신).
+
+---
+
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-04-29*
+*마지막 업데이트: 2026-05-02 (§14 Phase 0.5 진입 + §16 신규)*
