@@ -104,3 +104,12 @@ class PortfolioSnapshotRepoPort(Protocol):
     ) -> list[PortfolioSnapshot]:
         """Return snapshots in [start, end], ordered by snapshot_date asc."""
         ...
+
+    def get_last(self) -> PortfolioSnapshot | None:
+        """Return the most-recent snapshot by snapshot_date, or None if empty.
+
+        Used by paper trading composition (ADR §10.3) to restore cash
+        between cron invocations: the last snapshot's cash is the
+        starting cash for the next day.
+        """
+        ...

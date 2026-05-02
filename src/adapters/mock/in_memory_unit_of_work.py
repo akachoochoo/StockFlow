@@ -136,6 +136,12 @@ class InMemoryPortfolioSnapshotRepo:
             key=lambda s: s.snapshot_date,
         )
 
+    def get_last(self) -> PortfolioSnapshot | None:
+        if not self._snapshots:
+            return None
+        latest_date = max(self._snapshots)
+        return self._snapshots[latest_date]
+
 
 class InMemoryUnitOfWork:
     """UnitOfWorkPort over four in-memory repositories.

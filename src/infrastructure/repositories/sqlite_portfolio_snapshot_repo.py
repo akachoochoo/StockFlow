@@ -92,6 +92,15 @@ class SqlitePortfolioSnapshotRepo:
         ).fetchall()
         return [self._build_snapshot(r) for r in rows]
 
+    def get_last(self) -> PortfolioSnapshot | None:
+        row = self._conn.execute(
+            "SELECT * FROM portfolio_snapshots "
+            "ORDER BY snapshot_date DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return self._build_snapshot(row)
+
     @staticmethod
     def _build_snapshot(row: sqlite3.Row) -> PortfolioSnapshot:
         valuations = _VALUATIONS_ADAPTER.validate_json(row["valuations_json"])
