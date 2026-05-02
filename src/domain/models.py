@@ -208,6 +208,12 @@ class SkipReason(StrEnum):
     ALL_SLOTS_EMPTY_NO_TRIGGER = "all_slots_empty_no_trigger"
     ALL_SLOTS_FILLED_NO_PROFIT = "all_slots_filled_no_profit"
     INSUFFICIENT_HISTORICAL_DATA = "insufficient_historical_data"
+    # ADR 0002 §5.9.3 — same-day rebuy block: every EMPTY slot was just sold
+    # this evaluation, so no buy candidate remains without violating
+    # Decision Invariant 3 (buy_slot ∉ sell_slots).
+    ALL_EMPTY_SLOTS_EXCLUDED_BY_SAME_DAY_SELL = (
+        "all_empty_slots_excluded_by_same_day_sell"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -797,11 +803,15 @@ class Position(DomainModel):
 class OrderRequest(DomainModel):
     """Order submission to the broker. CLAUDE.md §4.1 requires idempotency_key.
 
-    Phase 0.5 (ADR 0002 §5.7): SELL orders MUST identify the slot they are
-    closing via ``slot_number`` (1..7). The broker validates that the slot
-    is FILLED and that the request quantity matches the slot's entry
-    quantity exactly (no partial sells per §3.2.1). BUY orders leave
-    ``slot_number`` as None — the broker fills the smallest EMPTY slot.
+    Phase 0.5 (ADR 0002 §5.7 / §5.9.3): SELL orders MUST identify the slot
+    they are closing via ``slot_number`` (1..7). The broker validates that
+    the slot is FILLED and that the request quantity matches the slot's
+    entry quantity exactly (no partial sells per §3.2.1). BUY orders MAY
+    carry ``slot_number`` (the strategy's intended target); when present
+    the broker fills exactly that slot, otherwise it falls back to the
+    smallest EMPTY slot. Phase 0.5 sells-then-buys cascade always passes
+    the strategy's choice so Decision Invariant 3 (buy_slot ∉ sell_slots)
+    is structurally guaranteed.
     """
 
     idempotency_key: str = Field(min_length=1, max_length=64)
@@ -823,11 +833,8 @@ class OrderRequest(DomainModel):
             raise ValueError(
                 "SELL OrderRequest requires slot_number (the slot to close)"
             )
-        if self.side is OrderSide.BUY and self.slot_number is not None:
-            raise ValueError(
-                "BUY OrderRequest must leave slot_number=None — the broker "
-                "assigns the smallest EMPTY slot"
-            )
+        # ADR 0002 §5.9.3: BUY may carry slot_number (strategy's target);
+        # when None the broker falls back to "smallest EMPTY" allocation.
         return self
 
 

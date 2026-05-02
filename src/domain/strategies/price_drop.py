@@ -130,6 +130,7 @@ class PriceDropStrategy:
         balance: Balance,
         config: SplitStrategyConfig,
         today: date,
+        excluded_slot_numbers: set[int] | None = None,
     ) -> BuyEvaluationResult:
         asset = current_price.asset
 
@@ -227,6 +228,26 @@ class PriceDropStrategy:
                     },
                 )
             effective_position = position
+
+        # ADR 0002 §5.9.3: orchestrator passes the slots it just sold this
+        # evaluation; we exclude them so the resulting BuyDecision cannot
+        # collide with any SellActionRecord (Decision Invariant 3).
+        excluded = excluded_slot_numbers or set()
+        if excluded:
+            candidate_slots = [
+                s for s in candidate_slots if s.slot_number not in excluded
+            ]
+            if not candidate_slots:
+                return BuyEvaluationResult(
+                    buy=None,
+                    skip_reason=SkipReason.ALL_EMPTY_SLOTS_EXCLUDED_BY_SAME_DAY_SELL,
+                    reasoning={
+                        **reasoning_base,
+                        "excluded_slot_numbers": ",".join(
+                            str(n) for n in sorted(excluded)
+                        ),
+                    },
+                )
 
         # ------------------------------------------------------------------
         # 3. Compute trigger per slot via injected ReentryPriceStrategy.

@@ -581,3 +581,100 @@ class TestMaxSplitPerDay:
             today=TODAY,
         )
         assert result.buy is not None
+
+
+# ---------------------------------------------------------------------------
+# excluded_slot_numbers (ADR 0002 §5.9.3 — same-day rebuy block)
+# ---------------------------------------------------------------------------
+class TestExcludedSlotNumbers:
+    """Orchestrator passes the slots it just sold this evaluation; the
+    strategy must skip them so the resulting Decision can never have a
+    buy_slot ∈ sell_slots (Decision Invariant 3).
+    """
+
+    def setup_method(self):
+        self.strategy = _strategy()
+        self.asset = _asset()
+
+    def test_default_none_preserves_existing_behavior(self):
+        # No excluded set passed → behaves exactly as before.
+        result = self.strategy.evaluate(
+            position=None,
+            current_price=_price("35000", self.asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+        )
+        assert result.buy is not None
+        assert result.buy.slot_number == 1
+
+    def test_empty_set_preserves_existing_behavior(self):
+        # Empty set explicitly passed → identical to None.
+        result = self.strategy.evaluate(
+            position=None,
+            current_price=_price("35000", self.asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+            excluded_slot_numbers=set(),
+        )
+        assert result.buy is not None
+        assert result.buy.slot_number == 1
+
+    def test_excluded_slot_skips_to_next_smallest(self):
+        # First-buy bypass picks smallest EMPTY. Excluding slot 1 should
+        # forward to slot 2 (Hybrid's first-buy bypass returns current_price
+        # which trivially qualifies every remaining EMPTY slot).
+        result = self.strategy.evaluate(
+            position=None,
+            current_price=_price("35000", self.asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+            excluded_slot_numbers={1},
+        )
+        assert result.buy is not None
+        assert result.buy.slot_number == 2
+
+    def test_all_empty_excluded_yields_dedicated_skip(self):
+        # max_split_count=7 → exclude all seven EMPTY slots → no candidate
+        # remains → ALL_EMPTY_SLOTS_EXCLUDED_BY_SAME_DAY_SELL.
+        result = self.strategy.evaluate(
+            position=None,
+            current_price=_price("35000", self.asset),
+            balance=_balance(),
+            config=_config(),
+            today=TODAY,
+            excluded_slot_numbers={1, 2, 3, 4, 5, 6, 7},
+        )
+        assert result.buy is None
+        assert (
+            result.skip_reason
+            is SkipReason.ALL_EMPTY_SLOTS_EXCLUDED_BY_SAME_DAY_SELL
+        )
+        # Skip reasoning surfaces the excluded set for retrospective debugging.
+        assert (
+            result.reasoning["excluded_slot_numbers"]
+            == "1,2,3,4,5,6,7"
+        )
+
+    def test_excluded_with_non_empty_position(self):
+        # Slot 1 FILLED + 2..7 EMPTY. Exclude slot 2 (just sold this
+        # evaluation). Drop is large enough for Hybrid's avg_price fallback
+        # to fire, so the smallest unexcluded EMPTY slot (3) wins.
+        position = _filled_position(
+            self.asset,
+            quantity="28",
+            avg_price="35000",
+            split_level=1,
+        )
+        result = self.strategy.evaluate(
+            position=position,
+            current_price=_price("32000", self.asset),  # 8.57% drop
+            balance=_balance(),
+            config=_config(drop_threshold_pct="7.0"),
+            today=TODAY,
+            excluded_slot_numbers={2},
+        )
+        assert result.buy is not None
+        assert result.buy.slot_number == 3
