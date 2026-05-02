@@ -11,6 +11,10 @@ dependencies = [
     "pydantic>=2.0",
     "click>=8.1",
     "pyyaml>=6.0",
+    # pykrx provides KRX OHLCV download for Phase 0 retrospective + Phase 1
+    # transition. Phase 1 will swap to KIS API but we keep pykrx as the
+    # offline-replay data source.
+    "pykrx>=1.0.45",
 ]
 
 [project.optional-dependencies]
