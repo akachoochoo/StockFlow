@@ -563,6 +563,114 @@ class TestConfigOption:
 
 
 # ---------------------------------------------------------------------------
+# trading config validate (Phase 0.5 step 0.5.21, ADR §6.3)
+# ---------------------------------------------------------------------------
+class TestConfigValidate:
+    def test_validates_valid_config(self, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "config",
+                "validate",
+                "--config",
+                str(_yaml_config(tmp_path)),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Config valid: 1 asset(s)" in result.output
+        assert "069500" in result.output
+        assert "KODEX 200" in result.output
+        # Per-asset summary surfaces the strategy fingerprint.
+        assert "buy=price_drop" in result.output
+        assert "drop=5.0%" in result.output
+        assert "profit_target=+10.0%" in result.output
+        assert "reentry=hybrid" in result.output
+
+    def test_validates_moving_average_config(self, tmp_path):
+        # Confirms the validate command reports the D-2 reentry policy
+        # with its window parameter (the path the flag-only CLI rejects).
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "config",
+                "validate",
+                "--config",
+                str(
+                    _yaml_config(
+                        tmp_path, reentry="moving_average", window=20
+                    )
+                ),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "reentry=moving_average" in result.output
+        assert "window" in result.output
+
+    def test_invalid_yaml_exits_with_error(self, tmp_path):
+        # ADR §6.2 strict + extra='forbid': missing version surfaces here.
+        path = tmp_path / "broken.yaml"
+        path.write_text("assets: {}\n", encoding="utf-8")
+        runner = CliRunner()
+        result = runner.invoke(main, ["config", "validate", "--config", str(path)])
+        assert result.exit_code != 0
+        # Error goes to stderr per click conventions; CliRunner mixes
+        # streams into ``result.output``.
+        assert "Config invalid" in result.output
+
+    def test_unknown_strategy_name_rejected(self, tmp_path):
+        # ADR §4.1.1 deprecated 'current_market'; loader rejects it.
+        path = tmp_path / "deprecated.yaml"
+        path.write_text(
+            """\
+version: "0.5"
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 500000
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+    reentry_strategy: "current_market"
+    reentry_parameters:
+      cooldown_days: 60
+""",
+            encoding="utf-8",
+        )
+        runner = CliRunner()
+        result = runner.invoke(main, ["config", "validate", "--config", str(path)])
+        assert result.exit_code != 0
+        assert "Config invalid" in result.output
+
+    def test_validate_does_not_run_anything(self, tmp_path):
+        # Validate is read-only: no SQLite DB or other artefact created.
+        runner = CliRunner()
+        before = set(tmp_path.iterdir())
+        runner.invoke(
+            main,
+            [
+                "config",
+                "validate",
+                "--config",
+                str(_yaml_config(tmp_path)),
+            ],
+        )
+        after = set(tmp_path.iterdir())
+        new_files = after - before
+        # Only the YAML itself exists (created by _yaml_config); no DB,
+        # no lock, no snapshot.
+        assert all(p.suffix == ".yaml" for p in new_files), (
+            f"validate left side-effects: {new_files}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Top-level
 # ---------------------------------------------------------------------------
 def test_top_level_help_lists_both_commands():

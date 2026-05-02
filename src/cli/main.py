@@ -423,5 +423,56 @@ def paper(
     )
 
 
+@main.group()
+def config() -> None:
+    """Strategy config utilities (ADR §6)."""
+
+
+@config.command("validate")
+@click.option(
+    "--config",
+    "config_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="YAML strategies file to validate.",
+)
+def config_validate(config_path: Path) -> None:
+    """Validate a strategies YAML without running any trading flow.
+
+    Calls the loader (ADR §6.2) and reports per-asset summary on success,
+    or the validation error and exits with a non-zero status. Phase 0.5
+    workflow: edit YAML → ``trading config validate --config x.yaml`` →
+    iterate before running ``backtest`` / ``paper``.
+    """
+    from pydantic import ValidationError as _ValidationError
+
+    from src.infrastructure.yaml_strategy_config_loader import (
+        load_strategy_config as _load,
+    )
+
+    try:
+        bundles = _load(config_path)
+    except (ValueError, _ValidationError) as e:
+        click.echo(f"Config invalid: {e}", err=True)
+        raise click.exceptions.Exit(2) from e
+
+    click.echo(f"Config valid: {len(bundles)} asset(s) in {config_path}")
+    for code, bundle in bundles.items():
+        reentry_summary = (
+            f"{bundle.reentry_strategy_name}({bundle.reentry_parameters})"
+        )
+        click.echo(
+            f"  {code}  {bundle.name}  enabled={bundle.enabled}\n"
+            f"    buy={bundle.buy_strategy_name}  "
+            f"drop={bundle.buy_config.drop_threshold_pct}%  "
+            f"max_split={bundle.buy_config.max_split_count}  "
+            f"per_split={bundle.buy_config.per_split_amount.amount}\n"
+            f"    sell={bundle.sell_strategy_name}  "
+            f"profit_target=+{bundle.sell_config.profit_target_pct}%  "
+            f"max_sells_per_day={bundle.sell_config.max_sells_per_day}\n"
+            f"    reentry={reentry_summary}"
+        )
+
+
 if __name__ == "__main__":
     main()
