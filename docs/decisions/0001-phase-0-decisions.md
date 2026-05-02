@@ -1,7 +1,7 @@
 # ADR 0001: Phase 0 Design Decisions
 
 > 누적 기록 문서. 새 결정은 아래에 섹션으로 추가.
-> 마지막 업데이트: 2026-05-02 (§10 CLI / Paper Trading sub-steps 10.a~10.m 완료)
+> 마지막 업데이트: 2026-05-02 (§11 Phase 0 완료 선언 — 회고는 docs/retrospectives/phase-0.md)
 
 ---
 
@@ -818,6 +818,20 @@ CREATE TABLE portfolio_snapshots (
 - **10.k** ✅ ruff / mypy / pytest 모두 그린 (489 passed, 99 % coverage)
 - **10.l** ✅ `trading backtest` 60일 합성 데이터로 manual 검증 — split_1~7 모두 발화, 최종 -23.31 % return, MDD -23.91 %, Sharpe -4.06 (하락장에서 예상한 형태)
 - **10.m** ✅ `trading paper` 10일 연속(2026-02-02~02-13) manual 검증 — cross-run cash/position 복원 정상, backtest와 동일한 (date, action, qty, price) 시퀀스 재현 확인 (split_1 33주@30135, split_2 36주@27740, split_3 36주@27435)
+
+---
+
+## 11. Phase 0 완료 (2026-05-02)
+
+Phase 0 종료 기준 (CLAUDE.md §14) 모두 충족:
+- 단일 자산(KODEX 200) PriceDropStrategy + Mock adapter set
+- 백테스트 ↔ 페이퍼 동일성 invariant 통과
+- KOSPI 200 5년치(2020-01-02 ~ 2024-12-30) 실데이터 백테스트 완료
+  → +25.96 % return / -27.57 % MDD vs B&H +21.13 % / -34.64 %
+
+상세 결과 + 학습 + Phase 1 권고: **`docs/retrospectives/phase-0.md`**.
+
+Phase 1 진입은 본 회고의 §9 체크포인트 통과 후 별도 ADR 라운드로 시작.
 
 ---
 
