@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         Decision,
         Money,
         PortfolioSnapshot,
+        Position,
     )
     from src.domain.strategies.price_drop import SplitStrategyConfig
     from src.ports.signals import SignalPort
@@ -83,6 +84,11 @@ class BacktestResult:
     initial_capital: Money
     decisions: list[Decision] = field(default_factory=list)
     snapshots: list[PortfolioSnapshot] = field(default_factory=list)
+    # Phase 0.5 step 0.5.23: broker's final Position state (positive
+    # quantities only) so equivalence tests can compare slot-by-slot
+    # byte-identical state (ADR §10.2). Empty list when no position
+    # remains at the end of the run.
+    final_positions: list[Position] = field(default_factory=list)
     n_trading_days: int = 0
     cagr_pct: Decimal = Decimal(0)
     max_drawdown_pct: Decimal = Decimal(0)
@@ -112,6 +118,7 @@ class BacktestResult:
         initial_capital: Money,
         decisions: list[Decision],
         snapshots: list[PortfolioSnapshot],
+        final_positions: list[Position] | None = None,
         trading_days_per_year: int = _DEFAULT_TRADING_DAYS_PER_YEAR,
         risk_free_rate: Decimal = _DEFAULT_RISK_FREE_RATE,
     ) -> BacktestResult:
@@ -119,6 +126,11 @@ class BacktestResult:
 
         Per ADR §9.5: same metrics functions used by paper/live trading
         reports, so the calculation lives in `metrics.py` and not here.
+
+        ``final_positions`` (Phase 0.5 §10.2) carries the broker's
+        end-of-run Position objects so callers can compare slot-by-slot
+        byte-identical state. Defaults to ``[]`` for callers that don't
+        need slot-level inspection.
         """
         return cls(
             start_date=start_date,
@@ -126,6 +138,7 @@ class BacktestResult:
             initial_capital=initial_capital,
             decisions=decisions,
             snapshots=snapshots,
+            final_positions=list(final_positions) if final_positions else [],
             n_trading_days=len(snapshots),
             cagr_pct=cagr(
                 snapshots, trading_days_per_year=trading_days_per_year
@@ -262,12 +275,18 @@ class BacktestRunner:
             snap = snapshot_builder.build_and_save(d)
             snapshots.append(snap)
 
+        # Phase 0.5 §10.2: capture broker's end-of-run Position state so
+        # the backtest↔paper equivalence regression can compare slots
+        # byte-identical (slot_number / state / entry / last_exit_*).
+        final_positions = broker.get_positions()
+
         return BacktestResult.from_run(
             start_date=start,
             end_date=end,
             initial_capital=self._initial_capital,
             decisions=decisions,
             snapshots=snapshots,
+            final_positions=final_positions,
             trading_days_per_year=self._trading_days_per_year,
             risk_free_rate=self._risk_free_rate,
         )

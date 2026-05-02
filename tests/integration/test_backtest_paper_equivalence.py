@@ -228,3 +228,182 @@ def test_backtest_and_paper_produce_identical_outcomes(tmp_path, csv_path):
         assert pos.quantity == val.quantity
         assert pos.avg_price == val.avg_price
         assert pos.split_level == val.split_level
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.5 sells-then-buys equivalence (ADR §10.2 step 0.5.23)
+# ---------------------------------------------------------------------------
+# Drop down → drop down → recovery to +10 % sell trigger → cascade buy →
+# cooldown reentry on Days 5 / 6. Engineered so the orchestrator's sells-
+# then-buys cascade flows through both BacktestRunner and the paper CLI.
+SELL_CSV_ROWS: list[tuple[str, str, str, str, str, str]] = [
+    # date          open    high    low     close   volume
+    ("2026-04-20", "30000", "30200", "29800", "30000", "1000"),  # T-1
+    ("2026-04-21", "28000", "30000", "27800", "28000", "1500"),  # Day1
+    ("2026-04-22", "27000", "28000", "26900", "27000", "2000"),  # Day2
+    ("2026-04-23", "33000", "33500", "30000", "33000", "3000"),  # Day3
+    ("2026-04-24", "31000", "33000", "30800", "31000", "1500"),  # Day4
+    ("2026-04-27", "30000", "31000", "29800", "30000", "1500"),  # Day5
+    ("2026-04-28", "30000", "30200", "29800", "30000", "1000"),  # Day6
+]
+SELL_START = date(2026, 4, 21)
+SELL_END = date(2026, 4, 28)
+
+
+@pytest.fixture
+def csv_path_sells(tmp_path) -> Path:
+    p = tmp_path / "kodex_sells.csv"
+    body = "date,open,high,low,close,volume\n" + "\n".join(
+        ",".join(r) for r in SELL_CSV_ROWS
+    )
+    p.write_text(body + "\n")
+    return p
+
+
+def _slot_summary(position):
+    """Compact slot summary for assertion error messages."""
+    return [
+        (
+            s.slot_number,
+            s.state.value,
+            None if s.entry is None else (
+                str(s.entry.entry_date),
+                str(s.entry.quantity),
+                str(s.entry.entry_price),
+            ),
+            None if s.last_exit_price is None else str(s.last_exit_price),
+            None if s.last_exit_date is None else str(s.last_exit_date),
+        )
+        for s in position.slots
+    ]
+
+
+def test_equivalence_with_sells_and_cascade_buys(tmp_path, csv_path_sells):
+    """ADR §10.2: backtest ↔ paper produce identical sequences AND slot
+    states under sells-then-buys cascade.
+
+    The fixture engineers:
+        Days 1-3: progressive splits (slot 1 / 2 / 3)
+        Day 4:    +10 % recovery → 3 sells + cascade buy on slot 4
+        Day 5:    cooldown reentry on slot 1
+        Day 6:    cooldown reentry on slot 2
+
+    Both paths must produce identical:
+        - Decision sequence (sells + buys included)
+        - Final cash + total_value + valuations
+        - Slot-by-slot byte-identical state (slot_number / state / entry /
+          last_exit_*)  — the Phase 0.5 §10.2 byte-identical invariant.
+    """
+    asset = composition.kodex200()
+    bars = load_ohlcv_csv(csv_path_sells, asset)
+    config = _build_config()
+    initial_capital = Money(amount=Decimal(CAPITAL), currency=Currency.KRW)
+
+    # ---------- Path A: BacktestRunner ----------
+    runner = BacktestRunner(
+        asset=asset,
+        strategy_config=config,
+        initial_capital=initial_capital,
+        ohlcv_by_asset={asset: bars},
+    )
+    bt_result = runner.run(SELL_START, SELL_END)
+
+    # ---------- Path B: paper CLI cron-simulated ----------
+    db = tmp_path / "paper_sells.db"
+    cli = CliRunner()
+    base_args = [
+        "paper",
+        "--csv", str(csv_path_sells),
+        "--db", str(db),
+        *SHARED_FLAGS,
+    ]
+    trading_dates = [
+        date.fromisoformat(r[0])
+        for r in SELL_CSV_ROWS
+        if SELL_START <= date.fromisoformat(r[0]) <= SELL_END
+    ]
+    for d in trading_dates:
+        result = cli.invoke(main, [*base_args, "--date", d.isoformat()])
+        assert result.exit_code == 0, (
+            f"paper failed on {d}: exception={result.exception!r}\n"
+            f"{result.output}"
+        )
+
+    conn = connect(db)
+    try:
+        with SqliteUnitOfWork(conn) as uow:
+            paper_decisions = uow.decisions.list_by_date_range(
+                SELL_START, SELL_END
+            )
+            paper_positions = uow.positions.list_all()
+            paper_last_snap = uow.snapshots.get_last()
+    finally:
+        conn.close()
+
+    # ---------- 1. Decision sequence (sells included) ----------
+    bt_keys = _decision_keys(bt_result.decisions)
+    paper_keys = _decision_keys(paper_decisions)
+    assert bt_keys == paper_keys, (
+        f"decision diverged:\n  backtest: {bt_keys}\n  paper:    {paper_keys}"
+    )
+
+    # ---------- 2. Engineered floors (regression-proof signal) ----------
+    sell_count = sum(len(d.sell_actions) for d in bt_result.decisions)
+    buy_count = sum(
+        1 for d in bt_result.decisions if d.buy_action is not None
+    )
+    cascade_days = sum(
+        1 for d in bt_result.decisions
+        if d.sell_actions and d.buy_action is not None
+    )
+    assert sell_count >= 3, (
+        f"fixture produced only {sell_count} sells — strengthen scenario"
+    )
+    assert buy_count >= 5, (
+        f"fixture produced only {buy_count} buys — strengthen scenario"
+    )
+    assert cascade_days >= 1, (
+        "fixture must trigger at least one same-day sell+buy cascade "
+        "(ADR §5.3 cascade flow)"
+    )
+
+    # ---------- 3. Final cash + total value ----------
+    bt_final_snap = bt_result.snapshots[-1]
+    assert paper_last_snap is not None
+    assert paper_last_snap.snapshot_date == bt_final_snap.snapshot_date
+    assert paper_last_snap.cash == bt_final_snap.cash, (
+        f"cash diverged: backtest={bt_final_snap.cash} "
+        f"paper={paper_last_snap.cash}"
+    )
+    assert paper_last_snap.total_value == bt_final_snap.total_value
+    assert (
+        paper_last_snap.total_unrealized_pnl
+        == bt_final_snap.total_unrealized_pnl
+    )
+
+    # ---------- 4. Slot-by-slot byte-identical state (§10.2) ----------
+    bt_pos_map = {p.asset.fqn: p for p in bt_result.final_positions}
+    paper_pos_map = {p.asset.fqn: p for p in paper_positions}
+    assert bt_pos_map.keys() == paper_pos_map.keys(), (
+        f"position asset sets differ: "
+        f"backtest={set(bt_pos_map)} paper={set(paper_pos_map)}"
+    )
+    for fqn in bt_pos_map:
+        bp = bt_pos_map[fqn]
+        pp = paper_pos_map[fqn]
+        # quantity / avg_price / split_level are derived; check them too.
+        assert bp.quantity == pp.quantity
+        assert bp.avg_price == pp.avg_price
+        assert bp.split_level == pp.split_level
+        # last_buy_at: set at decision time (09:00 KST). Both paths use
+        # the same decision clock so the timestamp matches exactly.
+        assert bp.last_buy_at == pp.last_buy_at
+        # The byte-identical assertion: slot list equality covers
+        # slot_number / state / entry (split_number / entry_date /
+        # quantity / entry_price / idempotency_key) / last_exit_price /
+        # last_exit_date.
+        assert bp.slots == pp.slots, (
+            f"slot state diverged for {fqn}:\n"
+            f"  backtest: {_slot_summary(bp)}\n"
+            f"  paper:    {_slot_summary(pp)}"
+        )
