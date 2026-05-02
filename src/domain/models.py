@@ -794,7 +794,14 @@ class Position(DomainModel):
 
 
 class OrderRequest(DomainModel):
-    """Order submission to the broker. CLAUDE.md §4.1 requires idempotency_key."""
+    """Order submission to the broker. CLAUDE.md §4.1 requires idempotency_key.
+
+    Phase 0.5 (ADR 0002 §5.7): SELL orders MUST identify the slot they are
+    closing via ``slot_number`` (1..7). The broker validates that the slot
+    is FILLED and that the request quantity matches the slot's entry
+    quantity exactly (no partial sells per §3.2.1). BUY orders leave
+    ``slot_number`` as None — the broker fills the smallest EMPTY slot.
+    """
 
     idempotency_key: str = Field(min_length=1, max_length=64)
     asset: Asset
@@ -802,11 +809,25 @@ class OrderRequest(DomainModel):
     order_type: OrderType
     quantity: Decimal = Field(gt=Decimal(0))
     target_price: Decimal = Field(gt=Decimal(0))
+    slot_number: int | None = Field(default=None, ge=1, le=7)
 
     @field_validator("quantity", "target_price", mode="before")
     @classmethod
     def _coerce_decimal(cls, v: object) -> Decimal:
         return _to_decimal(v)
+
+    @model_validator(mode="after")
+    def _check_side_slot_consistency(self) -> OrderRequest:
+        if self.side is OrderSide.SELL and self.slot_number is None:
+            raise ValueError(
+                "SELL OrderRequest requires slot_number (the slot to close)"
+            )
+        if self.side is OrderSide.BUY and self.slot_number is not None:
+            raise ValueError(
+                "BUY OrderRequest must leave slot_number=None — the broker "
+                "assigns the smallest EMPTY slot"
+            )
+        return self
 
 
 class OrderResult(DomainModel):

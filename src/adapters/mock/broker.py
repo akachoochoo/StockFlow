@@ -31,6 +31,7 @@ from src.domain.models import (
     Money,
     Order,
     OrderResult,
+    OrderSide,
     OrderStatus,
     Position,
     SlotState,
@@ -201,15 +202,27 @@ class MockBroker:
         )
         assert result.filled_price is not None
         assert result.filled_at is not None
-        cost = result.filled_quantity * result.filled_price
-        self._debit_cash(cost)
-        self._update_position(
-            request.asset,
-            result.filled_quantity,
-            result.filled_price,
-            result.filled_at,
-            idempotency_key=request.idempotency_key,
-        )
+        if request.side is OrderSide.BUY:
+            cost = result.filled_quantity * result.filled_price
+            self._debit_cash(cost)
+            self._apply_buy_fill(
+                request.asset,
+                result.filled_quantity,
+                result.filled_price,
+                result.filled_at,
+                idempotency_key=request.idempotency_key,
+            )
+        else:  # SELL
+            assert request.slot_number is not None
+            proceeds = result.filled_quantity * result.filled_price
+            self._credit_cash(proceeds)
+            self._apply_sell_fill(
+                request.asset,
+                slot_number=request.slot_number,
+                filled_qty=result.filled_quantity,
+                filled_price=result.filled_price,
+                now=result.filled_at,
+            )
 
     def _debit_cash(self, amount: Decimal) -> None:
         new_amount = self._balance.cash.amount - amount
@@ -222,7 +235,13 @@ class MockBroker:
             cash=Money(amount=new_amount, currency=self._balance.cash.currency)
         )
 
-    def _update_position(
+    def _credit_cash(self, amount: Decimal) -> None:
+        new_amount = self._balance.cash.amount + amount
+        self._balance = Balance(
+            cash=Money(amount=new_amount, currency=self._balance.cash.currency)
+        )
+
+    def _apply_buy_fill(
         self,
         asset: Asset,
         filled_qty: Decimal,
@@ -300,6 +319,91 @@ class MockBroker:
             avg_price=new_avg,
             split_level=new_split_level,
             last_buy_at=now,
+            slots=slots,
+        )
+
+    def _apply_sell_fill(
+        self,
+        asset: Asset,
+        *,
+        slot_number: int,
+        filled_qty: Decimal,
+        filled_price: Decimal,
+        now: datetime,
+    ) -> None:
+        """Close a single FILLED slot by selling exactly its entry quantity.
+
+        ADR 0002 §5.7 / §3.2.1 — Phase 0.5 sells whole slots only.
+        Validates: position exists, target slot is FILLED, request
+        quantity matches the slot's entry quantity exactly. On success,
+        the slot transitions FILLED → EMPTY and records ``last_exit_price``
+        / ``last_exit_date`` for HybridTimeBasedReentry to use.
+        """
+        existing = self._positions.get(asset.fqn)
+        if existing is None:
+            raise BrokerConnectionError(
+                f"no position for {asset.fqn} — cannot SELL"
+            )
+        slots = list(existing.slots)
+        target_idx: int | None = next(
+            (i for i, s in enumerate(slots) if s.slot_number == slot_number),
+            None,
+        )
+        if target_idx is None:
+            raise BrokerConnectionError(
+                f"slot_number={slot_number} not found on {asset.fqn} "
+                f"(slots: {[s.slot_number for s in slots]})"
+            )
+        target_slot = slots[target_idx]
+        if target_slot.state is not SlotState.FILLED:
+            raise BrokerConnectionError(
+                f"slot_number={slot_number} on {asset.fqn} is "
+                f"{target_slot.state.value}, not FILLED — cannot SELL"
+            )
+        assert target_slot.entry is not None  # FILLED invariant
+        if filled_qty != target_slot.entry.quantity:
+            raise BrokerConnectionError(
+                f"SELL quantity {filled_qty} does not match slot "
+                f"{slot_number} entry quantity ({target_slot.entry.quantity}); "
+                "Phase 0.5 sells whole slots only (ADR 0002 §3.2.1)"
+            )
+
+        slots[target_idx] = SplitSlot(
+            slot_number=target_slot.slot_number,
+            state=SlotState.EMPTY,
+            entry=None,
+            last_exit_price=filled_price,
+            last_exit_date=now.astimezone(KST).date(),
+        )
+
+        filled = [s for s in slots if s.state is SlotState.FILLED]
+        if filled:
+            new_qty = sum(
+                (s.entry.quantity for s in filled if s.entry is not None),
+                Decimal(0),
+            )
+            total_cost = sum(
+                (
+                    s.entry.quantity * s.entry.entry_price
+                    for s in filled
+                    if s.entry is not None
+                ),
+                Decimal(0),
+            )
+            new_avg = total_cost / new_qty
+        else:
+            # Last slot sold — empty position. Keep last_buy_at as historical
+            # marker (Position invariant only requires last_buy_at when qty>0).
+            new_qty = Decimal(0)
+            new_avg = Decimal(0)
+        new_split_level = len(filled)
+
+        self._positions[asset.fqn] = Position(
+            asset=asset,
+            quantity=new_qty,
+            avg_price=new_avg,
+            split_level=new_split_level,
+            last_buy_at=existing.last_buy_at,
             slots=slots,
         )
 

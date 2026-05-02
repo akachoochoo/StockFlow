@@ -21,6 +21,7 @@ from src.domain.models import (
     OrderSide,
     OrderStatus,
     OrderType,
+    SlotState,
 )
 
 UTC_NOW = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
@@ -56,6 +57,25 @@ def _request(
         order_type=OrderType.LIMIT,
         quantity=Decimal(quantity),
         target_price=Decimal(target_price),
+    )
+
+
+def _sell_request(
+    asset: Asset,
+    *,
+    slot_number: int,
+    quantity: str,
+    target_price: str,
+    idempotency_key: str = "sell-1",
+) -> OrderRequest:
+    return OrderRequest(
+        idempotency_key=idempotency_key,
+        asset=asset,
+        side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal(quantity),
+        target_price=Decimal(target_price),
+        slot_number=slot_number,
     )
 
 
@@ -420,3 +440,195 @@ class TestSlotRecording:
             broker.place_order(
                 _request(a, idempotency_key="overflow", quantity="1", target_price="1000")
             )
+
+
+# ---------------------------------------------------------------------------
+# SELL handling (Phase 0.5 / ADR 0002 §5.7)
+# ---------------------------------------------------------------------------
+class TestSell:
+    """Whole-slot SELL: cash credit + slot EMPTY + last_exit_* recorded."""
+
+    def _seed_two_buys(self, broker: MockBroker, asset: Asset) -> None:
+        broker.place_order(
+            _request(asset, idempotency_key="b1", quantity="10", target_price="30000")
+        )
+        broker.place_order(
+            _request(asset, idempotency_key="b2", quantity="10", target_price="32000")
+        )
+
+    def test_sell_credits_cash_and_empties_slot(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        self._seed_two_buys(broker, a)
+        # cash after 2 buys = 10000000 - 10*30000 - 10*32000 = 9380000
+        assert broker.get_balance().cash.amount == Decimal("9380000")
+
+        result = broker.place_order(
+            _sell_request(a, slot_number=1, quantity="10", target_price="33000")
+        )
+        assert result.status is OrderStatus.FILLED
+        assert result.filled_quantity == Decimal("10")
+        assert result.filled_price == Decimal("33000")
+
+        # cash after sell = 9380000 + 10*33000 = 9710000
+        assert broker.get_balance().cash.amount == Decimal("9710000")
+
+        p = broker.get_positions()[0]
+        assert p.split_level == 1
+        assert p.quantity == Decimal("10")
+        slot1 = p.get_slot(1)
+        assert slot1 is not None
+        assert slot1.state is SlotState.EMPTY
+        assert slot1.last_exit_price == Decimal("33000")
+        assert slot1.last_exit_date == UTC_NOW.astimezone(KST).date()
+        # slot 2 still FILLED
+        slot2 = p.get_slot(2)
+        assert slot2 is not None and slot2.entry is not None
+        assert slot2.entry.entry_price == Decimal("32000")
+
+    def test_sell_recomputes_avg_price(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        self._seed_two_buys(broker, a)
+        # Pre-sell avg = (10*30000 + 10*32000) / 20 = 31000
+        assert broker.get_positions()[0].avg_price == Decimal("31000")
+
+        broker.place_order(
+            _sell_request(a, slot_number=1, quantity="10", target_price="33000")
+        )
+        # Only slot 2 (10 @ 32000) remains → avg = 32000
+        assert broker.get_positions()[0].avg_price == Decimal("32000")
+
+    def test_sell_last_slot_returns_empty_position(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        broker.place_order(
+            _request(a, idempotency_key="b1", quantity="10", target_price="30000")
+        )
+        broker.place_order(
+            _sell_request(a, slot_number=1, quantity="10", target_price="33000")
+        )
+        # All slots EMPTY → no positions returned (get_positions filters qty>0)
+        assert broker.get_positions() == []
+
+    def test_sell_idempotency_returns_prior_result(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        self._seed_two_buys(broker, a)
+        req = _sell_request(
+            a, slot_number=1, quantity="10", target_price="33000",
+            idempotency_key="dup-sell",
+        )
+        first = broker.place_order(req)
+        cash_after_first = broker.get_balance().cash.amount
+        second = broker.place_order(req)
+        assert first.broker_order_id == second.broker_order_id
+        # Cash credited only once
+        assert broker.get_balance().cash.amount == cash_after_first
+
+    def test_sell_unknown_position_raises(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(),
+            clock=_FixedClock(UTC_NOW),
+        )
+        with pytest.raises(BrokerConnectionError, match=r"no position"):
+            broker.place_order(
+                _sell_request(a, slot_number=1, quantity="10", target_price="33000")
+            )
+
+    def test_sell_empty_slot_raises(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        broker.place_order(
+            _request(a, idempotency_key="b1", quantity="10", target_price="30000")
+        )
+        with pytest.raises(BrokerConnectionError, match=r"EMPTY"):
+            broker.place_order(
+                _sell_request(a, slot_number=2, quantity="10", target_price="33000")
+            )
+
+    def test_sell_quantity_mismatch_raises(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        broker.place_order(
+            _request(a, idempotency_key="b1", quantity="10", target_price="30000")
+        )
+        with pytest.raises(BrokerConnectionError, match=r"does not match slot"):
+            broker.place_order(
+                _sell_request(a, slot_number=1, quantity="5", target_price="33000")
+            )
+
+    def test_sell_then_buy_refills_smallest_empty(self):
+        # After selling slot 1, the next BUY refills slot 1 (smallest EMPTY)
+        # and inherits the slot's last_exit_* history.
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+        )
+        self._seed_two_buys(broker, a)
+        broker.place_order(
+            _sell_request(a, slot_number=1, quantity="10", target_price="33000")
+        )
+        broker.place_order(
+            _request(a, idempotency_key="b3", quantity="8", target_price="29000")
+        )
+        p = broker.get_positions()[0]
+        slot1 = p.get_slot(1)
+        assert slot1 is not None and slot1.entry is not None
+        assert slot1.state is SlotState.FILLED
+        assert slot1.entry.entry_price == Decimal("29000")
+        # last_exit_* preserved across the refill
+        assert slot1.last_exit_price == Decimal("33000")
+        assert slot1.last_exit_date == UTC_NOW.astimezone(KST).date()
+
+    def test_sell_rejection_preserves_state(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance("10000000"),
+            clock=_FixedClock(UTC_NOW),
+            rng=random.Random(42),
+            simulate_rejection_rate=1.0,
+        )
+        # Reset rate to 0 to seed the buy without rejection.
+        broker._rejection_rate = 0.0
+        broker.place_order(
+            _request(a, idempotency_key="b1", quantity="10", target_price="30000")
+        )
+        cash_before = broker.get_balance().cash.amount
+        broker._rejection_rate = 1.0
+        result = broker.place_order(
+            _sell_request(a, slot_number=1, quantity="10", target_price="33000")
+        )
+        assert result.status is OrderStatus.REJECTED
+        # No state mutation
+        assert broker.get_balance().cash.amount == cash_before
+        slot1 = broker.get_positions()[0].get_slot(1)
+        assert slot1 is not None
+        assert slot1.state is SlotState.FILLED
