@@ -1,7 +1,11 @@
-"""Phase 0.7.1.d 사전 검증 — ADR 0003 §13.4 박제.
+"""Phase 0.7.1.d 사전 검증 — ADR 0003 §13.4 / §13.6.2 박제.
 
-KOSEF 미국 S&P500 (139260) 의 5 년 OHLCV pykrx 가용성 + KODEX 200
-(069500) 와의 일별 close-to-close return Pearson 상관계수 측정.
+KODEX 200 (069500) 와 KODEX 단기채권 PLUS (214980) 의 5 년 OHLCV pykrx
+가용성 + 일별 close-to-close return Pearson 상관계수 측정.
+
+라운드 #3 (§13.6.1) 결정으로 종목 페어 갱신: 1 차 실행 (139260 KOSEF 미국
+S&P500) 은 r=0.91 로 FALLBACK 트리거 → 자산군 분산 옵션 Y 채택 후 채권
+ETF 페어로 전환. §1.2.4 검증 본질 갱신 박제.
 
 본 스크립트는 1-회 검증 도구. CSV 저장 / 데이터 파일 생성 안 함 —
 실제 다운로드는 0.7.1.f 책임.
@@ -11,10 +15,10 @@ Usage::
     uv run python scripts/verify_phase_0_7_1_assets.py
     uv run python scripts/verify_phase_0_7_1_assets.py --start 2020-01-02 --end 2024-12-30
 
-Output: 사람-읽기 표 (ADR §13.4 결과 박제용).
+Output: 사람-읽기 표 (ADR §13.4 / §13.6 결과 박제용).
 Exit code:
     0 — pearson_r < threshold → PASS, 0.7.1.e 진입 가능
-    1 — pearson_r >= threshold → FALLBACK (사용자 결정 라운드)
+    1 — pearson_r >= threshold → FALLBACK (차순위 — §13.6.1 D)
 """
 from __future__ import annotations
 
@@ -30,9 +34,9 @@ if TYPE_CHECKING:
 # ADR 0003 §13.2 fallback threshold (근거는 §13.4 결과 항목에 박제).
 CORRELATION_THRESHOLD = 0.5
 
-# ADR 0003 §13.1 박제 종목.
+# ADR 0003 §13.6.1 라운드 #3 결정 박제 종목 (1 차 후보 139260 폐기 후).
 ASSET_KODEX_200 = "069500"
-ASSET_KOSEF_SP500 = "139260"
+ASSET_KODEX_BOND_PLUS = "214980"
 
 # CLAUDE.md §5.2 — 전일 대비 ±30 % 변동 의심.
 PRICE_OUTLIER_THRESHOLD_PCT = 30.0
@@ -107,41 +111,41 @@ def main() -> int:
     # [1] OHLCV fetch
     print("[1/4] pykrx OHLCV fetch")
     df_kodex = fetch_ohlcv(ASSET_KODEX_200, args.start, args.end)
-    df_kosef = fetch_ohlcv(ASSET_KOSEF_SP500, args.start, args.end)
-    print(f"  069500 (KODEX 200):          {len(df_kodex):>5} trading days")
-    print(f"  139260 (KOSEF 미국 S&P500):  {len(df_kosef):>5} trading days")
+    df_bond = fetch_ohlcv(ASSET_KODEX_BOND_PLUS, args.start, args.end)
+    print(f"  069500 (KODEX 200):              {len(df_kodex):>5} trading days")
+    print(f"  214980 (KODEX 단기채권 PLUS):    {len(df_bond):>5} trading days")
     print()
 
     # [2] Trading day alignment
     print("[2/4] Trading day alignment (KR 거래소 동일 calendar 검증)")
-    only_kodex, only_kosef, in_both = trading_day_alignment(df_kodex, df_kosef)
+    only_kodex, only_bond, in_both = trading_day_alignment(df_kodex, df_bond)
     print(f"  Only in 069500: {len(only_kodex):>5}")
-    print(f"  Only in 139260: {len(only_kosef):>5}")
+    print(f"  Only in 214980: {len(only_bond):>5}")
     print(f"  In both:        {len(in_both):>5}")
     if only_kodex:
         sample = sorted(only_kodex)[:5]
         print(f"    sample only-069500: {[d.strftime('%Y-%m-%d') for d in sample]}")
-    if only_kosef:
-        sample = sorted(only_kosef)[:5]
-        print(f"    sample only-139260: {[d.strftime('%Y-%m-%d') for d in sample]}")
+    if only_bond:
+        sample = sorted(only_bond)[:5]
+        print(f"    sample only-214980: {[d.strftime('%Y-%m-%d') for d in sample]}")
     print()
 
     # [3] Price outlier detection
     print(f"[3/4] Price outlier (CLAUDE.md §5.2 — |%Δclose| > {PRICE_OUTLIER_THRESHOLD_PCT}%)")
     outliers_kodex = detect_price_outliers(df_kodex, PRICE_OUTLIER_THRESHOLD_PCT)
-    outliers_kosef = detect_price_outliers(df_kosef, PRICE_OUTLIER_THRESHOLD_PCT)
+    outliers_bond = detect_price_outliers(df_bond, PRICE_OUTLIER_THRESHOLD_PCT)
     print(f"  069500 outliers: {len(outliers_kodex)}")
     for date, pct in outliers_kodex:
         print(f"    {date}: {pct:+.2f}%")
-    print(f"  139260 outliers: {len(outliers_kosef)}")
-    for date, pct in outliers_kosef:
+    print(f"  214980 outliers: {len(outliers_bond)}")
+    for date, pct in outliers_bond:
         print(f"    {date}: {pct:+.2f}%")
     print()
 
     # [4] Pearson correlation
     print("[4/4] Pearson correlation (close-to-close return)")
-    corr, n_obs = pearson_correlation_close_returns(df_kodex, df_kosef)
-    print(f"  pearson_r(069500, 139260) = {corr:.4f}")
+    corr, n_obs = pearson_correlation_close_returns(df_kodex, df_bond)
+    print(f"  pearson_r(069500, 214980) = {corr:.4f}")
     print(f"  N observations:           {n_obs}")
     print()
 
@@ -151,7 +155,8 @@ def main() -> int:
         print(f"  pearson_r = {corr:.4f} < {CORRELATION_THRESHOLD} — PASS, 0.7.1.e 진입 가능")
         return 0
     print(f"  pearson_r = {corr:.4f} >= {CORRELATION_THRESHOLD} — FALLBACK")
-    print("  사용자 결정 라운드 #3 트리거 (ADR §13.6 박제 필요)")
+    print("  차순위 fallback 발화 (§13.6.1 D — 132030 / 130730)")
+    print("  사용자 결정 라운드 #4 트리거")
     return 1
 
 
