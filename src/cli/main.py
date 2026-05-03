@@ -413,7 +413,8 @@ def paper(
             initial_clock=decision_at,
         )
         try:
-            decision = components.orchestrator.run_for_date(today)
+            decisions = components.orchestrator.run_for_date(today)
+            decision = decisions[0]
             components.set_clock(snapshot_at)
             snapshot = components.snapshot_builder.build_and_save(today)
         finally:

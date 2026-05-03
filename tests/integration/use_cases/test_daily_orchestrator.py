@@ -52,6 +52,7 @@ from src.domain.strategies.profit_target import (
     SellStrategyConfig,
 )
 from src.domain.strategies.reentry import HybridTimeBasedReentry
+from src.use_cases.asset_context import AssetContext
 from src.use_cases.daily_orchestrator import DailyOrchestrator, SkipReason
 
 
@@ -354,15 +355,18 @@ def _make_real_orchestrator(
     signal = NullSignal()
     strategy = _strategy()
 
-    orchestrator = DailyOrchestrator(
-        broker=broker,
-        market_data=market_data,
-        signal=signal,
+    ctx = AssetContext(
+        asset=asset,
         strategy=strategy,
         config=_config(),
         sell_strategy=_sell_strategy(),
         sell_config=_sell_config(),
-        asset=asset,
+    )
+    orchestrator = DailyOrchestrator(
+        broker=broker,
+        market_data=market_data,
+        signal=signal,
+        asset_contexts=[ctx],
         clock=lambda: clock_at,
         uow_factory=lambda: InMemoryUnitOfWork(),
     )
@@ -375,7 +379,8 @@ def _make_real_orchestrator(
 class TestNormalBuyFlow:
     def test_first_split_filled(self):
         orch, broker = _make_real_orchestrator()
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert isinstance(decision, Decision)
         assert decision.action_kinds() == ["buy_split_1"]
         assert decision.buy_action is not None and decision.buy_action.order_id is not None
@@ -402,7 +407,8 @@ class TestNormalBuyFlow:
             split_level=1,
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.action_kinds() == ["buy_split_2"]
         assert decision.buy_action is not None
         assert decision.buy_action.slot_number == 2
@@ -423,11 +429,13 @@ class TestCircuitBreaker:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(level=level, at=clock_at)),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
@@ -435,14 +443,16 @@ class TestCircuitBreaker:
 
     def test_halt_short_circuits_before_broker_calls(self):
         orch, broker = self._make_with_signal(SignalLevel.HALT)
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.CIRCUIT_BREAKER_HALT
         assert decision.buy_action is None and not decision.sell_actions
         assert broker.placed == []  # broker was never asked to place anything
 
     def test_emergency_short_circuits(self):
         orch, broker = self._make_with_signal(SignalLevel.EMERGENCY)
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.CIRCUIT_BREAKER_HALT
         assert broker.placed == []
 
@@ -461,15 +471,18 @@ class TestCircuitBreaker:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(level=SignalLevel.CAUTION, at=clock_at)),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.action_kinds() == ["buy_split_1"]
         # 28 / 2 = 14 (lot_size = 1)
         assert decision.reasoning["filled_quantity"] == "14"
@@ -487,15 +500,18 @@ class TestCircuitBreaker:
             broker=MockBroker(initial_balance=balance, clock=lambda: clock_at),
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(level=SignalLevel.CAUTION, at=clock_at)),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.QUANTITY_TOO_SMALL
         assert decision.reasoning["pre_adjust_quantity"] == "20"
         assert decision.reasoning["adjusted_quantity"] == "0"
@@ -521,7 +537,8 @@ class TestStrategySkipMapping:
             split_level=7,
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.ALL_SLOTS_FILLED_NO_PROFIT
         assert (
             decision.reasoning["buy_skip_reason_emitted"]
@@ -542,7 +559,8 @@ class TestStrategySkipMapping:
             split_level=1,
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.STRATEGY_NO_BUY
 
     def test_max_split_per_day_reached_emits_dedicated_skip_reason(self):
@@ -558,7 +576,8 @@ class TestStrategySkipMapping:
             split_level=1,
             last_buy_at=_utc_after_close(TODAY),  # entry_date == TODAY
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.MAX_SPLIT_PER_DAY_REACHED
         assert decision.reasoning["today_buys"] == "1"
         assert decision.reasoning["max_split_per_day"] == "1"
@@ -567,7 +586,8 @@ class TestStrategySkipMapping:
         asset = _asset(lot_size="100")
         bars = [_bar(asset, date(2026, 4, 29), "35000")]
         orch, _ = _make_real_orchestrator(asset=asset, bars=bars)
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.QUANTITY_TOO_SMALL
 
     def test_insufficient_balance_maps_directly(self):
@@ -577,7 +597,8 @@ class TestStrategySkipMapping:
         orch, _ = _make_real_orchestrator(
             asset=asset, bars=bars, initial_balance=small_balance,
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.INSUFFICIENT_BALANCE
 
 
@@ -617,11 +638,13 @@ class TestExternalErrors:
             broker=broker,
             market_data=market_data_obj,
             signal=signal_obj,
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
@@ -631,7 +654,8 @@ class TestExternalErrors:
         orch, _ = self._wired(
             signal=_FakeSignal(raise_error=MarketDataUnavailableError("signal down")),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.MARKET_DATA_UNAVAILABLE
         assert decision.reasoning["stage"] == "signal_collect"
 
@@ -642,7 +666,8 @@ class TestExternalErrors:
             inner=inner, raise_on_get_price=MarketDataUnavailableError("api down"),
         )
         orch, _ = self._wired(market_data=fake_md)
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.MARKET_DATA_UNAVAILABLE
         assert "signal_level" in decision.reasoning  # signal info preserved
 
@@ -653,14 +678,16 @@ class TestExternalErrors:
             inner=inner, raise_on_get_price=DataIntegrityError("high<low"),
         )
         orch, _ = self._wired(market_data=fake_md)
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.DATA_INTEGRITY_ISSUE
 
     def test_broker_balance_failure_skips(self):
         orch, _ = self._wired(
             broker_kwargs={"balance_error": BrokerConnectionError("network down")},
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
         assert decision.reasoning["stage"] == "account_state"
 
@@ -703,11 +730,13 @@ class TestOrderPlacement:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(at=clock_at)),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
@@ -728,7 +757,8 @@ class TestOrderPlacement:
                 filled_at=clock_at,
             ),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.action_kinds() == ["buy_split_1"]
         assert decision.buy_action is not None and decision.buy_action.order_id == "bid-recovered"
 
@@ -737,7 +767,8 @@ class TestOrderPlacement:
             place_error=BrokerConnectionError("timeout"),
             get_status_result=None,
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
 
     def test_timeout_recovery_get_status_also_fails_skips(self):
@@ -745,14 +776,16 @@ class TestOrderPlacement:
             place_error=BrokerConnectionError("timeout"),
             get_status_error=BrokerConnectionError("status query down"),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
 
     def test_broker_order_error_maps_to_rejected(self):
         orch, _ = self._wire(
             place_error=BrokerOrderError("validation failed"),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_REJECTED
 
     def test_rejected_order_status_skips(self):
@@ -769,7 +802,8 @@ class TestOrderPlacement:
                 filled_at=None,
             ),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_REJECTED
 
     def test_unknown_order_status_skips_as_timeout(self):
@@ -786,7 +820,8 @@ class TestOrderPlacement:
                 filled_at=None,
             ),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
 
     # Phase 0.5 (ADR 0002 §3.2.1) blocks partial fills end-to-end so the
@@ -845,11 +880,13 @@ class TestIntegrityErrorPropagation:
             ),
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=signal,
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
@@ -875,15 +912,18 @@ class TestPersistence:
         clock_at,
     ):
         shared_uow = InMemoryUnitOfWork()
+        asset = _asset()
         orch = DailyOrchestrator(
             broker=broker,
             market_data=market_data,
             signal=signal,
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=_asset(),
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: shared_uow,
         )
@@ -907,7 +947,8 @@ class TestPersistence:
             signal=NullSignal(),
             clock_at=clock_at,
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.action_kinds() == ["buy_split_1"]
 
         # Decision saved
@@ -943,7 +984,8 @@ class TestPersistence:
             signal=_FakeSignal(signal=_signal(level=SignalLevel.HALT, at=clock_at)),
             clock_at=clock_at,
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.is_skip()
 
         # Decision saved
@@ -970,7 +1012,8 @@ class TestPersistence:
             signal=_FakeSignal(signal=_signal(at=clock_at)),
             clock_at=clock_at,
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
         # Decision saved, but no Order or Position
         assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
@@ -996,7 +1039,8 @@ class TestPersistence:
             signal=_FakeSignal(signal=_signal(at=clock_at)),
             clock_at=clock_at,
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_REJECTED
         assert uow.orders.get_by_idempotency_key(
             "KRX:069500:2026-04-30:buy:1"
@@ -1030,7 +1074,8 @@ class TestPersistence:
             signal=_FakeSignal(signal=_signal(at=clock_at)),
             clock_at=clock_at,
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_REJECTED
         # Order saved with REJECTED status — audit trail
         saved = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30:buy:1")
@@ -1123,7 +1168,8 @@ class TestSellsThenBuysFlow:
             entries_spec=[(1, "1", "20000"), (2, "1", "23000")],
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is None
         assert decision.action_kinds() == ["sell_slot_1"]
         assert decision.sell_actions[0].slot_number == 1
@@ -1143,7 +1189,8 @@ class TestSellsThenBuysFlow:
             entries_spec=[(1, "1", "20000")],
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.action_kinds() == ["sell_slot_1", "buy_split_2"]
         assert decision.sell_actions[0].slot_number == 1
         assert decision.buy_action is not None
@@ -1172,7 +1219,8 @@ class TestSellsThenBuysFlow:
             ],
             last_buy_at=_utc_after_close(date(2026, 4, 28)),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert len(decision.sell_actions) == 1
         assert decision.sell_actions[0].slot_number == 1
         assert decision.buy_action is None
@@ -1205,15 +1253,18 @@ class TestSellsThenBuysFlow:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(level=SignalLevel.HALT, at=clock_at)),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert decision.skip_reason is SkipReason.CIRCUIT_BREAKER_HALT
         assert decision.sell_actions == []
         assert decision.buy_action is None
@@ -1244,15 +1295,18 @@ class TestSellsThenBuysFlow:
             signal=_FakeSignal(
                 signal=_signal(level=SignalLevel.CAUTION, at=clock_at)
             ),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert len(decision.sell_actions) == 1
         assert decision.sell_actions[0].filled_quantity == Decimal("1")
         assert decision.buy_action is not None
@@ -1301,18 +1355,21 @@ class TestSellsThenBuysFlow:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=NullSignal(),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=SellStrategyConfig(
-                profit_target_pct=Decimal("10.0"),
-                max_sells_per_day=2,
-            ),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=SellStrategyConfig(
+                    profit_target_pct=Decimal("10.0"),
+                    max_sells_per_day=2,
+                ),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert sorted(sa.slot_number for sa in decision.sell_actions) == [1, 2]
 
     def test_persists_multiple_orders_and_position(self):
@@ -1339,11 +1396,13 @@ class TestSellsThenBuysFlow:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=NullSignal(),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: shared_uow,
         )
@@ -1395,15 +1454,18 @@ class TestSellsThenBuysFlow:
             broker=broker,
             market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
             signal=_FakeSignal(signal=_signal(at=clock_at)),
-            strategy=_strategy(),
-            config=_config(),
-            sell_strategy=_sell_strategy(),
-            sell_config=_sell_config(),
-            asset=asset,
+            asset_contexts=[AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )],
             clock=lambda: clock_at,
             uow_factory=lambda: InMemoryUnitOfWork(),
         )
-        decision = orch.run_for_date(TODAY)
+        decisions = orch.run_for_date(TODAY)
+        decision = decisions[0]
         assert len(decision.sell_actions) == 1
         assert decision.sell_actions[0].slot_number == 1
         assert decision.buy_action is None

@@ -32,6 +32,7 @@ from src.domain.strategies.profit_target import (
 from src.domain.strategies.reentry import create_reentry_strategy
 from src.infrastructure.db import connect
 from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
+from src.use_cases.asset_context import AssetContext
 from src.use_cases.daily_orchestrator import DailyOrchestrator
 
 if TYPE_CHECKING:
@@ -49,7 +50,7 @@ class PaperComponents:
 
     Caller drives the day with:
         components.set_clock(decision_at)
-        decision = components.orchestrator.run_for_date(today)
+        decisions = components.orchestrator.run_for_date(today)
         components.set_clock(snapshot_at)
         snap = components.snapshot_builder.build_and_save(today)
         ...
@@ -162,15 +163,18 @@ def build_paper_components(
         **effective_reentry_params,
     )
 
-    orchestrator = DailyOrchestrator(
-        broker=broker,
-        market_data=market_data,
-        signal=NullSignal(),
+    ctx = AssetContext(
+        asset=asset,
         strategy=PriceDropStrategy(reentry=reentry),
         config=strategy_config,
         sell_strategy=ProfitTargetSell(),
         sell_config=effective_sell_config,
-        asset=asset,
+    )
+    orchestrator = DailyOrchestrator(
+        broker=broker,
+        market_data=market_data,
+        signal=NullSignal(),
+        asset_contexts=[ctx],
         clock=clock,
         uow_factory=uow_factory,
     )

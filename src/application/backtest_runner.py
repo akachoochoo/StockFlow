@@ -42,6 +42,7 @@ from src.domain.constants import KST
 from src.domain.models import Balance
 from src.domain.strategies.price_drop import PriceDropStrategy
 from src.domain.strategies.profit_target import SellStrategyConfig
+from src.use_cases.asset_context import AssetContext
 from src.use_cases.daily_orchestrator import DailyOrchestrator
 
 if TYPE_CHECKING:
@@ -242,15 +243,18 @@ class BacktestRunner:
         strategy = PriceDropStrategy(reentry=reentry)
         shared_uow = InMemoryUnitOfWork()
 
-        orchestrator = DailyOrchestrator(
-            broker=broker,
-            market_data=market_data,
-            signal=signal,
+        ctx = AssetContext(
+            asset=self._asset,
             strategy=strategy,
             config=self._strategy_config,
             sell_strategy=ProfitTargetSell(),
             sell_config=self._sell_strategy_config,
-            asset=self._asset,
+        )
+        orchestrator = DailyOrchestrator(
+            broker=broker,
+            market_data=market_data,
+            signal=signal,
+            asset_contexts=[ctx],
             clock=clock,
             uow_factory=lambda: shared_uow,
         )
@@ -267,8 +271,8 @@ class BacktestRunner:
         for d in trading_dates:
             # Decision at KRX open — T's close not yet available
             clock_holder[0] = self._utc_for(d, self._decision_kst_time)
-            decision = orchestrator.run_for_date(d)
-            decisions.append(decision)
+            decisions_today = orchestrator.run_for_date(d)
+            decisions.extend(decisions_today)
 
             # Snapshot at KRX close window — T's close available
             clock_holder[0] = self._utc_for(d, self._snapshot_kst_time)
