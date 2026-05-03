@@ -600,33 +600,42 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 14. Phase별 범위 (현재: Phase 0.5)
+## 14. Phase별 범위 (현재: Phase 0.7)
 
 ### Phase 0 (완료, 2026-05-02)
 회고: `docs/retrospectives/phase-0.md`. 결정: ADR 0001.
 
-### Phase 0.5 범위 (진행 중)
-- KR 인덱스 ETF 단일 종목 (KODEX 200) — Phase 0와 동일
-- PriceDropStrategy + 매도(`ProfitTargetSell`) + 재진입(`CurrentMarketReentry` / `HybridTimeBasedReentry`)
-- Mock Broker, Mock MarketData — Phase 0와 동일
-- NullSignal (차단기 없음) — Phase 0와 동일
-- 백테스트 + 페이퍼 트레이딩 — Phase 0와 동일 (회귀 테스트로 매도 흐름 보강)
-- SQLite 로컬 DB (Position.slots / Decision 다중 액션 schema 마이그레이션)
-- YAML 설정 파일 (Layer 2) + `--config` CLI 옵션
-- 결정: ADR 0002. 결과 박제: `docs/retrospectives/phase-0.5.md` (Phase 0.5 완료 시 작성)
+### Phase 0.5 (완료, 2026-05-03)
+- 매도 (`ProfitTargetSell`) + 재진입 (`MovingAverageReentry` D-2 / `HybridTimeBasedReentry` F) 도입
+- 결정: ADR 0002. 회고: `docs/retrospectives/phase-0.5.md`. 결과: `docs/retrospectives/phase-0.5-results.md`
+- 5-year KOSPI 200 백테스트 결과: H1 ✅ / H2 ❌ / H3 ❌ / H4 ✅ — 게이트 #2 미충족
+- 종료 라운드: 옵션 A' (Phase 0.7 직진 — 멀티 종목으로 H2/H3 본질 검증) 채택. ADR 0002 §13 박제.
 
-### Phase 0.5에서 명시적으로 제외
+### Phase 0.7 범위 (진행 중)
+- KR 거래소 상장 ETF 멀티 종목 (2종목 시작 → 3~5개 확장)
+- 자본 배분 정책 (균등 → 시총 가중 / 변동성 가중 비교)
+- 종목 간 우선순위 = config 정의 순서 (단순)
+- 종목 간 자본 동적 이동 없음 (per-asset budget 고정)
+- 매도 정책 default = F (HybridTimeBasedReentry, cooldown=60). D-2 비교 baseline 보존.
+- Mock Broker, Mock MarketData 유지 — 위험 zero
+- 단계 분리: 0.7.1 (인프라 2종목) → 0.7.2 (배분 정책) → 0.7.3 (종목 다양화). 단계별 회고.
+- 결정: ADR 0003. 회고: `docs/retrospectives/phase-0.7.{N}.md` (단계별).
+
+### Phase 0.7에서 명시적으로 제외
 - 실제 KIS API 연결 — Phase 1
+- 손절 로직 — Phase 1+ (H3 거짓 대응, ADR 0002 §12.4.2)
+- 텔레그램 알림 — Phase 1
 - AI 차단기 — Phase 2
-- US 주식, BTC — Phase 1+
-- 손절 로직 — Phase 1+
+- US 주식 직접 거래소, BTC — Phase 3 / 4
+- 환율 처리 — Phase 3
+- 종목 간 자본 동적 이동 — Phase 1+ ADR
+- 채권 / 단기 예치 (idle cash 활용) — Phase 1+
+- 종목별 다른 정책 — Phase 0.7.3 또는 Phase 1+
 - 부분 매도 — Phase 1+ (KIS partial fill과 함께)
 - 보조지표 기반 매도 (RSI, 볼린저밴드 등) — Phase 1+
-- 텔레그램 알림 (Console만) — Phase 1
-- 멀티 종목 — Phase 0.7
-- 종목 간 자본 배분 / 우선순위 — Phase 0.7
-- 환율 처리 — Phase 1 후반
-- Hot reload (재시작으로 설정 변경 적용) — Phase 1+ 검토
+- score-based 종목 우선순위 — Phase 0.7.3 또는 Phase 1+
+- 매도 임계치 +15/+20 % 비교 — Phase 1+ (실거래 데이터 확보 후)
+- Hot reload — Phase 1+ 검토
 
 이 범위를 벗어나는 코드 작성 시 사용자 확인 필수.
 
@@ -713,4 +722,4 @@ Phase 0.7 종료 후 Phase 1 ADR 0004 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-03 (§16 Phase 1 호환성으로 갱신 — ADR 0003 §11.2 박제 후속)*
+*마지막 업데이트: 2026-05-03 (§14 Phase 0.7 진입 박제 + Phase 0.5 완료 표기 — ADR 0003 박제 후속)*
