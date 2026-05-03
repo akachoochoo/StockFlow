@@ -1,9 +1,8 @@
-"""YAML strategy config loader (Phase 0.5 / ADR 0002 §6).
+"""YAML strategy config loader — multi-asset (Phase 0.7.1 박제).
 
 Reads ``config/strategies-*.yaml`` and produces ``AssetStrategyBundle``
-instances ready for composition. Phase 0.5 ships a single-asset assumption
-(composition uses the first key); multi-asset orchestration arrives in
-Phase 0.7.
+instances ready for composition. Phase 0.7.1 박제 — 모든 자산 동일 정책
+강제 (ADR 0003 §7.3). Composition root 가 모든 enabled bundle 사용.
 
 The loader validates with strict, extra='forbid' pydantic schemas — typos
 in YAML keys surface as ``ValidationError`` rather than silent defaults
@@ -15,10 +14,10 @@ YAML float → Decimal: pyyaml returns ``float`` for unquoted decimals
 because the str round-trip preserves the human-readable representation
 (``Decimal("10.0")``) without IEEE-754 precision artefacts.
 
-Asset metadata note: Phase 0.5 YAML carries asset code + name + strategy
-parameters only. The full ``Asset`` value object (exchange / asset_class
-/ currency / tick / lot) is built by the composition root, where these
-KRX-specific fields stay hardcoded until Phase 1+ multi-exchange arrives.
+Asset metadata note: YAML carries asset code + name + strategy parameters
+only. The full ``Asset`` value object (exchange / asset_class / currency /
+tick / lot) is built by the composition root, where these KRX-specific
+fields stay hardcoded until Phase 1+ multi-exchange arrives.
 """
 from __future__ import annotations
 
@@ -151,6 +150,53 @@ class _RootSchema(_StrictBase):
     version: Literal["0.5"]
     assets: dict[str, _AssetEntry] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _check_policy_uniformity(self) -> _RootSchema:
+        """Phase 0.7.1 strict: all enabled assets must share the same policy.
+
+        ADR 0003 §7.3 — 정책 동일성 강제. ``name`` and ``enabled`` may differ
+        per asset; every other field must be identical across all enabled
+        assets. Comparison uses ``model_dump()`` dict equality so Decimal /
+        int / str all compare correctly.
+
+        Raises ValueError naming the first mismatch asset and differing field
+        to aid debugging (e.g. "asset '214980' differs from '069500':
+        buy_parameters differ").
+        Skips validation when ≤ 1 enabled asset exists (no pair to compare).
+        """
+        enabled_items = [
+            (code, entry)
+            for code, entry in self.assets.items()
+            if entry.enabled
+        ]
+        if len(enabled_items) <= 1:
+            return self
+
+        ref_code, ref_entry = enabled_items[0]
+        ref_dump = ref_entry.model_dump()
+
+        policy_fields = (
+            "buy_strategy",
+            "buy_parameters",
+            "sell_strategy",
+            "sell_parameters",
+            "reentry_strategy",
+            "reentry_parameters",
+        )
+
+        for code, entry in enabled_items[1:]:
+            entry_dump = entry.model_dump()
+            for field_name in policy_fields:
+                if entry_dump[field_name] != ref_dump[field_name]:
+                    raise ValueError(
+                        f"Phase 0.7.1 strict (ADR 0003 §7.3): asset "
+                        f"{code!r} differs from {ref_code!r}: "
+                        f"{field_name} differ. "
+                        f"All enabled assets must share the same policy."
+                    )
+
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Public output model
@@ -180,17 +226,18 @@ class AssetStrategyBundle(DomainModel):
 # Loader
 # ---------------------------------------------------------------------------
 def load_strategy_config(path: Path | str) -> dict[str, AssetStrategyBundle]:
-    """Parse a Phase 0.5 strategies YAML file (ADR §6.2).
+    """Parse a strategies YAML file (ADR 0002 §6.2 / ADR 0003 §7.3).
 
-    Returns a dict keyed by asset code. Phase 0.5 composition root uses
-    the first key only; multi-asset support arrives in Phase 0.7.
+    Returns a dict keyed by asset code. Phase 0.7.1 — composition root 가
+    모든 enabled bundle 사용. 정책 동일성은 _RootSchema 가 검증.
 
     Raises:
         FileNotFoundError: ``path`` does not exist.
         ValueError: YAML is empty or otherwise unparseable at the root.
         ValidationError: schema violations (missing keys, wrong types,
             unknown strategy names, out-of-range parameters, misaligned
-            reentry params, extra keys).
+            reentry params, extra keys, or policy non-uniformity across
+            enabled assets — ADR 0003 §7.3).
     """
     text = Path(path).read_text(encoding="utf-8")
     raw = yaml.safe_load(text)

@@ -159,7 +159,12 @@ class BacktestResult:
 class BacktestRunner:
     """Replay historical OHLCV across [start, end] dates.
 
-    Constructed with the `asset`, `strategy_config`, `initial_capital`, and
+    Phase 0.7.1: accepts ``assets: list[Asset]`` (non-empty). Trading dates
+    are the intersection of all assets' bars so a missing-data day for any
+    asset is skipped for all (ADR 0003 §9.3). Single-asset runs behave
+    identically to the previous single-asset interface.
+
+    Constructed with ``assets``, ``strategy_config``, ``initial_capital``, and
     the OHLCV map; ``run(start, end)`` produces a `BacktestResult`. The
     runner wires fresh adapters per call so each `run` is fully isolated
     (ADR §9.4).
@@ -168,7 +173,7 @@ class BacktestRunner:
     def __init__(
         self,
         *,
-        asset: Asset,
+        assets: list[Asset],
         strategy_config: SplitStrategyConfig,
         initial_capital: Money,
         ohlcv_by_asset: dict[Asset, list[OHLCV]],
@@ -181,12 +186,12 @@ class BacktestRunner:
         trading_days_per_year: int = _DEFAULT_TRADING_DAYS_PER_YEAR,
         risk_free_rate: Decimal = _DEFAULT_RISK_FREE_RATE,
     ) -> None:
-        self._asset = asset
+        if not assets:
+            raise ValueError("assets must be a non-empty list")
+        self._assets = list(assets)
         self._strategy_config = strategy_config
         self._initial_capital = initial_capital
         self._ohlcv_by_asset = ohlcv_by_asset
-        # Phase 0.5 defaults match step 0.5.14 hardcoded composition; the
-        # YAML loader (step 0.5.19) routes here when --config is used.
         self._sell_strategy_config = sell_strategy_config or SellStrategyConfig(
             profit_target_pct=Decimal("10.0"),
             max_sells_per_day=7,
@@ -207,12 +212,22 @@ class BacktestRunner:
         if start > end:
             raise ValueError(f"start ({start}) > end ({end})")
 
-        # Iterate only over days that have an OHLCV bar — those are the
-        # trading days. Non-trading days (weekends/holidays) have no bar.
-        bars = self._ohlcv_by_asset.get(self._asset, [])
-        trading_dates = sorted(
-            b.trade_date for b in bars if start <= b.trade_date <= end
-        )
+        # Trading dates = intersection of each asset's bar dates within
+        # [start, end]. A day missing from any asset is excluded entirely
+        # (ADR 0003 §9.3 — "한 종목 누락일은 멀티 백테스트 skip").
+        # Single-asset case: intersection of one set = that set (same as before).
+        date_sets = [
+            {b.trade_date for b in self._ohlcv_by_asset.get(asset, [])
+             if start <= b.trade_date <= end}
+            for asset in self._assets
+        ]
+        if date_sets:
+            common_dates = date_sets[0]
+            for ds in date_sets[1:]:
+                common_dates = common_dates & ds
+        else:
+            common_dates = set()
+        trading_dates = sorted(common_dates)
 
         # Wire one set of adapters reused across the whole run. The mutable
         # `clock_holder` lets us swap between decision-time and snapshot-time
@@ -243,18 +258,23 @@ class BacktestRunner:
         strategy = PriceDropStrategy(reentry=reentry)
         shared_uow = InMemoryUnitOfWork()
 
-        ctx = AssetContext(
-            asset=self._asset,
-            strategy=strategy,
-            config=self._strategy_config,
-            sell_strategy=ProfitTargetSell(),
-            sell_config=self._sell_strategy_config,
-        )
+        # Build one AssetContext per asset; all share the same strategy
+        # instance and configs (ADR 0003 §7.3 — policy uniformity).
+        asset_contexts = [
+            AssetContext(
+                asset=asset,
+                strategy=strategy,
+                config=self._strategy_config,
+                sell_strategy=ProfitTargetSell(),
+                sell_config=self._sell_strategy_config,
+            )
+            for asset in self._assets
+        ]
         orchestrator = DailyOrchestrator(
             broker=broker,
             market_data=market_data,
             signal=signal,
-            asset_contexts=[ctx],
+            asset_contexts=asset_contexts,
             clock=clock,
             uow_factory=lambda: shared_uow,
         )

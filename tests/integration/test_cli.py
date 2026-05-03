@@ -690,3 +690,55 @@ def test_unknown_subcommand_fails():
 # Sanity: make sure the kill-switch fixture didn't leak between tests
 def test_kill_switch_env_not_set_by_default():
     assert os.environ.get("TRADING_HALT") != "1"
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.7.1.e — multi-asset YAML UsageError (0.7.1.f/h 전까지 단일 CSV)
+# ---------------------------------------------------------------------------
+class TestMultiAssetUsageError:
+    """Phase 0.7.1.e: multi-asset YAML + single --csv → UsageError.
+
+    The full multi-asset CSV flow is gated behind 0.7.1.f (download) +
+    0.7.1.h (backtest execution). Until then, enabled > 1 asset with a
+    single --csv must surface a clear UsageError pointing to the future steps.
+    """
+
+    def _multi_asset_config(self, tmp_path: Path) -> Path:
+        from pathlib import Path as _Path
+        repo_root = _Path(__file__).resolve().parents[2]
+        return repo_root / "config" / "strategies-0.7.1-F.yaml"
+
+    def test_backtest_multi_asset_yaml_raises_usage_error(self, csv_path, tmp_path):
+        runner = CliRunner()
+        config = self._multi_asset_config(tmp_path)
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--config", str(config),
+                "--start", "2026-04-27",
+                "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code != 0
+        # UsageError must mention the blocking reason and the phase gate.
+        assert "0.7.1" in result.output
+        assert "multi-asset" in result.output.lower() or "069500" in result.output
+
+    def test_paper_multi_asset_yaml_raises_usage_error(self, csv_path, tmp_path):
+        db = tmp_path / "paper.db"
+        runner = CliRunner()
+        config = self._multi_asset_config(tmp_path)
+        result = runner.invoke(
+            main,
+            [
+                "paper",
+                "--csv", str(csv_path),
+                "--config", str(config),
+                "--date", "2026-04-28",
+                "--db", str(db),
+            ],
+        )
+        assert result.exit_code != 0
+        assert "0.7.1" in result.output

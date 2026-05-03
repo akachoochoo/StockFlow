@@ -111,7 +111,7 @@ class TestBacktestRunner:
             _bar(asset, days[5], "33500"),  # decision sees 34000 → ~2.86%, skip
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(),
             initial_capital=_capital(),
             ohlcv_by_asset={asset: bars},
@@ -150,7 +150,7 @@ class TestBacktestRunner:
             _bar(asset, d_today, "30000"),
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(),
             initial_capital=_capital(),
             ohlcv_by_asset={asset: bars},
@@ -187,7 +187,7 @@ class TestBacktestRunner:
             _bar(asset, d4, "34700"),
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(),
             initial_capital=_capital(),
             ohlcv_by_asset={asset: bars},
@@ -202,7 +202,7 @@ class TestBacktestRunner:
     def test_empty_ohlcv_returns_clean_result(self):
         asset = _asset()
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(),
             initial_capital=_capital(),
             ohlcv_by_asset={},
@@ -236,7 +236,7 @@ class TestBacktestRunner:
             _bar(asset, days[6], "20000"),  # at max_split=3 → skip
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(drop_pct="10", max_split=3),
             initial_capital=_capital(amount="100000000"),
             ohlcv_by_asset={asset: bars},
@@ -278,7 +278,7 @@ class TestBacktestRunner:
             _bar(asset, days[5], "20000"),
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(),
             initial_capital=_capital(),
             ohlcv_by_asset={asset: bars},
@@ -324,7 +324,7 @@ class TestSellsThenBuysScenarios:
             _bar(asset, days[4], "38500"),  # Day4 snap
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(),
             initial_capital=_capital(amount="10000000"),
             ohlcv_by_asset={asset: bars},
@@ -370,7 +370,7 @@ class TestSellsThenBuysScenarios:
             _bar(asset, days[4], "33000"),  # Day4 snap; sells slots 2,3
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(),
             initial_capital=_capital(amount="10000000"),
             ohlcv_by_asset={asset: bars},
@@ -421,7 +421,7 @@ class TestSellsThenBuysScenarios:
             _bar(asset, days[5], "23000"),  # same — dormancy
         ]
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=_config(max_split=3),
             initial_capital=_capital(amount="10000000"),
             ohlcv_by_asset={asset: bars},

@@ -96,8 +96,8 @@ def check_snapshot_position_sync(
 
 def build_paper_components(
     *,
-    asset: Asset,
-    bars: list[OHLCV],
+    assets: list[Asset],
+    bars_by_asset: dict[Asset, list[OHLCV]],
     db_path: Path | str,
     initial_capital: Money,
     strategy_config: SplitStrategyConfig,
@@ -108,6 +108,11 @@ def build_paper_components(
 ) -> PaperComponents:
     """Build a paper-trading orchestrator + snapshot builder.
 
+    Phase 0.7.1 — accepts ``assets: list[Asset]`` (non-empty) and
+    ``bars_by_asset`` dict. All assets share the same strategy_config /
+    sell_strategy_config / reentry policy (ADR 0003 §7.3 uniformity).
+    ``run_for_date`` returns one Decision per asset in declaration order.
+
     - Opens / bootstraps the SQLite DB at ``db_path``.
     - Runs the snapshot/position sanity check.
     - Restores cash from the latest snapshot (or ``initial_capital`` if
@@ -116,6 +121,9 @@ def build_paper_components(
       with a mutable clock so the caller can swap decision-time vs
       snapshot-time without rebuilding the graph.
     """
+    if not assets:
+        raise ValueError("assets must be a non-empty list")
+
     conn = connect(db_path)
 
     def uow_factory() -> SqliteUnitOfWork:
@@ -143,11 +151,8 @@ def build_paper_components(
     for position in stored_positions:
         broker.set_position(position)
 
-    market_data = MockMarketData(ohlcv_by_asset={asset: bars})
+    market_data = MockMarketData(ohlcv_by_asset=bars_by_asset)
 
-    # Phase 0.5 defaults match the step 0.5.14 hardcoded composition; the
-    # YAML loader (step 0.5.19) routes here when --config is used (CLI
-    # step 0.5.20).
     effective_sell_config = sell_strategy_config or SellStrategyConfig(
         profit_target_pct=Decimal("10.0"),
         max_sells_per_day=7,
@@ -163,18 +168,23 @@ def build_paper_components(
         **effective_reentry_params,
     )
 
-    ctx = AssetContext(
-        asset=asset,
-        strategy=PriceDropStrategy(reentry=reentry),
-        config=strategy_config,
-        sell_strategy=ProfitTargetSell(),
-        sell_config=effective_sell_config,
-    )
+    # Build one AssetContext per asset; all share the same strategy instance
+    # and configs (ADR 0003 §7.3 — policy uniformity checked by loader).
+    asset_contexts = [
+        AssetContext(
+            asset=asset,
+            strategy=PriceDropStrategy(reentry=reentry),
+            config=strategy_config,
+            sell_strategy=ProfitTargetSell(),
+            sell_config=effective_sell_config,
+        )
+        for asset in assets
+    ]
     orchestrator = DailyOrchestrator(
         broker=broker,
         market_data=market_data,
         signal=NullSignal(),
-        asset_contexts=[ctx],
+        asset_contexts=asset_contexts,
         clock=clock,
         uow_factory=uow_factory,
     )
@@ -218,3 +228,55 @@ def kodex200() -> Asset:
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
     )
+
+
+def kodex_short_bond_plus() -> Asset:
+    """Phase 0.7.1 — KODEX 단기채권 PLUS (214980).
+
+    Asset-class: KR_ETF on KRX, KRW-settled. tick_size / lot_size are
+    Phase 0.7.1 placeholders; Phase 1 KIS adapter will supply the real
+    KRX market rules.
+    """
+    from decimal import Decimal  # local import: keeps top imports tight
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+    )
+
+    return Asset(
+        code="214980",
+        exchange=Exchange.KRX,
+        asset_class=AssetClass.KR_ETF,
+        currency=Currency.KRW,
+        name="KODEX 단기채권 PLUS",
+        tick_size=Decimal("5"),
+        lot_size=Decimal("1"),
+    )
+
+
+# Registry: code → factory. Extend here when Phase 0.7.3+ adds more assets.
+_ASSET_FACTORIES: dict[str, Callable[[], Asset]] = {
+    "069500": kodex200,
+    "214980": kodex_short_bond_plus,
+}
+
+
+def asset_from_code(code: str) -> Asset:
+    """Look up an Asset factory by KRX code and instantiate it.
+
+    Raises KeyError with a helpful message when the code is not registered.
+    New assets require a composition.py update (per Phase 0.7.1 design —
+    asset metadata stays hardcoded until Phase 1+ KIS adapter arrives).
+    """
+    factory = _ASSET_FACTORIES.get(code)
+    if factory is None:
+        supported = list(_ASSET_FACTORIES.keys())
+        raise KeyError(
+            f"No Asset factory for code {code!r}. "
+            f"Phase 0.7.1 supports {supported}; "
+            "new codes need composition.py update."
+        )
+    return factory()

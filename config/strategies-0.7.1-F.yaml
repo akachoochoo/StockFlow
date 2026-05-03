@@ -1,0 +1,39 @@
+# Phase 0.7.1 strategy config — Policy F (Hybrid-60), multi-asset.
+# ADR 0003 §13.6.1 박제: 069500 (KODEX 200) + 214980 (KODEX 단기채권 PLUS).
+# 자산군 분산 (옵션 Y, §1.2.4). 정책 동일성 강제 (§7.3).
+# per_split_amount = 5,000,000 KRW (per-asset 50M / 10 — ADR §4.1).
+
+version: "0.5"  # schema version 그대로 — Phase 0.7.1 구조 변경 없음
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
+  "214980":
+    name: "KODEX 단기채권 PLUS"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60

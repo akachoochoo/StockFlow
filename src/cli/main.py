@@ -172,32 +172,43 @@ def _resolve_strategy_configs(
     max_sells_per_day: int,
     reentry_strategy: str,
     cooldown_days: int,
-    expected_asset_code: str,
-) -> tuple[SplitStrategyConfig, SellStrategyConfig, str, dict[str, Any]]:
-    """Resolve the four strategy configs from either --config or flags.
+) -> tuple[list[str], SplitStrategyConfig, SellStrategyConfig, str, dict[str, Any]]:
+    """Resolve strategy configs from either --config or flags.
 
-    Returns ``(buy_config, sell_config, reentry_name, reentry_params)``.
-    Raises ``click.UsageError`` on conflict (--config + strategy flag),
-    asset-code mismatch, or moving_average requested without --config.
+    Returns ``(asset_codes, buy_config, sell_config, reentry_name,
+    reentry_params)``.
+
+    - ``asset_codes``: ordered list of enabled asset codes from YAML, or
+      ``["069500"]`` for the flag-only (backward-compat) path.
+    - Policy fields come from the first enabled bundle (uniformity
+      validated by the YAML loader — ADR 0003 §7.3).
+
+    Raises ``click.UsageError`` on conflict (--config + strategy flag) or
+    moving_average requested without --config.
     """
     if config_path is not None:
         _check_mutually_exclusive_with_config(ctx)
         bundles = load_strategy_config(config_path)
-        # ADR §6.2: Phase 0.5 single-asset uses the first key only.
-        bundle = next(iter(bundles.values()))
-        if bundle.code != expected_asset_code:
+        enabled_items = [
+            (code, b) for code, b in bundles.items() if b.enabled
+        ]
+        if not enabled_items:
             raise click.UsageError(
-                f"YAML asset code {bundle.code!r} does not match Phase 0.5 "
-                f"hardcoded asset {expected_asset_code!r}. Phase 0.7 ADR "
-                "round will surface arbitrary codes from YAML."
+                f"No enabled assets in {config_path}. "
+                "Set enabled: true for at least one asset."
             )
+        asset_codes = [code for code, _ in enabled_items]
+        # Policy is uniform (loader validates); use first bundle's params.
+        bundle = enabled_items[0][1]
         return (
+            asset_codes,
             bundle.buy_config,
             bundle.sell_config,
             bundle.reentry_strategy_name,
             dict(bundle.reentry_parameters),
         )
 
+    # Flag-only path: KODEX 200 backward compat (single asset).
     if reentry_strategy == "moving_average":
         raise click.UsageError(
             "--reentry-strategy moving_average requires --config (window / "
@@ -206,6 +217,7 @@ def _resolve_strategy_configs(
         )
 
     return (
+        ["069500"],
         _build_strategy_config(
             drop_pct=drop_pct,
             max_split=max_split,
@@ -287,8 +299,7 @@ def backtest(
 ) -> None:
     """Replay historical OHLCV through the Phase 0 strategy + mock adapters."""
     with safety.lock_file():
-        asset = composition.kodex200()
-        buy_config, sell_config, reentry_name, reentry_params = (
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
             _resolve_strategy_configs(
                 ctx,
                 config_path,
@@ -300,12 +311,21 @@ def backtest(
                 max_sells_per_day=max_sells_per_day,
                 reentry_strategy=reentry_strategy,
                 cooldown_days=cooldown_days,
-                expected_asset_code=asset.code,
             )
         )
+        if len(asset_codes) > 1:
+            raise click.UsageError(
+                "Phase 0.7.1.e — CLI multi-asset CSV 입력은 0.7.1.f/h 에서 "
+                "지원. 현재는 단일 --csv = 단일 자산. "
+                f"YAML enabled assets: {asset_codes}"
+            )
+        try:
+            asset = composition.asset_from_code(asset_codes[0])
+        except KeyError as e:
+            raise click.UsageError(str(e)) from e
         bars = load_ohlcv_csv(csv_path, asset)
         runner = BacktestRunner(
-            asset=asset,
+            assets=[asset],
             strategy_config=buy_config,
             sell_strategy_config=sell_config,
             reentry_strategy_name=reentry_name,
@@ -382,8 +402,7 @@ def paper(
     """
     today = trade_date.date()
     with safety.lock_file():
-        asset = composition.kodex200()
-        buy_config, sell_config, reentry_name, reentry_params = (
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
             _resolve_strategy_configs(
                 ctx,
                 config_path,
@@ -395,15 +414,24 @@ def paper(
                 max_sells_per_day=max_sells_per_day,
                 reentry_strategy=reentry_strategy,
                 cooldown_days=cooldown_days,
-                expected_asset_code=asset.code,
             )
         )
+        if len(asset_codes) > 1:
+            raise click.UsageError(
+                "Phase 0.7.1.e — CLI multi-asset CSV 입력은 0.7.1.f/h 에서 "
+                "지원. 현재는 단일 --csv = 단일 자산. "
+                f"YAML enabled assets: {asset_codes}"
+            )
+        try:
+            asset = composition.asset_from_code(asset_codes[0])
+        except KeyError as e:
+            raise click.UsageError(str(e)) from e
         bars = load_ohlcv_csv(csv_path, asset)
         decision_at = composition.utc_for(today, time(9, 0))
         snapshot_at = composition.utc_for(today, time(16, 0))
         components = composition.build_paper_components(
-            asset=asset,
-            bars=bars,
+            assets=[asset],
+            bars_by_asset={asset: bars},
             db_path=db_path,
             initial_capital=_krw(capital),
             strategy_config=buy_config,
@@ -414,7 +442,7 @@ def paper(
         )
         try:
             decisions = components.orchestrator.run_for_date(today)
-            decision = decisions[0]
+            decision = decisions[0]  # single-asset: length == 1 (UsageError guards multi)
             components.set_clock(snapshot_at)
             snapshot = components.snapshot_builder.build_and_save(today)
         finally:

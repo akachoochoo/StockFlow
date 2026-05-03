@@ -131,7 +131,7 @@ def test_backtest_and_paper_produce_identical_outcomes(tmp_path, csv_path):
 
     # ---------- Path A: BacktestRunner (one call, in-memory state) ----------
     runner = BacktestRunner(
-        asset=asset,
+        assets=[asset],
         strategy_config=config,
         initial_capital=initial_capital,
         ohlcv_by_asset={asset: bars},
@@ -301,7 +301,7 @@ def test_equivalence_with_sells_and_cascade_buys(tmp_path, csv_path_sells):
 
     # ---------- Path A: BacktestRunner ----------
     runner = BacktestRunner(
-        asset=asset,
+        assets=[asset],
         strategy_config=config,
         initial_capital=initial_capital,
         ohlcv_by_asset={asset: bars},

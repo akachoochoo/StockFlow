@@ -344,3 +344,136 @@ class TestRepoConfigFiles:
         assert d.sell_config == f.sell_config
         # Reentry side is the only intentional difference.
         assert d.reentry_strategy_name != f.reentry_strategy_name
+
+    def test_strategies_071_f_yaml_loads_multi_asset(self):
+        """Phase 0.7.1 multi-asset fixture loads and passes uniformity check."""
+        path = self._repo_root() / "config" / "strategies-0.7.1-F.yaml"
+        bundles = load_strategy_config(path)
+        assert set(bundles.keys()) == {"069500", "214980"}
+        for bundle in bundles.values():
+            assert bundle.enabled is True
+            assert bundle.buy_config.drop_threshold_pct == Decimal("5.0")
+            assert bundle.buy_config.per_split_amount.amount == Decimal("5000000")
+            assert bundle.sell_config.profit_target_pct == Decimal("10.0")
+            assert bundle.reentry_strategy_name == "hybrid"
+            assert bundle.reentry_parameters == {"cooldown_days": 60}
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.7.1 policy uniformity tests (ADR 0003 §7.3)
+# ---------------------------------------------------------------------------
+_MULTI_ASSET_UNIFORM = """\
+version: "0.5"
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
+  "214980":
+    name: "KODEX 단기채권 PLUS"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
+"""
+
+
+class TestPolicyUniformity:
+    """ADR 0003 §7.3 — _RootSchema model_validator rejects mismatched policies."""
+
+    def test_multi_asset_uniform_policy_passes(self, tmp_path: Path):
+        result = load_strategy_config(_write(tmp_path, _MULTI_ASSET_UNIFORM))
+        assert set(result.keys()) == {"069500", "214980"}
+        assert result["069500"].buy_config == result["214980"].buy_config
+        assert result["069500"].sell_config == result["214980"].sell_config
+
+    def test_multi_asset_buy_param_mismatch_rejected(self, tmp_path: Path):
+        # drop_threshold_pct differs between assets — must be rejected.
+        body = _MULTI_ASSET_UNIFORM.replace(
+            # Second occurrence of drop_threshold_pct: 5.0 belongs to 214980
+            "drop_threshold_pct: 5.0\n      max_split_count: 7\n"
+            "      per_split_amount: 5000000\n      max_split_per_day: 1\n"
+            "    sell_strategy: \"profit_target\"\n"
+            "    sell_parameters:\n"
+            "      profit_target_pct: 10.0\n"
+            "      max_sells_per_day: 7\n"
+            "    reentry_strategy: \"hybrid\"\n"
+            "    reentry_parameters:\n"
+            "      cooldown_days: 60\n",
+            "drop_threshold_pct: 7.0\n      max_split_count: 7\n"
+            "      per_split_amount: 5000000\n      max_split_per_day: 1\n"
+            "    sell_strategy: \"profit_target\"\n"
+            "    sell_parameters:\n"
+            "      profit_target_pct: 10.0\n"
+            "      max_sells_per_day: 7\n"
+            "    reentry_strategy: \"hybrid\"\n"
+            "    reentry_parameters:\n"
+            "      cooldown_days: 60\n",
+            1,  # replace only the second occurrence
+        )
+        with pytest.raises(ValidationError, match="buy_parameters differ"):
+            load_strategy_config(_write(tmp_path, body))
+
+    def test_multi_asset_sell_strategy_mismatch_rejected(self, tmp_path: Path):
+        # Modify 214980's sell_parameters to differ.
+        body = _MULTI_ASSET_UNIFORM.replace(
+            "      profit_target_pct: 10.0\n"
+            "      max_sells_per_day: 7\n"
+            "    reentry_strategy: \"hybrid\"\n"
+            "    reentry_parameters:\n"
+            "      cooldown_days: 60\n",
+            "      profit_target_pct: 12.0\n"
+            "      max_sells_per_day: 7\n"
+            "    reentry_strategy: \"hybrid\"\n"
+            "    reentry_parameters:\n"
+            "      cooldown_days: 60\n",
+            1,  # replace only the second occurrence (214980 block)
+        )
+        with pytest.raises(ValidationError, match="sell_parameters differ"):
+            load_strategy_config(_write(tmp_path, body))
+
+    def test_multi_asset_reentry_param_mismatch_rejected(self, tmp_path: Path):
+        # 214980's cooldown_days differs.
+        body = _MULTI_ASSET_UNIFORM.replace(
+            "      cooldown_days: 60\n",
+            "      cooldown_days: 30\n",
+            1,  # replace only the second occurrence (214980 block)
+        )
+        with pytest.raises(ValidationError, match="reentry_parameters differ"):
+            load_strategy_config(_write(tmp_path, body))
+
+    def test_multi_asset_disabled_excluded_from_uniformity(self, tmp_path: Path):
+        # 214980 is disabled + has different policy → should NOT raise.
+        body = _MULTI_ASSET_UNIFORM.replace(
+            "  \"214980\":\n    name: \"KODEX 단기채권 PLUS\"\n    enabled: true",
+            "  \"214980\":\n    name: \"KODEX 단기채권 PLUS\"\n    enabled: false",
+        ).replace(
+            "      cooldown_days: 60\n",
+            "      cooldown_days: 30\n",
+            1,  # replace only 214980's cooldown_days
+        )
+        result = load_strategy_config(_write(tmp_path, body))
+        # Disabled asset loads OK; uniformity check skipped for disabled assets.
+        assert result["214980"].enabled is False
