@@ -60,6 +60,7 @@ from src.domain.models import (
     SignalLevel,
     SkipReason,
 )
+from src.use_cases.asset_context import AssetContext
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -164,11 +165,16 @@ class DailyOrchestrator:
         self._broker = broker
         self._market_data = market_data
         self._signal = signal
-        self._strategy = strategy
-        self._config = config
-        self._sell_strategy = sell_strategy
-        self._sell_config = sell_config
-        self._asset = asset
+        # Phase 0.7.1.b — bundle per-asset deps into AssetContext (ADR 0003
+        # §8.2). Helpers still resolve via self._ctx.* to preserve single-
+        # asset behavior; 0.7.1.c lifts this to ``list[AssetContext]``.
+        self._ctx = AssetContext(
+            asset=asset,
+            strategy=strategy,
+            config=config,
+            sell_strategy=sell_strategy,
+            sell_config=sell_config,
+        )
         self._clock = clock
         self._uow_factory = uow_factory
 
@@ -198,7 +204,7 @@ class DailyOrchestrator:
         # 1. Signal first (HALT/EMERGENCY blocks both sells and buys per
         #    ADR §5.9.2).
         try:
-            signal = self._signal.collect(self._asset.asset_class, as_of)
+            signal = self._signal.collect(self._ctx.asset.asset_class, as_of)
         except ExternalSystemError as e:
             return _Outcome(
                 decision=self._skip(
@@ -219,7 +225,7 @@ class DailyOrchestrator:
 
         # 2. Market data
         try:
-            current_price = self._market_data.get_price(self._asset, as_of)
+            current_price = self._market_data.get_price(self._ctx.asset, as_of)
         except DataIntegrityError as e:
             return _Outcome(
                 decision=self._skip(
@@ -251,7 +257,7 @@ class DailyOrchestrator:
             )
 
         position = next(
-            (p for p in positions if p.asset == self._asset), None
+            (p for p in positions if p.asset == self._ctx.asset), None
         )
 
         # 4. SELL loop (ADR §5.3 step 2 + §5.9.4 abort handling)
@@ -307,16 +313,16 @@ class DailyOrchestrator:
                     updated_position=self._fetch_updated_position(),
                 )
             position = next(
-                (p for p in positions if p.asset == self._asset), None
+                (p for p in positions if p.asset == self._ctx.asset), None
             )
 
         # 7. BUY evaluation + execution
         excluded = {sa.slot_number for sa in sell_outcome.sell_actions}
-        evaluation = self._strategy.evaluate(
+        evaluation = self._ctx.strategy.evaluate(
             position=position,
             current_price=current_price,
             balance=balance,
-            config=self._config,
+            config=self._ctx.config,
             today=today,
             excluded_slot_numbers=excluded if excluded else None,
         )
@@ -339,7 +345,7 @@ class DailyOrchestrator:
 
         # Adjust BUY quantity per signal level (ADR §5.9.2 — SELL is full).
         adjusted_qty = self._adjust_quantity(
-            signal.level, intent.target_quantity, self._asset.lot_size
+            signal.level, intent.target_quantity, self._ctx.asset.lot_size
         )
         if adjusted_qty <= 0:
             return self._handle_no_buy(
@@ -364,7 +370,7 @@ class DailyOrchestrator:
         buy_idem_key = self._buy_idempotency_key(today, intent.slot_number)
         request = OrderRequest(
             idempotency_key=buy_idem_key,
-            asset=self._asset,
+            asset=self._ctx.asset,
             side=OrderSide.BUY,
             order_type=OrderType.LIMIT,
             quantity=adjusted_qty,
@@ -509,10 +515,10 @@ class DailyOrchestrator:
                 sell_actions=[], sell_orders=[], abort=None,
             )
 
-        sell_decisions: list[SellDecision] = self._sell_strategy.evaluate(
+        sell_decisions: list[SellDecision] = self._ctx.sell_strategy.evaluate(
             position=position,
             current_price=current_price,
-            config=self._sell_config,
+            config=self._ctx.sell_config,
             as_of=today,
         )
         if not sell_decisions:
@@ -528,7 +534,7 @@ class DailyOrchestrator:
             sell_idem_key = self._sell_idempotency_key(today, sd.slot_number)
             request = OrderRequest(
                 idempotency_key=sell_idem_key,
-                asset=self._asset,
+                asset=self._ctx.asset,
                 side=OrderSide.SELL,
                 order_type=OrderType.LIMIT,
                 quantity=slot.entry.quantity,
@@ -708,7 +714,7 @@ class DailyOrchestrator:
             reasoning["sell_loop_abort_reason"] = abort_reason.value
         return Decision(
             timestamp=as_of,
-            asset=self._asset,
+            asset=self._ctx.asset,
             sell_actions=sell_actions,
             buy_action=None,
             skip_reason=None,
@@ -756,7 +762,7 @@ class DailyOrchestrator:
             reasoning["sell_loop_abort_reason"] = abort_reason.value
         return Decision(
             timestamp=as_of,
-            asset=self._asset,
+            asset=self._ctx.asset,
             sell_actions=sell_actions,
             buy_action=buy_action,
             skip_reason=None,
@@ -792,7 +798,7 @@ class DailyOrchestrator:
             # slots (Phase 0.5 fixed slot count), but the strategy may be
             # configured with fewer (e.g. max_split_count=3 caps growth at
             # 3 even though slots 4..7 stay EMPTY).
-            all_filled = position.split_level >= self._config.max_split_count
+            all_filled = position.split_level >= self._ctx.config.max_split_count
             all_empty = position.split_level == 0
         else:
             all_filled = False
@@ -815,13 +821,13 @@ class DailyOrchestrator:
         flow (CLAUDE.md §8.1)."""
         return {
             "today": today.isoformat(),
-            "asset": self._asset.fqn,
+            "asset": self._ctx.asset.fqn,
             "current_price": str(current_price.value),
             "balance_cash": str(balance.cash.amount),
-            "drop_threshold_pct": str(self._config.drop_threshold_pct),
-            "max_split_count": str(self._config.max_split_count),
-            "profit_target_pct": str(self._sell_config.profit_target_pct),
-            "max_sells_per_day": str(self._sell_config.max_sells_per_day),
+            "drop_threshold_pct": str(self._ctx.config.drop_threshold_pct),
+            "max_split_count": str(self._ctx.config.max_split_count),
+            "profit_target_pct": str(self._ctx.sell_config.profit_target_pct),
+            "max_sells_per_day": str(self._ctx.sell_config.max_sells_per_day),
             **self._signal_info(signal),
         }
 
@@ -830,11 +836,11 @@ class DailyOrchestrator:
     # ------------------------------------------------------------------
     def _buy_idempotency_key(self, today: date, slot_number: int) -> str:
         """ADR §5.9.1 — slot-aware idempotency key for BUY."""
-        return f"{self._asset.fqn}:{today.isoformat()}:buy:{slot_number}"
+        return f"{self._ctx.asset.fqn}:{today.isoformat()}:buy:{slot_number}"
 
     def _sell_idempotency_key(self, today: date, slot_number: int) -> str:
         """ADR §5.9.1 — slot-aware idempotency key for SELL."""
-        return f"{self._asset.fqn}:{today.isoformat()}:sell:{slot_number}"
+        return f"{self._ctx.asset.fqn}:{today.isoformat()}:sell:{slot_number}"
 
     def _signal_info(self, signal: CircuitBreakerSignal) -> dict[str, str]:
         return {
@@ -869,7 +875,7 @@ class DailyOrchestrator:
     def _fetch_updated_position(self) -> Position | None:
         """Fetch the post-fill Position from the broker. None if absent."""
         positions = self._broker.get_positions()
-        return next((p for p in positions if p.asset == self._asset), None)
+        return next((p for p in positions if p.asset == self._ctx.asset), None)
 
     def _skip(
         self,
@@ -880,7 +886,7 @@ class DailyOrchestrator:
     ) -> Decision:
         reasoning = {
             "today": today.isoformat(),
-            "asset": self._asset.fqn,
+            "asset": self._ctx.asset.fqn,
             **extra_reasoning,
         }
         return self._build_skip_decision(
@@ -898,7 +904,7 @@ class DailyOrchestrator:
     ) -> Decision:
         return Decision(
             timestamp=as_of,
-            asset=self._asset,
+            asset=self._ctx.asset,
             sell_actions=[],
             buy_action=None,
             skip_reason=skip_reason,
