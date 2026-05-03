@@ -1,9 +1,13 @@
 """Trading CLI — ``trading backtest`` and ``trading paper`` subcommands.
 
-ADR §10.1 박제. Phase 0 single-asset (KODEX 200) entry point. Both
-commands share the kill-switch (CLAUDE.md §11.1) + lock-file (§10.2)
-safety wrap and the same strategy-config flags. Composition is delegated
-to ``src.cli.composition`` so this module stays a thin parser/printer.
+ADR §10.1 박제. Phase 0.7.1 multi-asset entry point. Both commands share
+the kill-switch (CLAUDE.md §11.1) + lock-file (§10.2) safety wrap and the
+same strategy-config flags. Composition is delegated to
+``src.cli.composition`` so this module stays a thin parser/printer.
+
+Multi-asset CSV mapping (0.7.1.f):
+  --csv CODE=path.csv   maps asset code to CSV path (--config mode)
+  --csv path.csv        single-asset backward compat (flag-only mode)
 """
 from __future__ import annotations
 
@@ -32,6 +36,66 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 def _krw(amount: int) -> Money:
     return Money(amount=Decimal(amount), currency=Currency.KRW)
+
+
+def _parse_csv_paths(
+    csv_values: tuple[str, ...],
+) -> dict[str | None, Path]:
+    """Parse --csv values into a {code_or_None: Path} mapping.
+
+    Two forms are accepted:
+      - ``path.csv``        — single-asset (flag-only) path; key = None.
+      - ``CODE=path.csv``   — asset-code mapping (--config mode); key = CODE.
+
+    Mixed forms raise click.UsageError. Multiple plain paths (no ``=``) also
+    raise click.UsageError — only one is allowed in flag-only mode.
+    """
+    if not csv_values:
+        # click required=True guards this; included for completeness.
+        raise click.UsageError("At least one --csv value is required.")
+
+    has_mapped = any("=" in v for v in csv_values)
+    has_plain = any("=" not in v for v in csv_values)
+
+    if has_mapped and has_plain:
+        raise click.UsageError(
+            "Cannot mix '--csv path' and '--csv CODE=path' forms. "
+            "Use '--csv path.csv' for a single asset (flag-only mode) or "
+            "'--csv CODE=path.csv' for each asset (--config mode)."
+        )
+
+    if has_plain:
+        if len(csv_values) > 1:
+            raise click.UsageError(
+                "Flag-only mode accepts exactly one '--csv path.csv'. "
+                "For multiple assets use '--csv CODE=path.csv' with --config."
+            )
+        p = Path(csv_values[0])
+        if not p.exists():
+            raise click.UsageError(f"CSV file does not exist: {p}")
+        return {None: p}
+
+    # CODE=path form
+    result: dict[str | None, Path] = {}
+    for v in csv_values:
+        code, _, raw_path = v.partition("=")
+        code = code.strip()
+        raw_path = raw_path.strip()
+        if not code or not raw_path:
+            raise click.UsageError(
+                f"Invalid --csv value {v!r}: expected CODE=path.csv"
+            )
+        p = Path(raw_path)
+        if not p.exists():
+            raise click.UsageError(
+                f"CSV file does not exist for asset {code!r}: {p}"
+            )
+        if code in result:
+            raise click.UsageError(
+                f"Duplicate --csv mapping for asset code {code!r}."
+            )
+        result[code] = p
+    return result
 
 
 def _build_strategy_config(
@@ -141,6 +205,65 @@ def _strategy_options(f: click.decorators.FC) -> click.decorators.FC:
     return f
 
 
+def _resolve_assets_and_bars(
+    asset_codes: list[str],
+    csv_map: dict[str | None, Path],
+) -> tuple[list[Any], dict[Any, list[Any]]]:
+    """Validate asset_codes vs csv_map and build (assets, ohlcv_by_asset).
+
+    Two modes:
+    - Flag-only (csv_map key = None): single asset, single CSV.
+    - --config mode (csv_map keys = codes): asset codes must match YAML
+      enabled codes exactly — missing or extra codes raise UsageError.
+    """
+    from src.domain.models import Asset  # noqa: F401 — type hint only
+
+    if None in csv_map:
+        # Flag-only mode: single asset.
+        if len(asset_codes) != 1:
+            raise click.UsageError(
+                f"Flag-only '--csv path.csv' requires exactly one enabled "
+                f"asset, but YAML has {len(asset_codes)}: {asset_codes}. "
+                "Use '--csv CODE=path.csv' for each asset."
+            )
+        try:
+            asset = composition.asset_from_code(asset_codes[0])
+        except KeyError as e:
+            raise click.UsageError(str(e)) from e
+        bars = load_ohlcv_csv(csv_map[None], asset)
+        return [asset], {asset: bars}
+
+    # --config mode: CODE=path form.
+    # At this point None is not in csv_map (handled above); all keys are str.
+    csv_codes: set[str] = {k for k in csv_map if k is not None}
+    yaml_set = set(asset_codes)
+    if yaml_set != csv_codes:
+        missing = yaml_set - csv_codes
+        extra = csv_codes - yaml_set
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing --csv for {sorted(missing)}")
+        if extra:
+            parts.append(f"extra --csv codes not in YAML {sorted(extra)}")
+        raise click.UsageError(
+            f"Asset codes mismatch: YAML enabled = {sorted(yaml_set)}, "
+            f"--csv mappings = {sorted(csv_codes)}. "
+            + "; ".join(parts) + "."
+        )
+
+    assets = []
+    ohlcv_by_asset: dict[Any, list[Any]] = {}
+    for code in asset_codes:  # preserve YAML order (ADR §5.1)
+        try:
+            asset = composition.asset_from_code(code)
+        except KeyError as e:
+            raise click.UsageError(str(e)) from e
+        bars = load_ohlcv_csv(csv_map[code], asset)
+        assets.append(asset)
+        ohlcv_by_asset[asset] = bars
+    return assets, ohlcv_by_asset
+
+
 def _check_mutually_exclusive_with_config(ctx: click.Context) -> None:
     """Raise click.UsageError if --config + any strategy flag (ADR §6.3)."""
     explicit: list[str] = []
@@ -245,10 +368,14 @@ def main() -> None:
 @main.command()
 @click.option(
     "--csv",
-    "csv_path",
+    "csv_values",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="OHLCV CSV (date,open,high,low,close,volume).",
+    multiple=True,
+    help=(
+        "OHLCV CSV path(s). "
+        "Flag-only mode: '--csv path.csv' (single asset). "
+        "--config mode: '--csv CODE=path.csv' for each enabled asset."
+    ),
 )
 @click.option(
     "--start",
@@ -282,7 +409,7 @@ def main() -> None:
 @click.pass_context
 def backtest(
     ctx: click.Context,
-    csv_path: Path,
+    csv_values: tuple[str, ...],
     start_date: datetime,
     end_date: datetime,
     capital: int,
@@ -297,7 +424,7 @@ def backtest(
     reentry_strategy: str,
     cooldown_days: int,
 ) -> None:
-    """Replay historical OHLCV through the Phase 0 strategy + mock adapters."""
+    """Replay historical OHLCV through the strategy + mock adapters."""
     with safety.lock_file():
         asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
             _resolve_strategy_configs(
@@ -313,25 +440,18 @@ def backtest(
                 cooldown_days=cooldown_days,
             )
         )
-        if len(asset_codes) > 1:
-            raise click.UsageError(
-                "Phase 0.7.1.e — CLI multi-asset CSV 입력은 0.7.1.f/h 에서 "
-                "지원. 현재는 단일 --csv = 단일 자산. "
-                f"YAML enabled assets: {asset_codes}"
-            )
-        try:
-            asset = composition.asset_from_code(asset_codes[0])
-        except KeyError as e:
-            raise click.UsageError(str(e)) from e
-        bars = load_ohlcv_csv(csv_path, asset)
+        csv_map = _parse_csv_paths(csv_values)
+        assets, ohlcv_by_asset = _resolve_assets_and_bars(
+            asset_codes, csv_map
+        )
         runner = BacktestRunner(
-            assets=[asset],
+            assets=assets,
             strategy_config=buy_config,
             sell_strategy_config=sell_config,
             reentry_strategy_name=reentry_name,
             reentry_parameters=reentry_params,
             initial_capital=_krw(capital),
-            ohlcv_by_asset={asset: bars},
+            ohlcv_by_asset=ohlcv_by_asset,
         )
         result = runner.run(start_date.date(), end_date.date())
     click.echo(output_formatter.format_backtest_result(result, as_json=as_json))
@@ -340,10 +460,14 @@ def backtest(
 @main.command()
 @click.option(
     "--csv",
-    "csv_path",
+    "csv_values",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="OHLCV CSV covering at least the trading date.",
+    multiple=True,
+    help=(
+        "OHLCV CSV path(s). "
+        "Flag-only mode: '--csv path.csv' (single asset). "
+        "--config mode: '--csv CODE=path.csv' for each enabled asset."
+    ),
 )
 @click.option(
     "--date",
@@ -378,7 +502,7 @@ def backtest(
 @click.pass_context
 def paper(
     ctx: click.Context,
-    csv_path: Path,
+    csv_values: tuple[str, ...],
     trade_date: datetime,
     db_path: Path,
     capital: int,
@@ -416,22 +540,15 @@ def paper(
                 cooldown_days=cooldown_days,
             )
         )
-        if len(asset_codes) > 1:
-            raise click.UsageError(
-                "Phase 0.7.1.e — CLI multi-asset CSV 입력은 0.7.1.f/h 에서 "
-                "지원. 현재는 단일 --csv = 단일 자산. "
-                f"YAML enabled assets: {asset_codes}"
-            )
-        try:
-            asset = composition.asset_from_code(asset_codes[0])
-        except KeyError as e:
-            raise click.UsageError(str(e)) from e
-        bars = load_ohlcv_csv(csv_path, asset)
+        csv_map = _parse_csv_paths(csv_values)
+        assets, bars_by_asset = _resolve_assets_and_bars(
+            asset_codes, csv_map
+        )
         decision_at = composition.utc_for(today, time(9, 0))
         snapshot_at = composition.utc_for(today, time(16, 0))
         components = composition.build_paper_components(
-            assets=[asset],
-            bars_by_asset={asset: bars},
+            assets=assets,
+            bars_by_asset=bars_by_asset,
             db_path=db_path,
             initial_capital=_krw(capital),
             strategy_config=buy_config,
@@ -442,7 +559,9 @@ def paper(
         )
         try:
             decisions = components.orchestrator.run_for_date(today)
-            decision = decisions[0]  # single-asset: length == 1 (UsageError guards multi)
+            # Single-asset: decisions[0]; multi-asset: first asset's decision
+            # (paper formatter only shows one decision — Phase 0.7.1 scope).
+            decision = decisions[0]
             components.set_clock(snapshot_at)
             snapshot = components.snapshot_builder.build_and_save(today)
         finally:

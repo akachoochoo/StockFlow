@@ -1,4 +1,4 @@
-"""Download KODEX 200 (069500) OHLCV history via pykrx.
+"""Download a KR ETF OHLCV history via pykrx.
 
 Phase 0 retrospective tooling. Pykrx wraps the public KRX disclosures
 endpoints — no API key, no auth, only network. Output CSV matches the
@@ -11,9 +11,13 @@ script is the single point of network dependency in the project.
 
 Usage::
 
-    uv run python scripts/download_kodex200.py \\
-        --start 2020-01-01 --end 2024-12-31 \\
+    uv run python scripts/download_kr_etf.py \\
+        --ticker 069500 --start 2020-01-02 --end 2024-12-30 \\
         --out data/historical/KRX_069500_2020-2024.csv
+
+    uv run python scripts/download_kr_etf.py \\
+        --ticker 214980 --start 2020-01-02 --end 2024-12-30 \\
+        --out data/historical/KRX_214980_2020-2024.csv
 """
 from __future__ import annotations
 
@@ -73,8 +77,8 @@ def main() -> int:
     parser.add_argument("--start", required=True, help="YYYY-MM-DD inclusive")
     parser.add_argument("--end", required=True, help="YYYY-MM-DD inclusive")
     parser.add_argument(
-        "--ticker", default="069500",
-        help="KRX ticker (default: 069500 — KODEX 200).",
+        "--ticker", required=True,
+        help="KRX ticker (e.g. 069500 for KODEX 200, 214980 for KODEX 단기채권 PLUS).",
     )
     parser.add_argument(
         "--out", required=True, type=Path,

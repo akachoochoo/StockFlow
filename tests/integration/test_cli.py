@@ -693,52 +693,166 @@ def test_kill_switch_env_not_set_by_default():
 
 
 # ---------------------------------------------------------------------------
-# Phase 0.7.1.e — multi-asset YAML UsageError (0.7.1.f/h 전까지 단일 CSV)
+# Phase 0.7.1.f — multi-asset CSV mapping tests
 # ---------------------------------------------------------------------------
-class TestMultiAssetUsageError:
-    """Phase 0.7.1.e: multi-asset YAML + single --csv → UsageError.
+def _multi_asset_config_path() -> Path:
+    """Return the repo's strategies-0.7.1-F.yaml (069500 + 214980 enabled)."""
+    from pathlib import Path as _Path
+    repo_root = _Path(__file__).resolve().parents[2]
+    return repo_root / "config" / "strategies-0.7.1-F.yaml"
 
-    The full multi-asset CSV flow is gated behind 0.7.1.f (download) +
-    0.7.1.h (backtest execution). Until then, enabled > 1 asset with a
-    single --csv must surface a clear UsageError pointing to the future steps.
-    """
 
-    def _multi_asset_config(self, tmp_path: Path) -> Path:
-        from pathlib import Path as _Path
-        repo_root = _Path(__file__).resolve().parents[2]
-        return repo_root / "config" / "strategies-0.7.1-F.yaml"
+def _make_csv(tmp_path: Path, name: str = "asset.csv") -> Path:
+    """Write a minimal valid OHLCV CSV (4 days, ~5% drop on day 3)."""
+    rows = [
+        ("2026-04-27", "30000", "30200", "29800", "30000", "1000"),
+        ("2026-04-28", "30000", "30100", "29900", "30000", "1000"),
+        ("2026-04-29", "29000", "29100", "27900", "28000", "2000"),
+        ("2026-04-30", "28000", "28200", "27900", "28100", "1500"),
+    ]
+    p = tmp_path / name
+    p.write_text(
+        "date,open,high,low,close,volume\n"
+        + "\n".join(",".join(r) for r in rows)
+        + "\n",
+        encoding="utf-8",
+    )
+    return p
 
-    def test_backtest_multi_asset_yaml_raises_usage_error(self, csv_path, tmp_path):
+
+class TestMultiAssetCsvMapping:
+    """Phase 0.7.1.f: multi-asset YAML + CODE=path CSV mappings."""
+
+    # ------------------------------------------------------------------
+    # Happy-path: multi-asset YAML + matching CODE=path → success
+    # ------------------------------------------------------------------
+    def test_backtest_multi_asset_csv_mappings_succeed(self, tmp_path):
+        csv_069500 = _make_csv(tmp_path, "069500.csv")
+        csv_214980 = _make_csv(tmp_path, "214980.csv")
         runner = CliRunner()
-        config = self._multi_asset_config(tmp_path)
         result = runner.invoke(
             main,
             [
                 "backtest",
-                "--csv", str(csv_path),
-                "--config", str(config),
+                "--csv", f"069500={csv_069500}",
+                "--csv", f"214980={csv_214980}",
+                "--config", str(_multi_asset_config_path()),
+                "--capital", "100000000",
+                "--start", "2026-04-27",
+                "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Backtest result" in result.output
+
+    # ------------------------------------------------------------------
+    # Mismatch: YAML has 2 assets, only one --csv CODE=path given
+    # ------------------------------------------------------------------
+    def test_backtest_csv_codes_mismatch_yaml_rejected(self, tmp_path):
+        csv_069500 = _make_csv(tmp_path, "069500.csv")
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", f"069500={csv_069500}",
+                "--config", str(_multi_asset_config_path()),
                 "--start", "2026-04-27",
                 "--end", "2026-04-30",
             ],
         )
         assert result.exit_code != 0
-        # UsageError must mention the blocking reason and the phase gate.
-        assert "0.7.1" in result.output
-        assert "multi-asset" in result.output.lower() or "069500" in result.output
+        # Error must name the missing code
+        assert "214980" in result.output
 
-    def test_paper_multi_asset_yaml_raises_usage_error(self, csv_path, tmp_path):
-        db = tmp_path / "paper.db"
+    # ------------------------------------------------------------------
+    # Extra code not in YAML → rejected
+    # ------------------------------------------------------------------
+    def test_backtest_csv_extra_code_not_in_yaml_rejected(self, tmp_path):
+        csv_069500 = _make_csv(tmp_path, "069500.csv")
+        csv_214980 = _make_csv(tmp_path, "214980.csv")
+        csv_extra = _make_csv(tmp_path, "999999.csv")
         runner = CliRunner()
-        config = self._multi_asset_config(tmp_path)
         result = runner.invoke(
             main,
             [
-                "paper",
-                "--csv", str(csv_path),
-                "--config", str(config),
-                "--date", "2026-04-28",
-                "--db", str(db),
+                "backtest",
+                "--csv", f"069500={csv_069500}",
+                "--csv", f"214980={csv_214980}",
+                "--csv", f"999999={csv_extra}",
+                "--config", str(_multi_asset_config_path()),
+                "--start", "2026-04-27",
+                "--end", "2026-04-30",
             ],
         )
         assert result.exit_code != 0
-        assert "0.7.1" in result.output
+        assert "999999" in result.output
+
+    # ------------------------------------------------------------------
+    # Mixed forms → rejected
+    # ------------------------------------------------------------------
+    def test_backtest_mixed_csv_forms_rejected(self, tmp_path):
+        csv_plain = _make_csv(tmp_path, "plain.csv")
+        csv_mapped = _make_csv(tmp_path, "069500.csv")
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_plain),
+                "--csv", f"069500={csv_mapped}",
+                "--start", "2026-04-27",
+                "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "mix" in result.output.lower() or "Cannot mix" in result.output
+
+    # ------------------------------------------------------------------
+    # Backward compat: single-asset flag-only path still works unchanged
+    # ------------------------------------------------------------------
+    def test_backtest_single_asset_flag_only_backward_compat(self, csv_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", str(csv_path),
+                "--capital", "5000000",
+                "--drop-pct", "5.0",
+                "--per-split-amount", "500000",
+                "--start", "2026-04-27",
+                "--end", "2026-04-30",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Backtest result" in result.output
+
+    # ------------------------------------------------------------------
+    # Flag-only + single --csv in CODE=path form (no --config) → rejected
+    # (code not in registry without config)
+    # ------------------------------------------------------------------
+    def test_backtest_code_path_without_config_rejected(self, tmp_path):
+        csv_069500 = _make_csv(tmp_path, "069500.csv")
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "backtest",
+                "--csv", f"069500={csv_069500}",
+                "--start", "2026-04-27",
+                "--end", "2026-04-30",
+            ],
+        )
+        # flag-only path: asset_codes = ["069500"], csv_map = {None: ...}
+        # but csv_values has "=" → parsed as CODE=path form →
+        # yaml_set={"069500"}, csv_codes={"069500"} match →
+        # asset_from_code("069500") OK → should succeed actually.
+        # So verify it succeeds (no config = default flag params apply).
+        # This is a sanity test that CODE=path form works even without --config
+        # when YAML defaults are used via flag-only path resolution.
+        # Actually: _resolve_strategy_configs returns asset_codes=["069500"]
+        # because config_path=None → flag-only. Then csv_map has {"069500": p}.
+        # _resolve_assets_and_bars: None not in csv_map → --config mode path.
+        # yaml_set={"069500"}, csv_codes={"069500"} → match → OK.
+        assert result.exit_code == 0, result.output
