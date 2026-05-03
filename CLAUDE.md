@@ -645,38 +645,72 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 16. Phase 0.7 호환성 의식 (Phase 0.5 동안만 적용)
+## 16. Phase 1 호환성 의식 (Phase 0.7 동안만 적용)
 
-> **조건부 룰**. Phase 0.5 진행 중 단일 종목 가정으로 코드 작성하되,
-> Phase 0.7에서 멀티 종목 확장 예정이므로 다음을 의식한다.
-> Phase 0.7 시작 시 본 §16은 제거 또는 갱신.
+> **조건부 룰**. Phase 0.7 진행 중 Mock 환경 + 멀티 종목 가정으로 코드
+> 작성하되, Phase 1에서 KIS API 실거래 + 손절 진입 예정이므로 다음을
+> 의식한다. Phase 1 시작 시 본 §16은 제거 또는 갱신.
+>
+> 선행: Phase 0.5 동안 적용되던 §16 (Phase 0.7 호환성) 은 ADR 0003 §11.2
+> 박제로 본 §16 으로 갱신됨 (2026-05-03).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
-1. **Asset 단위 처리 로직 분리** — `DailyOrchestrator.run_for_date(today)`는
-   `_run_for_asset(asset, config, today)` 호출하는 wrapper 패턴.
-2. **단일 asset 시그니처 유지하되 내부 loop-ready** — `__init__`은
-   `asset: Asset` 단수 그대로. 내부에서 `[self.asset]` 처럼 list 컴프리헨션
-   가능하면 OK (단, 의도적 추상화 금지).
-3. **Config / position 종목별 독립 처리** — 이미 `SplitStrategyConfig`,
-   `Position`, Repository(`asset_fqn` 키)가 종목별 독립. 변경 불필요.
+1. **종목별 reconciliation** — Phase 0.7 동안 종목별 독립 reconcile
+   메서드 골격 유지 (CLAUDE.md §11.2 자산별 확장). 한 종목 mismatch 발견
+   시 전체 정지 (Phase 0.7 박제 — ADR 0003 §8.6); Phase 1 에서 자산별
+   격리 정지로 분기 가능한 구조.
+2. **종목별 잔고 분리 의식** — 단일 kill switch 가정 유지하되, 자산
+   격리 정지 분기 가능한 `AssetContext` 기반 데이터 흐름.
+3. **partial fill 차단 유지** — KIS는 partial fill 발생 가능. ADR 0002
+   §3 (partial fill 차단) 정신 그대로. Phase 1에서 partial fill 처리 ADR
+   신규 박제.
+4. **sell strategy 단일 가정** — `ProfitTargetSell` 단일 sell strategy
+   가정 유지. 손절(StopLoss)은 Phase 1 ADR §1에서 sell strategy 추가
+   형태로 도입 (큰 리팩토링 회피). H3 거짓 결과 ADR 0002 §12.4.2 박제.
+5. **OrderRequest / OrderResult 시그니처** — KIS API 응답에 partial fill /
+   슬리피지 / 수수료 / 세금 필드 가능. Phase 0.7에서는 Mock 응답만 가정
+   하되, 시그니처가 Phase 1 KIS 응답을 수용 가능하도록 의식.
 
-### 16.2 금지 (Phase 0.5에서 작성하면 안 되는 것)
+### 16.2 금지 (Phase 0.7에서 작성하면 안 되는 것)
 
-- ❌ 종목 간 자본 배분 정책 코드
-- ❌ 종목 우선순위 코드
-- ❌ 종목 간 자본 이동 코드
-- ❌ "멀티 종목 대비 추상화"라는 이름의 미리 짠 디자인
-- ❌ "추후 확장 가능하게" 만든 unused parameter
+- ❌ KIS API 어댑터 코드 (BrokerPort / MarketDataPort 실 구현)
+- ❌ 손절 정책 코드 (avg_price 기준 -X% 일괄 매도)
+- ❌ 텔레그램 알림 코드
+- ❌ AI 차단기 / RuleBasedSignal 코드 (NullSignal 유지)
+- ❌ 환율 처리 코드 (KR 거래소 KRW 결제 전제)
+- ❌ 종목 간 자본 동적 이동 코드 (ADR 0003 §6.1)
+- ❌ 채권 / 단기 예치 (idle cash 활용) 코드
+- ❌ partial fill 처리 코드 (Phase 0.7 동안 차단 유지)
+- ❌ 부분 매도 (slot 내 50%) 코드
+- ❌ 보조지표 매도 (RSI / 볼린저밴드) 코드
+- ❌ 종목별 다른 정책 코드 (Phase 0.7.3 또는 Phase 1+ 결정)
+- ❌ score-based 종목 우선순위 코드 (Phase 0.7.3 또는 Phase 1+ 결정)
+- ❌ "추후 Phase 1 확장 가능하게" 만든 unused parameter
 
-→ 모두 Phase 0.7 ADR 라운드에서 사용자와 명시적 결정 후 작성.
+→ 모두 Phase 1 ADR 라운드 (또는 명시된 후속 Phase) 에서 사용자와 명시적
+결정 후 작성.
 
 ### 16.3 의심 시 가이드
 
-단일 종목 가정 유지 + `# Phase 0.7에서 multi-asset 시 검토` 주석 추가.
-사용자 확인 없이 멀티 종목 인터페이스 짜기 금지 (CLAUDE.md §13.3 "친절한 추가 금지" 정신).
+Mock 환경 + 멀티 종목 가정 유지 + `# Phase 1에서 KIS API/손절 시 검토`
+주석 추가. 사용자 확인 없이 KIS API / 손절 / 텔레그램 인터페이스 짜기
+금지 (CLAUDE.md §13.3 "친절한 추가 금지" 정신).
+
+### 16.4 Phase 1 ADR 트리거 항목 (ADR 0003 §11.3 인용)
+
+Phase 0.7 종료 후 Phase 1 ADR 0004 박제 시 다뤄질 결정:
+
+1. KIS API 어댑터 (BrokerPort / MarketDataPort 구현)
+2. 손절 정책 — H3 거짓 대응 (ADR 0002 §12.4.2)
+3. 텔레그램 알림 (의사결정 / 매도 / Reconciliation 불일치)
+4. 종목별 vs 전체 kill switch / 자산 격리 정지 (ADR 0003 §8.6 후속)
+5. partial fill 처리 ADR
+6. 모의투자 → 실거래 전환 게이트
+7. 매도 임계치 +15 / +20 % 비교 backtest (ADR 0002 §12.4.1 보류)
+8. 종목별 다른 정책 허용 여부 (ADR 0003 §7.3 후속)
 
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-02 (§14 Phase 0.5 진입 + §16 신규)*
+*마지막 업데이트: 2026-05-03 (§16 Phase 1 호환성으로 갱신 — ADR 0003 §11.2 박제 후속)*
