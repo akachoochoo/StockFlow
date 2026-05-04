@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from src.application.backtest_runner import BacktestRunner
 from src.domain.models import (
     OHLCV,
@@ -451,3 +453,118 @@ class TestSellsThenBuysScenarios:
         final = result.final_snapshot
         assert final is not None
         assert final.valuations[0].split_level == 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.7.2 per_asset_strategy_overrides — ADR 0003 §16.13.9 (4b.2)
+# ---------------------------------------------------------------------------
+def _asset_bond() -> Asset:
+    """Phase 0.7.2 두 번째 자산 — KODEX 단기채권 PLUS (214980)."""
+    return Asset(
+        code="214980",
+        exchange=Exchange.KRX,
+        asset_class=AssetClass.KR_ETF,
+        currency=Currency.KRW,
+        name="KODEX 단기채권 PLUS",
+        tick_size=Decimal("5"),
+        lot_size=Decimal("1"),
+    )
+
+
+class TestPerAssetStrategyOverrides:
+    """ADR 0003 §16.13.9 — runner 의 per_asset_strategy_overrides
+    옵셔널 인자. None default → Phase 0.7.1 회귀 invariant.
+    """
+
+    def test_no_override_preserves_phase_0_7_1(self):
+        """None default 시 단일 strategy_config 적용 — Phase 0.7.1 동작."""
+        asset = _asset()
+        runner = BacktestRunner(
+            assets=[asset],
+            strategy_config=_config(),
+            initial_capital=_capital(),
+            ohlcv_by_asset={asset: []},
+        )
+        # instance 변수 None 박제 — AssetContext 생성 시 단일 fallback.
+        assert runner._per_asset_overrides is None
+
+    def test_override_none_default_signature(self):
+        """signature default = None 검증 (kwarg 미전달 시)."""
+        asset = _asset()
+        # per_asset_strategy_overrides 인자 안 넘기고 생성 가능해야 함.
+        runner = BacktestRunner(
+            assets=[asset],
+            strategy_config=_config(),
+            initial_capital=_capital(),
+            ohlcv_by_asset={asset: []},
+        )
+        assert runner._per_asset_overrides is None
+
+    def test_override_dict_validation_extra_key_raises(self):
+        """dict 키에 assets 외 자산 fqn 있으면 ValueError."""
+        asset = _asset()
+        with pytest.raises(ValueError, match="extra="):
+            BacktestRunner(
+                assets=[asset],
+                strategy_config=_config(),
+                initial_capital=_capital(),
+                ohlcv_by_asset={asset: []},
+                per_asset_strategy_overrides={
+                    "KRX:069500": _config(per_split="500000"),
+                    "KRX:UNKNOWN": _config(per_split="500000"),
+                },
+            )
+
+    def test_override_dict_validation_missing_key_raises(self):
+        """dict 에 assets 중 일부 누락 시 ValueError."""
+        asset_a = _asset()
+        asset_b = _asset_bond()
+        with pytest.raises(ValueError, match="missing="):
+            BacktestRunner(
+                assets=[asset_a, asset_b],
+                strategy_config=_config(),
+                initial_capital=_capital(),
+                ohlcv_by_asset={asset_a: [], asset_b: []},
+                # 069500 만 있고 214980 누락
+                per_asset_strategy_overrides={
+                    "KRX:069500": _config(per_split="500000"),
+                },
+            )
+
+    def test_override_dict_with_correct_keys_succeeds(self):
+        """dict 키가 모든 assets fqn 정확히 일치 시 인스턴스 생성 OK."""
+        asset_a = _asset()
+        asset_b = _asset_bond()
+        cfg_a = _config(per_split="2857142")  # INV_VOL 069500 예시
+        cfg_b = _config(per_split="11428571")  # INV_VOL 214980 예시
+        runner = BacktestRunner(
+            assets=[asset_a, asset_b],
+            strategy_config=_config(),  # fallback (사용 안 됨)
+            initial_capital=_capital(amount="100000000"),
+            ohlcv_by_asset={asset_a: [], asset_b: []},
+            per_asset_strategy_overrides={
+                "KRX:069500": cfg_a,
+                "KRX:214980": cfg_b,
+            },
+        )
+        # instance 변수 dict 박제. copy 본 (mutation 방어).
+        assert runner._per_asset_overrides is not None
+        assert runner._per_asset_overrides["KRX:069500"] is cfg_a
+        assert runner._per_asset_overrides["KRX:214980"] is cfg_b
+
+    def test_override_dict_is_copied_not_aliased(self):
+        """입력 dict mutation 시 instance 변수 영향 없어야 함."""
+        asset = _asset()
+        cfg = _config(per_split="500000")
+        override = {"KRX:069500": cfg}
+        runner = BacktestRunner(
+            assets=[asset],
+            strategy_config=_config(),
+            initial_capital=_capital(),
+            ohlcv_by_asset={asset: []},
+            per_asset_strategy_overrides=override,
+        )
+        override["KRX:069500"] = _config(per_split="999")
+        # Runner 의 dict 는 영향받지 않음 — 원본 cfg 보존.
+        assert runner._per_asset_overrides is not None
+        assert runner._per_asset_overrides["KRX:069500"] is cfg

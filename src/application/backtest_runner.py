@@ -185,6 +185,7 @@ class BacktestRunner:
         snapshot_kst_time: time = time(16, 0),
         trading_days_per_year: int = _DEFAULT_TRADING_DAYS_PER_YEAR,
         risk_free_rate: Decimal = _DEFAULT_RISK_FREE_RATE,
+        per_asset_strategy_overrides: dict[str, SplitStrategyConfig] | None = None,
     ) -> None:
         if not assets:
             raise ValueError("assets must be a non-empty list")
@@ -192,6 +193,26 @@ class BacktestRunner:
         self._strategy_config = strategy_config
         self._initial_capital = initial_capital
         self._ohlcv_by_asset = ohlcv_by_asset
+        # ADR 0003 §16.13.9 박제 — Phase 0.7.2 자산별 strategy override.
+        # None default → 단일 strategy_config 적용 (Phase 0.7.1 회귀
+        # invariant). dict 시 키 = asset.fqn ("EXCHANGE:CODE"), 모든
+        # assets fqn 정확히 일치 필요 (subset / extra 모두 거부).
+        if per_asset_strategy_overrides is not None:
+            expected_fqns = {a.fqn for a in self._assets}
+            actual_fqns = set(per_asset_strategy_overrides.keys())
+            if actual_fqns != expected_fqns:
+                missing = expected_fqns - actual_fqns
+                extra = actual_fqns - expected_fqns
+                raise ValueError(
+                    "per_asset_strategy_overrides keys must match assets fqns "
+                    "exactly. "
+                    f"missing={sorted(missing)} extra={sorted(extra)}"
+                )
+        self._per_asset_overrides = (
+            dict(per_asset_strategy_overrides)
+            if per_asset_strategy_overrides is not None
+            else None
+        )
         self._sell_strategy_config = sell_strategy_config or SellStrategyConfig(
             profit_target_pct=Decimal("10.0"),
             max_sells_per_day=7,
@@ -258,13 +279,20 @@ class BacktestRunner:
         strategy = PriceDropStrategy(reentry=reentry)
         shared_uow = InMemoryUnitOfWork()
 
-        # Build one AssetContext per asset; all share the same strategy
-        # instance and configs (ADR 0003 §7.3 — policy uniformity).
+        # Build one AssetContext per asset. ADR 0003 §7.3 — policy uniformity
+        # (buy_strategy / sell_strategy / reentry 동일). Phase 0.7.2 §16.13.9
+        # — per_asset_strategy_overrides 적용 시 자산별 SplitStrategyConfig
+        # (per_split_amount 만 자산별 다름) 가능. None 시 단일 fallback
+        # (Phase 0.7.1 회귀 invariant).
         asset_contexts = [
             AssetContext(
                 asset=asset,
                 strategy=strategy,
-                config=self._strategy_config,
+                config=(
+                    self._per_asset_overrides[asset.fqn]
+                    if self._per_asset_overrides is not None
+                    else self._strategy_config
+                ),
                 sell_strategy=ProfitTargetSell(),
                 sell_config=self._sell_strategy_config,
             )
