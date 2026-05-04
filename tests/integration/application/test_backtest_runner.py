@@ -568,3 +568,99 @@ class TestPerAssetStrategyOverrides:
         # Runner 의 dict 는 영향받지 않음 — 원본 cfg 보존.
         assert runner._per_asset_overrides is not None
         assert runner._per_asset_overrides["KRX:069500"] is cfg
+
+
+class TestPerAssetOverrideEndToEnd:
+    """ADR 0003 §16.13.9 4b.3 — AssetContext 분산 적용 end-to-end 검증.
+
+    runner.run() 실행 시 자산별 override 가 실제 buy quantity 에 반영
+    되는지 검증. orchestrator method 추가 없이 AssetContext 분산 구조
+    자체가 자산별 lookup 의 본질 (옵션 B 채택).
+    """
+
+    def test_override_applies_per_asset_buy_quantity(self):
+        """양 자산 동일 가격 + 자산별 다른 per_split_amount → filled_quantity 비례.
+
+        Setup: T-1 close 50000, T close 30000 (40% drop > 7% 임계). 두
+        자산 동일 시나리오. Override 069500 = 5M / 214980 = 1M.
+
+        Expected (target=T-1 close=50000, lot=1):
+        - 069500 filled_quantity = 5,000,000 / 50000 = 100
+        - 214980 filled_quantity = 1,000,000 / 50000 = 20
+        """
+        asset_a = _asset()
+        asset_b = _asset_bond()
+        d_prev = date(2026, 4, 27)
+        d_today = date(2026, 4, 28)
+        bars_a = [
+            _bar(asset_a, d_prev, "50000"),
+            _bar(asset_a, d_today, "30000"),
+        ]
+        bars_b = [
+            _bar(asset_b, d_prev, "50000"),
+            _bar(asset_b, d_today, "30000"),
+        ]
+
+        cfg_a = _config(per_split="5000000")
+        cfg_b = _config(per_split="1000000")
+        runner = BacktestRunner(
+            assets=[asset_a, asset_b],
+            # fallback (override 모두 매핑되어 사용 안 됨) — 회귀 invariant
+            # 검증용으로 _config() 그대로 둠.
+            strategy_config=_config(),
+            initial_capital=_capital(amount="100000000"),
+            ohlcv_by_asset={asset_a: bars_a, asset_b: bars_b},
+            per_asset_strategy_overrides={
+                "KRX:069500": cfg_a,
+                "KRX:214980": cfg_b,
+            },
+        )
+        result = runner.run(start=d_today, end=d_today)
+
+        # 1-day backtest, 2 자산 → 2 decisions.
+        assert len(result.decisions) == 2
+        by_fqn = {d.asset.fqn: d for d in result.decisions}
+
+        # asset_a: per_split=5M → 100 shares
+        a_decision = by_fqn["KRX:069500"]
+        assert a_decision.action_kinds() == ["buy_split_1"]
+        assert a_decision.buy_action is not None
+        assert a_decision.buy_action.filled_quantity == Decimal("100")
+
+        # asset_b: per_split=1M → 20 shares
+        b_decision = by_fqn["KRX:214980"]
+        assert b_decision.action_kinds() == ["buy_split_1"]
+        assert b_decision.buy_action is not None
+        assert b_decision.buy_action.filled_quantity == Decimal("20")
+
+    def test_no_override_applies_uniform_strategy_config(self):
+        """None override → 양 자산 단일 strategy_config 적용 (회귀 invariant)."""
+        asset_a = _asset()
+        asset_b = _asset_bond()
+        d_prev = date(2026, 4, 27)
+        d_today = date(2026, 4, 28)
+        bars_a = [
+            _bar(asset_a, d_prev, "50000"),
+            _bar(asset_a, d_today, "30000"),
+        ]
+        bars_b = [
+            _bar(asset_b, d_prev, "50000"),
+            _bar(asset_b, d_today, "30000"),
+        ]
+
+        # 단일 strategy_config = 1M per split → 양 자산 동일 quantity.
+        runner = BacktestRunner(
+            assets=[asset_a, asset_b],
+            strategy_config=_config(per_split="1000000"),
+            initial_capital=_capital(amount="100000000"),
+            ohlcv_by_asset={asset_a: bars_a, asset_b: bars_b},
+            # per_asset_strategy_overrides 미전달 → None default.
+        )
+        result = runner.run(start=d_today, end=d_today)
+
+        assert len(result.decisions) == 2
+        for d in result.decisions:
+            assert d.action_kinds() == ["buy_split_1"]
+            assert d.buy_action is not None
+            # 양 자산 동일 — 1M / 50000 = 20 shares
+            assert d.buy_action.filled_quantity == Decimal("20")
