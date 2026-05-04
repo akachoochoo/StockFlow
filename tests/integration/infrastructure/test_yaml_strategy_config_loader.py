@@ -15,9 +15,10 @@ from pydantic import ValidationError
 if TYPE_CHECKING:
     from pathlib import Path
 
-from src.domain.models import Currency
+from src.domain.models import AllocationPolicy, Currency
 from src.infrastructure.yaml_strategy_config_loader import (
     AssetStrategyBundle,
+    load_allocation_policy,
     load_strategy_config,
 )
 
@@ -477,3 +478,59 @@ class TestPolicyUniformity:
         result = load_strategy_config(_write(tmp_path, body))
         # Disabled asset loads OK; uniformity check skipped for disabled assets.
         assert result["214980"].enabled is False
+
+
+class TestAllocationPolicy:
+    """ADR 0003 §16.1 / §16.12.5 — Phase 0.7.2 자본 배분 정책 schema."""
+
+    def test_default_is_equal_when_omitted(self, tmp_path: Path):
+        # _HYBRID_KODEX 는 allocation_policy 명시 안 함 → default = EQUAL.
+        # Phase 0.7.1 회귀 invariant — 기존 yaml 호환성 검증.
+        policy = load_allocation_policy(_write(tmp_path, _HYBRID_KODEX))
+        assert policy is AllocationPolicy.EQUAL
+
+    def test_explicit_equal(self, tmp_path: Path):
+        body = _HYBRID_KODEX.replace(
+            'version: "0.5"\n',
+            'version: "0.5"\nallocation_policy: EQUAL\n',
+        )
+        assert (
+            load_allocation_policy(_write(tmp_path, body))
+            is AllocationPolicy.EQUAL
+        )
+
+    def test_explicit_inv_vol(self, tmp_path: Path):
+        body = _HYBRID_KODEX.replace(
+            'version: "0.5"\n',
+            'version: "0.5"\nallocation_policy: INV_VOL\n',
+        )
+        assert (
+            load_allocation_policy(_write(tmp_path, body))
+            is AllocationPolicy.INV_VOL
+        )
+
+    def test_explicit_vol(self, tmp_path: Path):
+        body = _HYBRID_KODEX.replace(
+            'version: "0.5"\n',
+            'version: "0.5"\nallocation_policy: VOL\n',
+        )
+        assert (
+            load_allocation_policy(_write(tmp_path, body))
+            is AllocationPolicy.VOL
+        )
+
+    def test_invalid_value_raises(self, tmp_path: Path):
+        body = _HYBRID_KODEX.replace(
+            'version: "0.5"\n',
+            'version: "0.5"\nallocation_policy: UNKNOWN\n',
+        )
+        with pytest.raises(ValidationError):
+            load_allocation_policy(_write(tmp_path, body))
+
+    def test_load_strategy_config_unaffected_by_default(self, tmp_path: Path):
+        # 회귀 invariant — load_strategy_config 시그니처 / 결과 변경 zero.
+        # allocation_policy 추가 with default 값이 기존 callers 동작
+        # 영향 없음 (Phase 0.7.1 호환).
+        bundles = load_strategy_config(_write(tmp_path, _HYBRID_KODEX))
+        assert "069500" in bundles
+        assert isinstance(bundles["069500"], AssetStrategyBundle)

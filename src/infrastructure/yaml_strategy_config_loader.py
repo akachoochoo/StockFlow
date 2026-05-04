@@ -34,7 +34,7 @@ from pydantic import (
     model_validator,
 )
 
-from src.domain.models import Currency, DomainModel, Money
+from src.domain.models import AllocationPolicy, Currency, DomainModel, Money
 from src.domain.strategies.price_drop import SplitStrategyConfig
 from src.domain.strategies.profit_target import SellStrategyConfig
 
@@ -148,6 +148,9 @@ class _AssetEntry(_StrictBase):
 
 class _RootSchema(_StrictBase):
     version: Literal["0.5"]
+    # ADR 0003 §16.1 — Phase 0.7.2 자본 배분 정책. default EQUAL 시 Phase
+    # 0.7.1 동작 그대로 (회귀 invariant). 기존 yaml 들 명시 없이 호환.
+    allocation_policy: AllocationPolicy = AllocationPolicy.EQUAL
     assets: dict[str, _AssetEntry] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -239,6 +242,32 @@ def load_strategy_config(path: Path | str) -> dict[str, AssetStrategyBundle]:
             reentry params, extra keys, or policy non-uniformity across
             enabled assets — ADR 0003 §7.3).
     """
+    schema = _parse_root_schema(path)
+    return {
+        code: _to_bundle(code, entry)
+        for code, entry in schema.assets.items()
+    }
+
+
+def load_allocation_policy(path: Path | str) -> AllocationPolicy:
+    """Parse only the root-level ``allocation_policy`` (ADR 0003 §16.1).
+
+    Phase 0.7.2 박제 — Composition root 가 자본 배분 정책에 따라 per-asset
+    budget 산정. ``load_strategy_config`` 와 별도 함수로 노출 (시그니처
+    보존, callers regression zero).
+
+    Default: ``AllocationPolicy.EQUAL`` (yaml 에 명시 없을 시) — Phase
+    0.7.1 회귀 invariant 보존.
+
+    Raises:
+        FileNotFoundError / ValueError / ValidationError: ``load_strategy_config``
+            과 동일.
+    """
+    return _parse_root_schema(path).allocation_policy
+
+
+def _parse_root_schema(path: Path | str) -> _RootSchema:
+    """Shared YAML parse + ``_RootSchema`` validation."""
     text = Path(path).read_text(encoding="utf-8")
     raw = yaml.safe_load(text)
     if raw is None:
@@ -247,11 +276,7 @@ def load_strategy_config(path: Path | str) -> dict[str, AssetStrategyBundle]:
         raise ValueError(
             f"YAML root must be a mapping, got {type(raw).__name__}"
         )
-    schema = _RootSchema.model_validate(raw)
-    return {
-        code: _to_bundle(code, entry)
-        for code, entry in schema.assets.items()
-    }
+    return _RootSchema.model_validate(raw)
 
 
 def _to_bundle(code: str, entry: _AssetEntry) -> AssetStrategyBundle:
