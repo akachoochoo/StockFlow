@@ -1,0 +1,42 @@
+# Phase 0.7.2 strategy config — Policy F + VOL allocation.
+# ADR 0003 §16.1 / §16.14.3 박제 — 정변동성 가중 (고변동성 자산 비중 ↑).
+# 산식: weight_i = sigma_i / sum_j (sigma_j)
+# 주식 ETF (069500) 가 채권 ETF (214980) 보다 비중 압도적 (실측 142:1).
+# §6.1 후보 #2 직접 처방 — 채권 dormancy 회피.
+# yaml 의 per_split_amount 는 무시됨 (§16.13.2) — 자동 산정.
+
+version: "0.5"
+allocation_policy: VOL  # ADR 0003 §16.1
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000  # INV_VOL/VOL 시 무시 — Composition 자동 산정 (§16.13.2)
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
+  "214980":
+    name: "KODEX 단기채권 PLUS"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000  # INV_VOL/VOL 시 무시 — Composition 자동 산정 (§16.13.2)
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60

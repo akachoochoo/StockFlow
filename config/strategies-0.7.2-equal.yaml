@@ -1,0 +1,40 @@
+# Phase 0.7.2 strategy config — Policy F + EQUAL allocation (baseline).
+# ADR 0003 §16.1 / §16.14.6 박제 — Phase 0.7.1 회귀 invariant 검증용.
+# 0.7.1-F.yaml 과 정책 동일 (정책 동일성 §7.3) — allocation_policy 만 명시화.
+# allocation_policy=EQUAL → per_split_amount yaml 그대로 (Phase 0.7.1 baseline).
+
+version: "0.5"
+allocation_policy: EQUAL  # ADR 0003 §16.1 (Phase 0.7.1 회귀 invariant)
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
+  "214980":
+    name: "KODEX 단기채권 PLUS"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
