@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from src.domain.models import (
     OHLCV,
+    AllocationPolicy,
     Asset,
     AssetClass,
     Balance,
@@ -2100,3 +2101,25 @@ class TestEnums:
             "AI_BASED",
             "MANUAL",
         }
+
+    def test_allocation_policy_values(self):
+        # ADR 0003 §16.1 / §16.12.5 — Phase 0.7.2 자본 배분 정책 enum.
+        assert {m.value for m in AllocationPolicy} == {
+            "EQUAL",
+            "INV_VOL",
+            "VOL",
+        }
+
+    def test_allocation_policy_str_inheritance(self):
+        # StrEnum — JSON / pydantic / yaml 직렬화 호환.
+        assert isinstance(AllocationPolicy.EQUAL, str)
+        assert AllocationPolicy.EQUAL == "EQUAL"
+
+    def test_allocation_policy_round_trip(self):
+        # 역직렬화 — config / DB 저장된 값으로부터 enum 복원 가능.
+        for policy in AllocationPolicy:
+            assert AllocationPolicy(policy.value) is policy
+
+    def test_allocation_policy_unknown_raises(self):
+        with pytest.raises(ValueError):
+            AllocationPolicy("UNKNOWN")

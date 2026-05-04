@@ -216,6 +216,26 @@ class SkipReason(StrEnum):
     )
 
 
+class AllocationPolicy(StrEnum):
+    """자본 배분 정책 (Phase 0.7.2, ADR 0003 §16.1).
+
+    멀티 종목 환경에서 per-asset budget 산정 방식. Phase 0.7.1 까지는
+    EQUAL implicit 가정 — Phase 0.7.2 에서 명시화 + 변동성 가중 정책
+    도입. default = EQUAL 시 Phase 0.7.1 회귀 invariant 보존.
+
+    EQUAL    — 균등: budget_i = total / N (Phase 0.7.1 baseline)
+    INV_VOL  — 역변동성: budget_i = total × ((1/σ_i) / Σ(1/σ_j))
+    VOL      — 정변동성: budget_i = total × (σ_i / Σσ_j)
+
+    σ 산출 위치: ADR §16.5.1 옵션 (c) — Composition 단계 직접 산출
+    (`_calculate_volatility` 순수 함수). 도메인은 σ 산식 미보유.
+    """
+
+    EQUAL = "EQUAL"
+    INV_VOL = "INV_VOL"
+    VOL = "VOL"
+
+
 # ---------------------------------------------------------------------------
 # Value objects
 # ---------------------------------------------------------------------------
