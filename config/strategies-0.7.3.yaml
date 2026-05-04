@@ -1,0 +1,48 @@
+# Phase 0.7.3 strategy config — Policy F + EQUAL allocation, 종목 2 종.
+# ADR 0003 §18 (라운드 #8) + §18.12 (fallback (d) 채택) 박제.
+#
+# 종목: 069500 (KODEX 200) + 132030 (KODEX 골드선물(H)) — 채권 (214980)
+# 대체. 주식 + 골드 분산 (다른 상관성). 329200 (부동산) 거부 (상장일
+# 2019-07-19 lookback 246 미달, §18.11/§18.12).
+#
+# 정책 동일성 강제 (§7.3) — 모든 자산 동일 drop / max_split /
+# per_split / target / cooldown. 종목별 다른 정책 (§14.7 γ) 거부.
+#
+# allocation_policy=EQUAL (§18.5) → per_split_amount yaml 그대로.
+# Phase 0.7.4 (가칭) 부동산 / 인프라 분산 후속 박제 (§18.12.4).
+
+version: "0.5"
+allocation_policy: EQUAL
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
+  "132030":
+    name: "KODEX 골드선물(H)"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60

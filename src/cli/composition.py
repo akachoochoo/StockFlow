@@ -257,10 +257,38 @@ def kodex_short_bond_plus() -> Asset:
     )
 
 
+def kodex_gold() -> Asset:
+    """Phase 0.7.3 — KODEX 골드선물(H) (132030).
+
+    ADR 0003 §18 (라운드 #8) + §18.12 (fallback (d) 채택) 박제 종목.
+    Asset-class: KR_ETF on KRX, KRW-settled. tick_size / lot_size 는
+    Phase 0.7.3 placeholders; Phase 1 KIS adapter 가 KRX 시장 규칙 공급.
+    """
+    from decimal import Decimal  # local import: keeps top imports tight
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+    )
+
+    return Asset(
+        code="132030",
+        exchange=Exchange.KRX,
+        asset_class=AssetClass.KR_ETF,
+        currency=Currency.KRW,
+        name="KODEX 골드선물(H)",
+        tick_size=Decimal("5"),
+        lot_size=Decimal("1"),
+    )
+
+
 # Registry: code → factory. Extend here when Phase 0.7.3+ adds more assets.
 _ASSET_FACTORIES: dict[str, Callable[[], Asset]] = {
     "069500": kodex200,
     "214980": kodex_short_bond_plus,
+    "132030": kodex_gold,
 }
 
 
