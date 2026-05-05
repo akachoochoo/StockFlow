@@ -117,7 +117,7 @@ class _ReentryParams(_StrictBase):
 class _AssetEntry(_StrictBase):
     name: str = Field(min_length=1)
     enabled: bool = True
-    buy_strategy: Literal["price_drop"]
+    buy_strategy: Literal["price_drop", "support_level"]
     buy_parameters: _BuyParams
     sell_strategy: Literal["profit_target"]
     sell_parameters: _SellParams

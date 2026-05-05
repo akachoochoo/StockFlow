@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import random
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from src.domain.constants import KST
 from src.domain.exceptions import BrokerConnectionError
@@ -37,6 +37,7 @@ from src.domain.models import (
     SlotState,
     SplitEntry,
     SplitSlot,
+    SupportSlot,
 )
 
 if TYPE_CHECKING:
@@ -44,6 +45,13 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from src.domain.models import Asset, OrderRequest
+
+
+# Internal slot list type (ADR 0004 §5.6): heterogeneous in the type
+# system, homogeneous at runtime per Position invariant. Cast back to the
+# Position-facing union type at the construction boundary.
+_Slot: TypeAlias = SplitSlot | SupportSlot
+_SlotsList: TypeAlias = "list[SplitSlot] | list[SupportSlot]"
 
 
 class MockBroker:
@@ -59,6 +67,7 @@ class MockBroker:
         simulate_rejection_rate: float = 0.0,
         simulate_partial_fill_rate: float = 0.0,
         max_split_count: int = 7,
+        slot_model: type[SplitSlot] | type[SupportSlot] = SplitSlot,
     ) -> None:
         for name, rate in (
             ("simulate_timeout_rate", simulate_timeout_rate),
@@ -90,6 +99,9 @@ class MockBroker:
         self._timeout_rate = simulate_timeout_rate
         self._rejection_rate = simulate_rejection_rate
         self._max_split_count = max_split_count
+        # ADR 0004 §5.6: which slot model to use for newly-created Positions.
+        # Existing Positions preserve their slot type via ``list(existing.slots)``.
+        self._slot_model: type[SplitSlot] | type[SupportSlot] = slot_model
 
     # ------------------------------------------------------------------
     # BrokerPort
@@ -263,13 +275,14 @@ class MockBroker:
         that history feeds the HybridTimeBasedReentry policy.
         """
         existing = self._positions.get(asset.fqn)
+        slots: list[_Slot]
         if existing is None:
-            slots: list[SplitSlot] = [
-                SplitSlot.empty(slot_number=i)
+            slots = [
+                self._slot_model.empty(slot_number=i)
                 for i in range(1, self._max_split_count + 1)
             ]
         else:
-            slots = list(existing.slots)
+            slots = cast("list[_Slot]", list(existing.slots))
 
         target_idx: int | None = None
         if target_slot_number is not None:
@@ -312,7 +325,9 @@ class MockBroker:
             entry_price=filled_price,
             idempotency_key=idempotency_key,
         )
-        slots[target_idx] = SplitSlot(
+        # Preserve slot model (ADR 0004 §5.6 — homogeneous list per Position).
+        existing_slot_model = type(target_slot)
+        slots[target_idx] = existing_slot_model(
             slot_number=target_slot.slot_number,
             state=SlotState.FILLED,
             entry=new_entry,
@@ -342,7 +357,7 @@ class MockBroker:
             avg_price=new_avg,
             split_level=new_split_level,
             last_buy_at=now,
-            slots=slots,
+            slots=cast("_SlotsList", slots),
         )
 
     def _apply_sell_fill(
@@ -367,7 +382,7 @@ class MockBroker:
             raise BrokerConnectionError(
                 f"no position for {asset.fqn} — cannot SELL"
             )
-        slots = list(existing.slots)
+        slots: list[_Slot] = cast("list[_Slot]", list(existing.slots))
         target_idx: int | None = next(
             (i for i, s in enumerate(slots) if s.slot_number == slot_number),
             None,
@@ -391,7 +406,9 @@ class MockBroker:
                 "Phase 0.5 sells whole slots only (ADR 0002 §3.2.1)"
             )
 
-        slots[target_idx] = SplitSlot(
+        # Preserve slot model (ADR 0004 §5.6 — homogeneous list per Position).
+        existing_slot_model = type(target_slot)
+        slots[target_idx] = existing_slot_model(
             slot_number=target_slot.slot_number,
             state=SlotState.EMPTY,
             entry=None,
@@ -427,7 +444,7 @@ class MockBroker:
             avg_price=new_avg,
             split_level=new_split_level,
             last_buy_at=existing.last_buy_at,
-            slots=slots,
+            slots=cast("_SlotsList", slots),
         )
 
     # ------------------------------------------------------------------

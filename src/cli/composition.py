@@ -23,13 +23,14 @@ from src.adapters.mock.signals import NullSignal
 from src.application.snapshot_builder import DailySnapshotBuilder
 from src.domain.constants import KST
 from src.domain.exceptions import IntegrityError
-from src.domain.models import Balance
+from src.domain.models import Balance, SplitSlot, SupportSlot
 from src.domain.strategies.price_drop import PriceDropStrategy
 from src.domain.strategies.profit_target import (
     ProfitTargetSell,
     SellStrategyConfig,
 )
 from src.domain.strategies.reentry import create_reentry_strategy
+from src.domain.strategies.support_level import SupportLevelStrategy
 from src.infrastructure.db import connect
 from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
 from src.use_cases.asset_context import AssetContext
@@ -42,6 +43,55 @@ if TYPE_CHECKING:
 
     from src.domain.models import OHLCV, Asset, Money
     from src.domain.strategies.price_drop import SplitStrategyConfig
+    from src.ports.reentry_strategy import ReentryPriceStrategyPort
+
+
+def create_buy_strategy(
+    name: str,
+    *,
+    reentry: ReentryPriceStrategyPort | None = None,
+) -> PriceDropStrategy | SupportLevelStrategy:
+    """Composition factory for buy strategies (ADR 0004 §5.2).
+
+    yaml ``buy_strategy`` field dispatches here:
+        - ``price_drop`` → ``PriceDropStrategy(reentry=...)`` (Phase 0~0.7)
+        - ``support_level`` → ``SupportLevelStrategy()`` (Phase 0.8+)
+
+    SupportLevelStrategy doesn't take a reentry policy (ADR §4.3 β-2 —
+    each slot's trigger is its own indicator condition). ``reentry``
+    parameter is required for ``price_drop`` and ignored for
+    ``support_level``.
+    """
+    if name == "price_drop":
+        if reentry is None:
+            raise ValueError(
+                "buy_strategy 'price_drop' requires reentry policy"
+            )
+        return PriceDropStrategy(reentry=reentry)
+    if name == "support_level":
+        return SupportLevelStrategy()
+    raise ValueError(
+        f"unknown buy_strategy {name!r}; "
+        "expected 'price_drop' or 'support_level'"
+    )
+
+
+def slot_model_for_buy_strategy(
+    name: str,
+) -> type[SplitSlot] | type[SupportSlot]:
+    """Slot model dispatch for ``MockBroker`` (ADR 0004 §5.6).
+
+    Phase 0.8 (B-1, ADR §1.3): a Position's slot model is determined by
+    the buy strategy. yaml ``buy_strategy`` field selects the slot type.
+    """
+    if name == "price_drop":
+        return SplitSlot
+    if name == "support_level":
+        return SupportSlot
+    raise ValueError(
+        f"unknown buy_strategy {name!r}; "
+        "expected 'price_drop' or 'support_level'"
+    )
 
 
 @dataclass
@@ -105,6 +155,7 @@ def build_paper_components(
     sell_strategy_config: SellStrategyConfig | None = None,
     reentry_strategy_name: str = "hybrid",
     reentry_parameters: dict[str, Any] | None = None,
+    buy_strategy_name: str = "price_drop",
 ) -> PaperComponents:
     """Build a paper-trading orchestrator + snapshot builder.
 
@@ -147,6 +198,7 @@ def build_paper_components(
     broker = MockBroker(
         initial_balance=Balance(cash=cash_money),
         clock=clock,
+        slot_model=slot_model_for_buy_strategy(buy_strategy_name),
     )
     for position in stored_positions:
         broker.set_position(position)
@@ -162,18 +214,27 @@ def build_paper_components(
         if reentry_parameters is not None
         else {"cooldown_days": 60}
     )
-    reentry = create_reentry_strategy(
-        reentry_strategy_name,
-        market_data=market_data,
-        **effective_reentry_params,
+    reentry = (
+        create_reentry_strategy(
+            reentry_strategy_name,
+            market_data=market_data,
+            **effective_reentry_params,
+        )
+        if buy_strategy_name == "price_drop"
+        else None
     )
+
+    # ADR 0004 §5.2: factory dispatches between PriceDropStrategy and
+    # SupportLevelStrategy based on yaml `buy_strategy`. SupportLevelStrategy
+    # ignores reentry (ADR §4.3 β-2).
+    buy_strategy = create_buy_strategy(buy_strategy_name, reentry=reentry)
 
     # Build one AssetContext per asset; all share the same strategy instance
     # and configs (ADR 0003 §7.3 — policy uniformity checked by loader).
     asset_contexts = [
         AssetContext(
             asset=asset,
-            strategy=PriceDropStrategy(reentry=reentry),
+            strategy=buy_strategy,
             config=strategy_config,
             sell_strategy=ProfitTargetSell(),
             sell_config=effective_sell_config,

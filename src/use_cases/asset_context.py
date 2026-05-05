@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         SplitStrategyConfig,
     )
     from src.domain.strategies.profit_target import SellStrategyConfig
+    from src.domain.strategies.support_level import SupportLevelStrategy
     from src.ports.sell_strategy import SellStrategyPort
 
 
@@ -41,10 +42,15 @@ class AssetContext:
     ``AssetContext`` per asset at composition time; the orchestrator
     iterates ``list[AssetContext]`` in declaration order — that order is
     the §5.1 priority for same-day buy-trigger collisions.
+
+    Phase 0.8 (ADR 0004 §5.4): ``strategy`` is a union of
+    PriceDropStrategy / SupportLevelStrategy. yaml policy uniformity
+    (ADR 0003 §7.3) ensures all AssetContexts in a single run share the
+    same strategy *type* (only the asset differs).
     """
 
     asset: Asset
-    strategy: PriceDropStrategy
+    strategy: PriceDropStrategy | SupportLevelStrategy
     config: SplitStrategyConfig
     sell_strategy: SellStrategyPort
     sell_config: SellStrategyConfig

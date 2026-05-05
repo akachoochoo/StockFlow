@@ -37,6 +37,7 @@ agree at entry.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
@@ -60,6 +61,12 @@ from src.domain.models import (
     SignalLevel,
     SkipReason,
 )
+from src.domain.strategies.support_level import SupportLevelStrategy
+
+# ADR 0004 §5.5.2 — calendar buffer for SupportLevelStrategy lookback.
+# Phase 0.8.1: 60 trading days (slot 5 recent_high(60)) -> ~100 calendar days
+# under ~1.6x factor. Hardcoded for Phase 0.8.1; yaml 인자화는 Phase 0.9+.
+_SUPPORT_LEVEL_LOOKBACK_DAYS: Final = 100
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -322,14 +329,31 @@ class DailyOrchestrator:
 
         # 7. BUY evaluation + execution
         excluded = {sa.slot_number for sa in sell_outcome.sell_actions}
-        evaluation = ctx.strategy.evaluate(
-            position=position,
-            current_price=current_price,
-            balance=balance,
-            config=ctx.config,
-            today=today,
-            excluded_slot_numbers=excluded if excluded else None,
-        )
+        # ADR 0004 §5.5: SupportLevelStrategy needs ohlcv_history (slot 2~5
+        # indicators); PriceDropStrategy 시그니처는 변경 zero (회귀 invariant).
+        if isinstance(ctx.strategy, SupportLevelStrategy):
+            lookback_start = today - timedelta(days=_SUPPORT_LEVEL_LOOKBACK_DAYS)
+            ohlcv_history = self._market_data.get_ohlcv(
+                ctx.asset, lookback_start, today - timedelta(days=1)
+            )
+            evaluation = ctx.strategy.evaluate(
+                position=position,
+                current_price=current_price,
+                balance=balance,
+                config=ctx.config,
+                today=today,
+                ohlcv_history=ohlcv_history,
+                excluded_slot_numbers=excluded if excluded else None,
+            )
+        else:
+            evaluation = ctx.strategy.evaluate(
+                position=position,
+                current_price=current_price,
+                balance=balance,
+                config=ctx.config,
+                today=today,
+                excluded_slot_numbers=excluded if excluded else None,
+            )
 
         if evaluation.skip_reason is not None:
             return self._handle_no_buy(

@@ -40,7 +40,6 @@ from src.application.metrics import (
 from src.application.snapshot_builder import DailySnapshotBuilder
 from src.domain.constants import KST
 from src.domain.models import Balance
-from src.domain.strategies.price_drop import PriceDropStrategy
 from src.domain.strategies.profit_target import SellStrategyConfig
 from src.use_cases.asset_context import AssetContext
 from src.use_cases.daily_orchestrator import DailyOrchestrator
@@ -186,6 +185,7 @@ class BacktestRunner:
         trading_days_per_year: int = _DEFAULT_TRADING_DAYS_PER_YEAR,
         risk_free_rate: Decimal = _DEFAULT_RISK_FREE_RATE,
         per_asset_strategy_overrides: dict[str, SplitStrategyConfig] | None = None,
+        buy_strategy_name: str = "price_drop",
     ) -> None:
         if not assets:
             raise ValueError("assets must be a non-empty list")
@@ -228,6 +228,7 @@ class BacktestRunner:
         self._snapshot_kst_time = snapshot_kst_time
         self._trading_days_per_year = trading_days_per_year
         self._risk_free_rate = risk_free_rate
+        self._buy_strategy_name = buy_strategy_name
 
     def run(self, start: date, end: date) -> BacktestResult:
         if start > end:
@@ -260,23 +261,38 @@ class BacktestRunner:
             assert value is not None, "BacktestRunner did not set the clock"
             return value
 
+        # Lazy import to avoid circular dependency
+        # (src.cli.__init__ → main → backtest_runner → composition).
+        from src.cli.composition import (
+            create_buy_strategy,
+            slot_model_for_buy_strategy,
+        )
+
         broker = MockBroker(
             initial_balance=Balance(cash=self._initial_capital),
             clock=clock,
+            slot_model=slot_model_for_buy_strategy(self._buy_strategy_name),
         )
         market_data = MockMarketData(ohlcv_by_asset=self._ohlcv_by_asset)
         signal = self._signal_factory()
         from src.domain.strategies.profit_target import ProfitTargetSell
         from src.domain.strategies.reentry import create_reentry_strategy
 
-        # Reentry policy comes from constructor (default Hybrid; YAML
-        # config swaps the name + params per ADR §6).
-        reentry = create_reentry_strategy(
-            self._reentry_strategy_name,
-            market_data=market_data,
-            **self._reentry_parameters,
+        # ADR 0004 §5.7: factory dispatch between PriceDropStrategy +
+        # SupportLevelStrategy. Reentry policy is only required for
+        # PriceDropStrategy (ADR §4.3 β-2).
+        reentry = (
+            create_reentry_strategy(
+                self._reentry_strategy_name,
+                market_data=market_data,
+                **self._reentry_parameters,
+            )
+            if self._buy_strategy_name == "price_drop"
+            else None
         )
-        strategy = PriceDropStrategy(reentry=reentry)
+        strategy = create_buy_strategy(
+            self._buy_strategy_name, reentry=reentry
+        )
         shared_uow = InMemoryUnitOfWork()
 
         # Build one AssetContext per asset. ADR 0003 §7.3 — policy uniformity
