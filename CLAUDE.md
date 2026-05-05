@@ -633,13 +633,29 @@ B) <옵션 2와 trade-off>
 - 라운드 #7 결정: 1=(a) Phase 0.7.3 진입 + 2=(iii) H3 임계 정의 명시화 + 3=(γ) 게이트 결과 분리 박제. ADR §17 박제.
 - 결정: ADR §16, §17. 회고: `docs/retrospectives/phase-0.7.2.md`. 결과: `docs/retrospectives/phase-0.7.2-results.md`.
 
-#### Phase 0.7.3 (진행 중, 2026-05-05 진입) — 종목 다양화
-- 종목 2 종: 069500 (KODEX 200) + 132030 (KODEX 골드선물(H)) — 채권 (214980) 대체, 주식 + 골드 분산. **329200 (부동산) 거부** (상장일 2019-07-19, lookback 246 미달, §18.11 / §18.12)
-- 부동산 / 인프라 분산은 Phase 0.7.4 (가칭) 후속 박제 (§18.12.4)
-- 정책 동일성 강제 (§7.3 그대로) — 종목별 다른 정책 (§14.7 γ) 거부
-- 게이트 baseline: H1 ≥ 15.6% / H2 ≥ +5.25% / H3 ≥ **0.3258** (Phase 0.7.1 정확값, §17.3 정밀도 학습 적용)
-- 자본 배분 default = EQUAL / 정책 F (drop=5%, target=10%, cooldown=60) 그대로
-- 결정: ADR 0003 §18 (라운드 #8) + §18.12 (fallback). 회고: `docs/retrospectives/phase-0.7.3.md` (예정).
+#### Phase 0.7.3 (완료, 2026-05-05) — 종목 다양화
+- 종목 2 종: 069500 (KODEX 200) + 132030 (KODEX 골드선물(H)) — 채권 대체, 주식 + 골드 분산
+- 5-year 백테스트 결과: H1 ✅ 34.37 / H2 ✅ 13.23 / H3 ✅ 0.5255 — **게이트 3/3 PASS** (Phase 0.7 시리즈 첫 명확한 통과)
+- 라운드 #9 결정: Phase 0.7 시리즈 정식 종료 + Phase 0.7.4 (부동산) placeholder 보존 + §14.7 γ Phase 0.8+ 보류. ADR 0003 §19 박제.
+- 핵심 발견: 종목 조성 (채권 → 골드) 이 정책-자산 부정합 처방의 결정타.
+- 결정: ADR 0003 §18, §18.12, §19. 회고: `docs/retrospectives/phase-0.7.3.md`. 결과: `docs/retrospectives/phase-0.7.3-results.md`.
+
+### Phase 0.8 범위 (진행 중, 2026-05-05 진입) — 지지선 기반 세븐스플릿
+- 매수 패러다임 차원 변경 (가치 → 기술적). `SupportLevelStrategy` 신규
+- **박영옥 원전 정신 폐기 아님** — `PriceDropStrategy` 보존, 비교 검증 (yaml `buy_strategy` 분기)
+- 슬롯 모델: `SupportSlot` 신설 (한 종목 한 전략, 옵션 B-1)
+- 보조 지표: `src/domain/indicators/` helper 모듈 (도메인 내부 응집, 옵션 3)
+- 비교 baseline = Phase 0.7.3 (069500 + 132030, EQUAL, PriceDropStrategy) — 변수 1 차원 (매수 전략만) 통제
+- 게이트: H1 turnover ≥ 0.3270 / H2 return ≥ 13.23 / H3 Sharpe ≥ 0.5255 (Phase 0.7.3 baseline strict, §17.3 정밀도 학습 적용)
+- sub-step 분할: 0.8.1 (profit_target=10% 유지, 매수 패러다임 1 차원) → 0.8.2 (선택, 단기 매매 +3~5%, 별도 라운드)
+- 결정: ADR 0004 §1. 회고: `docs/retrospectives/phase-0.8.{1,2}.md` (예정).
+
+### Phase 0.8에서 명시적으로 제외
+- 멀티 종목 + SupportLevel 조합 — Phase 0.8.1 후속
+- Phase 0.7.4 (부동산 분산) — ADR 0003 §18.12.4 / §19.3 placeholder 보존
+- §14.7 γ (자산별 다른 정책) — Phase 0.9+ 후속 (ADR 0003 §19.4)
+- 단기 매매 (profit_target +3~5%) — Phase 0.8.2 (선택, 별도 라운드)
+- KIS API / 손절 / 텔레그램 / 개별 주식 / 환율 / Hot reload — Phase 0.9+ / Phase 1+ 그대로
 
 #### Phase 0.7 종료 결정 (예정)
 - 0.7.3 종료 후 별도 결정 라운드 (ADR §10.2 후속)
@@ -693,35 +709,57 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 16. Phase 1 호환성 의식 (Phase 0.7 동안만 적용)
+## 16. Phase 0.9 / Phase 1 호환성 의식 (Phase 0.8 동안만 적용)
 
-> **조건부 룰**. Phase 0.7 진행 중 Mock 환경 + 멀티 종목 가정으로 코드
-> 작성하되, Phase 1에서 KIS API 실거래 + 손절 진입 예정이므로 다음을
-> 의식한다. Phase 1 시작 시 본 §16은 제거 또는 갱신.
+> **조건부 룰**. Phase 0.8 진행 중 Mock 환경 + 매수 패러다임 비교
+> (PriceDropStrategy vs SupportLevelStrategy) 가정으로 코드 작성하되,
+> Phase 0.9 에서 ETF → 개별 주식 인프라 변경 + Phase 1 에서 KIS API
+> 실거래 + 손절 진입 예정이므로 다음을 의식한다. Phase 0.9 시작 시
+> 본 §16 은 제거 또는 갱신.
 >
-> 선행: Phase 0.5 동안 적용되던 §16 (Phase 0.7 호환성) 은 ADR 0003 §11.2
-> 박제로 본 §16 으로 갱신됨 (2026-05-03).
+> 선행: Phase 0.5 동안 적용되던 §16 (Phase 0.7 호환성) → Phase 0.7
+> 동안 적용되던 §16 (Phase 1 호환성) → 본 §16 (Phase 0.9 / Phase 1
+> 호환성). ADR 0004 §1 (라운드 #10) 박제 후속 갱신 (2026-05-05).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
-1. **종목별 reconciliation** — Phase 0.7 동안 종목별 독립 reconcile
-   메서드 골격 유지 (CLAUDE.md §11.2 자산별 확장). 한 종목 mismatch 발견
-   시 전체 정지 (Phase 0.7 박제 — ADR 0003 §8.6); Phase 1 에서 자산별
-   격리 정지로 분기 가능한 구조.
+**Phase 1 의식 (기존 Phase 0.7 박제 그대로)**:
+1. **종목별 reconciliation** — 종목별 독립 reconcile 메서드 골격 유지.
+   한 종목 mismatch 발견 시 전체 정지 (ADR 0003 §8.6); Phase 1 에서
+   자산별 격리 정지로 분기 가능한 구조.
 2. **종목별 잔고 분리 의식** — 단일 kill switch 가정 유지하되, 자산
    격리 정지 분기 가능한 `AssetContext` 기반 데이터 흐름.
-3. **partial fill 차단 유지** — KIS는 partial fill 발생 가능. ADR 0002
-   §3 (partial fill 차단) 정신 그대로. Phase 1에서 partial fill 처리 ADR
-   신규 박제.
+3. **partial fill 차단 유지** — KIS 는 partial fill 발생 가능. ADR
+   0002 §3 (partial fill 차단) 정신 그대로. Phase 1 에서 partial fill
+   처리 ADR 신규 박제.
 4. **sell strategy 단일 가정** — `ProfitTargetSell` 단일 sell strategy
-   가정 유지. 손절(StopLoss)은 Phase 1 ADR §1에서 sell strategy 추가
-   형태로 도입 (큰 리팩토링 회피). H3 거짓 결과 ADR 0002 §12.4.2 박제.
-5. **OrderRequest / OrderResult 시그니처** — KIS API 응답에 partial fill /
-   슬리피지 / 수수료 / 세금 필드 가능. Phase 0.7에서는 Mock 응답만 가정
-   하되, 시그니처가 Phase 1 KIS 응답을 수용 가능하도록 의식.
+   가정 유지. 손절 (StopLoss) 은 Phase 1 ADR 에서 sell strategy 추가
+   형태로 도입.
+5. **OrderRequest / OrderResult 시그니처** — KIS API 응답에 partial
+   fill / 슬리피지 / 수수료 / 세금 필드 가능. Phase 0.8 에서는 Mock
+   응답만 가정하되, 시그니처가 Phase 1 KIS 응답을 수용 가능하도록 의식.
 
-### 16.2 금지 (Phase 0.7에서 작성하면 안 되는 것)
+**Phase 0.9 호환성 의식 (Phase 0.8 신규 추가)**:
+6. **호가 단위 가변 의식** — Phase 0.8 동안 `tick_size = 5` (KOSPI ETF)
+   hardcoded 그대로. Phase 0.9 (개별 주식) 에서 가격대별 가변 (1 / 5
+   / 10 / 50 / 100 / 500 / 1000원) 도입 예정. `Asset.tick_size` 필드
+   가 함수형 (price → tick) 으로 확장 가능하도록 의식 — 그러나 Phase
+   0.8 에서 함수형 도입 금지 (불필요한 추상화).
+7. **거래 정지 / 액면분할 의식** — ETF 는 거의 발생 안 함, 개별 주식
+   은 빈번. CLAUDE.md §5.2 (전일 대비 ±30 % 변동 의심) 검증만 유지.
+   Phase 0.9 에서 명시 처리 ADR 박제.
+8. **증권거래세 / 수수료 모델링 의식** — ETF 면세, 개별 주식 매도 시
+   ~0.18 % 거래세 + 수수료. `OrderResult.tax` / `OrderResult.commission`
+   필드는 Phase 0.9 에서 추가. Phase 0.8 에서는 Mock 응답 그대로
+   (모든 세금 / 수수료 zero 가정).
+9. **5-year 백테스트 데이터 가용성 의식** — Phase 0.8 의 SupportLevelStrategy
+   는 보조 지표 (MA / BB / RSI 등) 에 lookback 필요. 종목 상장 history
+   가 백테스트 시작일 직전 충분한지 검증 — Phase 0.7.3 의 329200 (상장일
+   2019-07-19) 학습 그대로 (ADR 0003 §18.11 / §18.12).
 
+### 16.2 금지 (Phase 0.8에서 작성하면 안 되는 것)
+
+**Phase 1 그대로**:
 - ❌ KIS API 어댑터 코드 (BrokerPort / MarketDataPort 실 구현)
 - ❌ 손절 정책 코드 (avg_price 기준 -X% 일괄 매도)
 - ❌ 텔레그램 알림 코드
@@ -729,25 +767,52 @@ B) <옵션 2와 trade-off>
 - ❌ 환율 처리 코드 (KR 거래소 KRW 결제 전제)
 - ❌ 종목 간 자본 동적 이동 코드 (ADR 0003 §6.1)
 - ❌ 채권 / 단기 예치 (idle cash 활용) 코드
-- ❌ partial fill 처리 코드 (Phase 0.7 동안 차단 유지)
+- ❌ partial fill 처리 코드 (Phase 0.8 동안 차단 유지)
 - ❌ 부분 매도 (slot 내 50%) 코드
-- ❌ 보조지표 매도 (RSI / 볼린저밴드) 코드
-- ❌ 종목별 다른 정책 코드 (Phase 0.7.3 또는 Phase 1+ 결정)
-- ❌ score-based 종목 우선순위 코드 (Phase 0.7.3 또는 Phase 1+ 결정)
+- ❌ 보조지표 매도 (RSI / 볼린저밴드 매도 신호) — Phase 0.8 은 매수만
+- ❌ score-based 종목 우선순위 코드 (Phase 0.9+ 결정)
 - ❌ "추후 Phase 1 확장 가능하게" 만든 unused parameter
 
-→ 모두 Phase 1 ADR 라운드 (또는 명시된 후속 Phase) 에서 사용자와 명시적
-결정 후 작성.
+**Phase 0.9 (인프라) 호환성**:
+- ❌ 개별 주식 코드 (호가 가변 / 거래 정지 / 액면분할 / 증권거래세 / 수수료 모델링)
+- ❌ `IndicatorPort` 신설 (Phase 0.8 = `src/domain/indicators/` helper 모듈, 옵션 3 채택 ADR 0004 §1.4)
+- ❌ 동적 호가 산출 함수 (`tick_size: Callable` 등)
+- ❌ 거래세 / 수수료 OrderResult 필드 도입
+
+**Phase 0.8 자체 (변수 통제)**:
+- ❌ 멀티 종목 + SupportLevel 조합 코드 (Phase 0.8.1 후속, ADR 0004 §1.8)
+- ❌ Phase 0.7.4 (부동산 분산) 코드 (ADR 0003 §19.3 placeholder 보존)
+- ❌ §14.7 γ (자산별 다른 정책) 코드 (ADR 0003 §19.4 보류)
+- ❌ 단기 매매 (profit_target +3~5%) 코드 (Phase 0.8.2 선택, ADR 0004 §1.5)
+- ❌ `PriceDropStrategy` 변경 코드 (회귀 invariant 보존 — 비교 baseline)
+
+→ 모두 명시된 후속 Phase / sub-step 에서 사용자와 명시적 결정 후 작성.
 
 ### 16.3 의심 시 가이드
 
-Mock 환경 + 멀티 종목 가정 유지 + `# Phase 1에서 KIS API/손절 시 검토`
-주석 추가. 사용자 확인 없이 KIS API / 손절 / 텔레그램 인터페이스 짜기
-금지 (CLAUDE.md §13.3 "친절한 추가 금지" 정신).
+Mock 환경 + Phase 0.7.3 baseline (069500 + 132030, EQUAL,
+PriceDropStrategy) 비교 가정 유지. `# Phase 0.9 에서 호가 가변 / 거래세
+시 검토` 또는 `# Phase 1 에서 KIS API / 손절 시 검토` 주석 추가. 사용자
+확인 없이 호가 가변 / 거래세 / KIS API / 손절 / 텔레그램 인터페이스
+짜기 금지 (CLAUDE.md §13.3 "친절한 추가 금지" 정신).
 
-### 16.4 Phase 1 ADR 트리거 항목 (ADR 0003 §11.3 인용)
+### 16.4 Phase 0.9 / Phase 1 ADR 트리거 항목
 
-Phase 0.7 종료 후 Phase 1 ADR 0004 박제 시 다뤄질 결정:
+#### Phase 0.9 ADR 0005 (가칭) 트리거 항목
+
+Phase 0.8 종료 후 Phase 0.9 ADR 박제 시 다뤄질 결정 (ADR 0003 §15.3
+후보 박제 인용):
+
+1. ETF → 개별 주식 종목 후보 (3 ~ 5 종목)
+2. 호가 단위 가변 처리 (테이블 / 함수)
+3. 거래 정지 / 액면분할 데이터 소스 + 도메인 처리
+4. 증권거래세 / 수수료 모델링 정밀도 (`OrderResult` 필드 추가)
+5. 백테스트 / 페이퍼 / 실거래 동일성 (CLAUDE.md §7.4) 재검증
+6. Phase 1 KIS API 진입과의 시점 관계 (Mock 유지 vs KIS 우선)
+
+#### Phase 1 ADR 0006 (가칭) 트리거 항목 (ADR 0003 §11.3 인용)
+
+Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 
 1. KIS API 어댑터 (BrokerPort / MarketDataPort 구현)
 2. 손절 정책 — H3 거짓 대응 (ADR 0002 §12.4.2)
@@ -756,9 +821,9 @@ Phase 0.7 종료 후 Phase 1 ADR 0004 박제 시 다뤄질 결정:
 5. partial fill 처리 ADR
 6. 모의투자 → 실거래 전환 게이트
 7. 매도 임계치 +15 / +20 % 비교 backtest (ADR 0002 §12.4.1 보류)
-8. 종목별 다른 정책 허용 여부 (ADR 0003 §7.3 후속)
+8. 종목별 다른 정책 허용 여부 (ADR 0003 §7.3 후속, §19.4 보류)
 
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-05 (§14 Phase 0.7.3 종목 2 종 축소 — 329200 lookback 미달로 §18.12 fallback (d) 채택, 069500 + 132030 (주식 + 골드), 부동산 분산 Phase 0.7.4 후속)*
+*마지막 업데이트: 2026-05-05 (§14 Phase 0.7 시리즈 정식 종료 + Phase 0.8 진입 (지지선 패러다임), §16 Phase 0.9 / Phase 1 호환성 갱신 — ADR 0004 §1 라운드 #10 박제 후속)*
