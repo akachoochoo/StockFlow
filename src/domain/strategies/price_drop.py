@@ -24,7 +24,7 @@ intents only — orchestrator wires SELL via ``ProfitTargetSell`` separately.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pydantic import Field, model_validator
 
@@ -216,7 +216,11 @@ class PriceDropStrategy:
             ]
             effective_position = _synthetic_empty_position(asset, config.max_split_count)
         else:
-            candidate_slots = position.empty_slots
+            # Position.slots is homogeneous per asset (ADR 0004 §1.3 B-1).
+            # PriceDropStrategy is dispatched only for buy_strategy=price_drop
+            # → Position carries SplitSlots. Narrow union for downstream
+            # ReentryPriceStrategyPort which takes ``slot: SplitSlot``.
+            candidate_slots = cast("list[SplitSlot]", position.empty_slots)
             if not candidate_slots:
                 return BuyEvaluationResult(
                     buy=None,

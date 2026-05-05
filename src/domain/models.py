@@ -224,11 +224,11 @@ class AllocationPolicy(StrEnum):
     도입. default = EQUAL 시 Phase 0.7.1 회귀 invariant 보존.
 
     EQUAL    — 균등: budget_i = total / N (Phase 0.7.1 baseline)
-    INV_VOL  — 역변동성: budget_i = total × ((1/σ_i) / Σ(1/σ_j))
-    VOL      — 정변동성: budget_i = total × (σ_i / Σσ_j)
+    INV_VOL  — 역변동성: budget_i = total * ((1/sigma_i) / Sum(1/sigma_j))
+    VOL      — 정변동성: budget_i = total * (sigma_i / Sum(sigma_j))
 
-    σ 산출 위치: ADR §16.5.1 옵션 (c) — Composition 단계 직접 산출
-    (`_calculate_volatility` 순수 함수). 도메인은 σ 산식 미보유.
+    sigma 산출 위치: ADR §16.5.1 옵션 (c) — Composition 단계 직접 산출
+    (`_calculate_volatility` 순수 함수). 도메인은 sigma 산식 미보유.
     """
 
     EQUAL = "EQUAL"
@@ -510,6 +510,117 @@ class SplitSlot(ValueObject):
         )
 
 
+class SupportSlot(ValueObject):
+    """One of N support-level slots in a Position (Phase 0.8 / ADR 0004 §2.2).
+
+    Mirror of SplitSlot — identical fields, validators, and EMPTY ↔ FILLED
+    transitions. The semantic difference lives in ``slot_number``: in
+    SupportSlot it identifies a *support-level type* rather than a
+    sequential split index. ADR 0004 §2.2.1 / §2.2.2 mapping:
+
+        Phase 0.8.1 (slots 1~5):
+            1 = first-buy
+            2 = MA5
+            3 = MA10
+            4 = MA20
+            5 = recent_high(60)
+        Phase 0.8.2 (slots 6~7):
+            6 = MA60
+            7 = BB-lower OR RSI<30
+
+    Why a distinct class instead of reusing SplitSlot: ADR 0004 §1.3
+    decision (B-1) — Position.slots is homogeneous per asset (one slot
+    model per Position), and the type system carries that contract via
+    ``Position.slots: list[SplitSlot] | list[SupportSlot]``. Field shape
+    matches SplitSlot so the existing sell-and-reentry mechanics
+    (cooldown via last_exit_date) carry over without change (ADR 0004
+    §1.7 baseline 정합).
+
+    Invariants (model_validator):
+    - state == FILLED ⇔ entry is not None
+    - state == FILLED ⇒ entry.split_number == slot_number
+    - last_exit_date is not None ⇒ last_exit_price is not None
+
+    SplitEntry is reused (ADR 0004 §3 결정 2 = i) — entry.split_number
+    maps to SupportSlot.slot_number identically to SplitSlot.
+    """
+
+    slot_number: int = Field(ge=1, le=7)
+    state: SlotState
+    entry: SplitEntry | None = None
+    last_exit_price: Decimal | None = None
+    last_exit_date: date | None = None
+
+    @field_validator("last_exit_price", mode="before")
+    @classmethod
+    def _coerce_exit_price(cls, v: object) -> Decimal | None:
+        if v is None:
+            return None
+        out = _to_decimal(v)
+        if out <= 0:
+            raise ValueError(f"last_exit_price must be > 0, got {out}")
+        return out
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> SupportSlot:
+        if self.state is SlotState.FILLED:
+            if self.entry is None:
+                raise ValueError(
+                    f"FILLED slot {self.slot_number} requires entry"
+                )
+            if self.entry.split_number != self.slot_number:
+                raise ValueError(
+                    f"slot.entry.split_number ({self.entry.split_number}) "
+                    f"must equal slot_number ({self.slot_number})"
+                )
+        elif self.entry is not None:
+            raise ValueError(
+                f"EMPTY slot {self.slot_number} must not carry an entry"
+            )
+        if self.last_exit_date is not None and self.last_exit_price is None:
+            raise ValueError(
+                "last_exit_date is set but last_exit_price is None"
+            )
+        return self
+
+    @classmethod
+    def empty(
+        cls,
+        slot_number: int,
+        *,
+        last_exit_price: Decimal | None = None,
+        last_exit_date: date | None = None,
+    ) -> SupportSlot:
+        """Build an EMPTY support slot, optionally carrying exit history."""
+        return cls(
+            slot_number=slot_number,
+            state=SlotState.EMPTY,
+            entry=None,
+            last_exit_price=last_exit_price,
+            last_exit_date=last_exit_date,
+        )
+
+    @classmethod
+    def filled(
+        cls,
+        entry: SplitEntry,
+        *,
+        last_exit_price: Decimal | None = None,
+        last_exit_date: date | None = None,
+    ) -> SupportSlot:
+        """Build a FILLED support slot from an entry. slot_number is taken
+        from entry.split_number to enforce the consistency invariant
+        up-front.
+        """
+        return cls(
+            slot_number=entry.split_number,
+            state=SlotState.FILLED,
+            entry=entry,
+            last_exit_price=last_exit_price,
+            last_exit_date=last_exit_date,
+        )
+
+
 class PositionValuation(ValueObject):
     """Mark-to-market snapshot of a single Position.
 
@@ -640,7 +751,7 @@ class Position(DomainModel):
     avg_price: Decimal
     split_level: int = Field(ge=0, le=7)
     last_buy_at: datetime | None = None
-    slots: list[SplitSlot]
+    slots: list[SplitSlot] | list[SupportSlot]
 
     @field_validator("quantity", "avg_price", mode="before")
     @classmethod
@@ -730,10 +841,10 @@ class Position(DomainModel):
 
     @classmethod
     def empty(cls, asset: Asset, *, max_split_count: int = 7) -> Position:
-        """Construct an empty (no-position) holding with N EMPTY slots.
+        """Construct an empty (no-position) holding with N EMPTY SplitSlots.
 
         Default max_split_count=7 matches the Phase 0.5 single-asset
-        configuration. Phase 0.7 will plumb this through per-asset config.
+        configuration. Phase 0.7 plumbs this through per-asset config.
         """
         if not 1 <= max_split_count <= 7:
             raise ValueError(
@@ -751,6 +862,31 @@ class Position(DomainModel):
             ],
         )
 
+    @classmethod
+    def empty_with_support_slots(
+        cls, asset: Asset, *, max_split_count: int = 7
+    ) -> Position:
+        """Construct an empty Position with N EMPTY SupportSlots (Phase 0.8).
+
+        Mirror of ``empty`` for the SupportLevelStrategy slot model
+        (ADR 0004 §1.3 / §3 — option B-1, homogeneous list per Position).
+        """
+        if not 1 <= max_split_count <= 7:
+            raise ValueError(
+                f"max_split_count must be in [1, 7], got {max_split_count}"
+            )
+        return cls(
+            asset=asset,
+            quantity=Decimal(0),
+            avg_price=Decimal(0),
+            split_level=0,
+            last_buy_at=None,
+            slots=[
+                SupportSlot.empty(slot_number=i)
+                for i in range(1, max_split_count + 1)
+            ],
+        )
+
     # ------------------------------------------------------------------
     # Derived accessors
     # ------------------------------------------------------------------
@@ -760,12 +896,12 @@ class Position(DomainModel):
         return len(self.slots)
 
     @property
-    def filled_slots(self) -> list[SplitSlot]:
+    def filled_slots(self) -> list[SplitSlot | SupportSlot]:
         """Slots in FILLED state, ordered by slot_number."""
         return [s for s in self.slots if s.state is SlotState.FILLED]
 
     @property
-    def empty_slots(self) -> list[SplitSlot]:
+    def empty_slots(self) -> list[SplitSlot | SupportSlot]:
         """Slots in EMPTY state, ordered by slot_number."""
         return [s for s in self.slots if s.state is SlotState.EMPTY]
 
@@ -780,7 +916,7 @@ class Position(DomainModel):
                 return s.slot_number
         return None
 
-    def get_slot(self, slot_number: int) -> SplitSlot | None:
+    def get_slot(self, slot_number: int) -> SplitSlot | SupportSlot | None:
         """Return the slot with the given slot_number, or None if out of range."""
         for s in self.slots:
             if s.slot_number == slot_number:

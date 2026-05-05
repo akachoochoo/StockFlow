@@ -39,6 +39,7 @@ from src.domain.models import (
     SlotState,
     SplitEntry,
     SplitSlot,
+    SupportSlot,
 )
 
 # ---------------------------------------------------------------------------
@@ -886,6 +887,200 @@ class TestSplitSlot:
         s = SplitSlot.empty(slot_number=1)
         with pytest.raises(ValidationError):
             s.slot_number = 2
+
+
+# ---------------------------------------------------------------------------
+# SupportSlot (Phase 0.8 / ADR 0004 §2.2 / §3) — mirror of SplitSlot
+# ---------------------------------------------------------------------------
+class TestSupportSlot:
+    def test_empty_factory(self):
+        s = SupportSlot.empty(slot_number=3)
+        assert s.slot_number == 3
+        assert s.state is SlotState.EMPTY
+        assert s.entry is None
+        assert s.last_exit_price is None
+        assert s.last_exit_date is None
+
+    def test_empty_with_exit_history(self):
+        s = SupportSlot.empty(
+            slot_number=2,
+            last_exit_price=Decimal("33000"),
+            last_exit_date=date(2026, 3, 1),
+        )
+        assert s.state is SlotState.EMPTY
+        assert s.last_exit_price == Decimal("33000")
+        assert s.last_exit_date == date(2026, 3, 1)
+
+    def test_filled_factory(self):
+        e = SplitEntry(
+            split_number=4,
+            entry_date=date(2026, 4, 1),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k4",
+        )
+        s = SupportSlot.filled(entry=e)
+        assert s.slot_number == 4
+        assert s.state is SlotState.FILLED
+        assert s.entry is e
+
+    def test_filled_state_requires_entry(self):
+        with pytest.raises(ValidationError, match=r"FILLED slot"):
+            SupportSlot(
+                slot_number=1,
+                state=SlotState.FILLED,
+                entry=None,
+            )
+
+    def test_empty_state_must_not_carry_entry(self):
+        e = SplitEntry(
+            split_number=1,
+            entry_date=date(2026, 4, 1),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k",
+        )
+        with pytest.raises(ValidationError, match=r"EMPTY slot"):
+            SupportSlot(
+                slot_number=1,
+                state=SlotState.EMPTY,
+                entry=e,
+            )
+
+    def test_entry_split_number_must_match_slot_number(self):
+        e = SplitEntry(
+            split_number=2,
+            entry_date=date(2026, 4, 1),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k",
+        )
+        with pytest.raises(ValidationError, match=r"split_number"):
+            SupportSlot(
+                slot_number=3,
+                state=SlotState.FILLED,
+                entry=e,
+            )
+
+    def test_last_exit_date_without_price_rejected(self):
+        with pytest.raises(ValidationError, match=r"last_exit_price"):
+            SupportSlot(
+                slot_number=1,
+                state=SlotState.EMPTY,
+                last_exit_date=date(2026, 4, 1),
+            )
+
+    def test_negative_last_exit_price_rejected(self):
+        with pytest.raises(ValidationError, match=r"last_exit_price"):
+            SupportSlot(
+                slot_number=1,
+                state=SlotState.EMPTY,
+                last_exit_price=Decimal("-1"),
+            )
+
+    def test_immutable(self):
+        s = SupportSlot.empty(slot_number=1)
+        with pytest.raises(ValidationError):
+            s.slot_number = 2
+
+    def test_distinct_class_from_split_slot(self):
+        # ADR 0004 §1.3 (B-1) — SupportSlot is a distinct class even when
+        # field shape mirrors SplitSlot. Ensures Position.slots union
+        # discrimination works on class identity.
+        ss = SupportSlot.empty(slot_number=1)
+        sp = SplitSlot.empty(slot_number=1)
+        assert type(ss) is not type(sp)
+        assert isinstance(ss, SupportSlot)
+        assert not isinstance(ss, SplitSlot)
+
+
+# ---------------------------------------------------------------------------
+# Position with SupportSlot (Phase 0.8 / ADR 0004 §3 — option B-1 homogeneous)
+# ---------------------------------------------------------------------------
+class TestPositionWithSupportSlots:
+    def test_empty_with_support_slots_factory(self):
+        a = make_asset()
+        p = Position.empty_with_support_slots(a, max_split_count=5)
+        assert p.split_level == 0
+        assert p.quantity == Decimal(0)
+        assert p.avg_price == Decimal(0)
+        assert len(p.slots) == 5
+        assert all(isinstance(s, SupportSlot) for s in p.slots)
+        assert [s.slot_number for s in p.slots] == [1, 2, 3, 4, 5]
+
+    def test_empty_with_support_slots_default_max_seven(self):
+        # Phase 0.8.2 forward-compat — max_split_count=7 default
+        a = make_asset()
+        p = Position.empty_with_support_slots(a)
+        assert len(p.slots) == 7
+        assert all(isinstance(s, SupportSlot) for s in p.slots)
+
+    def test_empty_with_support_slots_rejects_invalid_max(self):
+        a = make_asset()
+        with pytest.raises(ValueError, match="max_split_count"):
+            Position.empty_with_support_slots(a, max_split_count=0)
+        with pytest.raises(ValueError, match="max_split_count"):
+            Position.empty_with_support_slots(a, max_split_count=8)
+
+    def test_filled_position_with_support_slots(self):
+        # Slot 2 (MA5 trigger in Phase 0.8.1 mapping) FILLED, others EMPTY
+        a = make_asset()
+        e = SplitEntry(
+            split_number=2,
+            entry_date=date(2026, 4, 1),
+            quantity=Decimal("10"),
+            entry_price=Decimal("30000"),
+            idempotency_key="k2",
+        )
+        slots = [
+            SupportSlot.empty(slot_number=1),
+            SupportSlot.filled(entry=e),
+            SupportSlot.empty(slot_number=3),
+            SupportSlot.empty(slot_number=4),
+            SupportSlot.empty(slot_number=5),
+        ]
+        p = Position(
+            asset=a,
+            quantity=Decimal("10"),
+            avg_price=Decimal("30000"),
+            split_level=1,
+            last_buy_at=UTC_NOW,
+            slots=slots,
+        )
+        assert p.split_level == 1
+        assert len(p.filled_slots) == 1
+        assert p.filled_slots[0].slot_number == 2
+        assert all(isinstance(s, SupportSlot) for s in p.slots)
+
+    def test_position_invariants_apply_to_support_slots(self):
+        # split_level mismatch — same invariant as SplitSlot
+        a = make_asset()
+        slots = [
+            SupportSlot.empty(slot_number=1),
+            SupportSlot.empty(slot_number=2),
+        ]
+        with pytest.raises(ValidationError, match="split_level"):
+            Position(
+                asset=a,
+                quantity=Decimal(0),
+                avg_price=Decimal(0),
+                split_level=1,  # wrong: should be 0
+                slots=slots,
+            )
+
+    def test_get_slot_returns_support_slot(self):
+        a = make_asset()
+        p = Position.empty_with_support_slots(a, max_split_count=5)
+        s = p.get_slot(3)
+        assert s is not None
+        assert isinstance(s, SupportSlot)
+        assert s.slot_number == 3
+
+    def test_next_empty_slot_number_with_support_slots(self):
+        a = make_asset()
+        p = Position.empty_with_support_slots(a, max_split_count=5)
+        # All EMPTY → smallest is 1 (slot 1 = first-buy)
+        assert p.next_empty_slot_number() == 1
 
 
 # ---------------------------------------------------------------------------
