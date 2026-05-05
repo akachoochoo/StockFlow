@@ -1,0 +1,50 @@
+# Phase 0.8.1 strategy config — SupportLevelStrategy + EQUAL allocation, 종목 2 종.
+# ADR 0004 §1 (라운드 #10) + §2 (슬롯 매핑) + §3 (SupportSlot) + §5 (factory)
+# 박제. Phase 0.7.3 baseline (strategies-0.7.3.yaml) 에서 ``buy_strategy`` 만
+# "price_drop" -> "support_level" 변경 — 변수 1 차원 통제.
+#
+# 종목: 069500 (KODEX 200) + 132030 (KODEX 골드선물(H)) — Phase 0.7.3 동일.
+# 정책 동일성 강제 (ADR 0003 §7.3) — 모든 자산 동일 buy_strategy.
+#
+# allocation_policy=EQUAL (Phase 0.7.3 동일) → per_split_amount yaml 그대로.
+# max_split_count=7 그대로 — Phase 0.8.1 은 슬롯 1~5 만 활성, 슬롯 6~7 은
+# Phase 0.8.2 후속 확장 시 자동 활성. (변수 통제 — 슬롯 개수 동일).
+#
+# drop_threshold_pct / reentry_strategy 등 SupportLevelStrategy 가 무시하는
+# 필드는 yaml schema 호환을 위해 그대로 유지 — Phase 0.7.3 baseline 값.
+
+version: "0.5"
+allocation_policy: EQUAL
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "support_level"
+    buy_parameters:
+      drop_threshold_pct: 5.0  # ignored by SupportLevelStrategy (ADR §4.7)
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"  # ignored by SupportLevelStrategy (ADR §4.3 β-2)
+    reentry_parameters:
+      cooldown_days: 60
+  "132030":
+    name: "KODEX 골드선물(H)"
+    enabled: true
+    buy_strategy: "support_level"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
