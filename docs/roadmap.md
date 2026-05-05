@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-05 (Phase 0.7 시리즈 정식 종료 + Phase 0.8 진입 (지지선 패러다임) — ADR 0003 §19 / ADR 0004 §1 라운드 #10 후속)
+> 마지막 업데이트: 2026-05-06 (Phase 0.8 시리즈 정식 종료 + Phase 0.9 진입 (개별 주식) — ADR 0004 §7 라운드 #11 후속)
 
 ## 현재 상태
 
@@ -11,9 +11,10 @@
 | Phase 0.7.1 | 완료 (2026-05-04) | ADR 0003 §14 / `phase-0.7.1.md` + `phase-0.7.1-results.md` |
 | Phase 0.7.2 | 완료 (2026-05-05) | ADR 0003 §16, §17 / `phase-0.7.2.md` + `phase-0.7.2-results.md` |
 | Phase 0.7.3 | 완료 (2026-05-05) — 게이트 3/3 PASS | ADR 0003 §18, §18.12, §19 / `phase-0.7.3.md` + `phase-0.7.3-results.md` |
-| **Phase 0.8** | **진행 중 (2026-05-05 진입)** — 지지선 패러다임 (`SupportLevelStrategy`, 069500 + 132030 + EQUAL) | ADR 0004 §1 |
-| Phase 0.7 종료 결정 | ✅ 완료 (2026-05-05) — Phase 0.7.3 게이트 3/3 PASS, ADR 0003 §19 박제 | (라운드 #9) |
-| Phase 0.9 (가칭) | 예정 — 개별 주식 검증 (종목 성격 차원) | 후보: ADR 0003 §15.3. 진입 시 ADR 0005 |
+| Phase 0.7 종료 결정 | ✅ 완료 (2026-05-05) — 라운드 #9 ADR 0003 §19 | |
+| Phase 0.8.1 | 완료 (2026-05-06) — 게이트 2/3 PASS (H3 FAIL, 본질적 trade-off) | ADR 0004 §1~§7 / `phase-0.8.1.md` + `phase-0.8.1-results.md` + `phase-0.8.md` |
+| Phase 0.8 종료 결정 | ✅ 완료 (2026-05-06) — 라운드 #11 ADR 0004 §7 (시리즈 종료 + cooldown 거부 + Phase 0.9 직진) | |
+| **Phase 0.9** | **진행 중 (2026-05-06 진입)** — 개별 주식 검증 (PriceDropStrategy default, ADR 0004 §7.4.2) | 진입 결정 라운드 ADR 0005 (예정) |
 | Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액) | 진입 시 ADR 0006 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
@@ -124,34 +125,55 @@
 
 ---
 
-## Phase 0.8 (진행 중, 2026-05-05 진입): 지지선 기반 세븐스플릿
+## Phase 0.8 시리즈 (완료, 2026-05-06): 매수 패러다임 비교 (단일 sub-step)
 
-### 범위 (ADR 0004 §1 — 라운드 #10)
-- 매수 패러다임 차원 변경 (가치 → 기술적). `SupportLevelStrategy` 신규
-- **박영옥 원전 정신 폐기 아님** — `PriceDropStrategy` 보존, 비교 검증
-- 슬롯 모델: `SupportSlot` 신설 (한 종목 한 전략, 옵션 B-1)
-- 보조 지표: `src/domain/indicators/` helper 모듈 (도메인 내부 응집, 옵션 3)
-- 비교 baseline = Phase 0.7.3 (069500 + 132030, EQUAL, PriceDropStrategy)
-- 게이트 strict: H1 turnover ≥ 0.3270 / H2 return ≥ 13.23 / H3 Sharpe ≥ 0.5255
-- sub-step: Phase 0.8.1 (profit_target=10% 유지) → 0.8.2 (선택, 단기 매매)
-- 결정: ADR 0004 §1. 회고: `phase-0.8.{1,2}.md` (예정)
+### 0.8.1 (완료, 2026-05-06) — 매수 패러다임 1 차원
+- 종목 유지 (069500 + 132030, EQUAL) — 변수 통제 strict
+- `SupportLevelStrategy` 신규 (slot 1~5: first-buy / MA5 / MA10 / MA20 / recent_high(60))
+  + `SupportSlot` (B-1 옵션) + `src/domain/indicators/` 모듈 (옵션 3)
+- 5-year 백테스트: H1 ✅ 0.4188 / H2 ✅ 14.0586 / H3 ❌ 0.2679 — **게이트 2/3 PASS**
+- 핵심 발견: SupportLevelStrategy 자본 회전 활발화 + 절대 수익 미세 개선 vs
+  **MDD -8.27% → -21.28% (-13.01pp) 큰 폭 악화** (ADR §4.3.3 박제 whipsaw 가설 발현)
+- 결정: ADR 0004 §1~§6. 회고: `phase-0.8.1.md` + `phase-0.8.1-results.md`
 
-### 명시적 제외
+### Phase 0.8 종료 결정 (완료, 2026-05-06) — 라운드 #11
+- ADR 0004 §7 박제 — 1=Phase 0.8 시리즈 종료 + 2=H3 처방 거부 (본질적 한계 인정)
+  + 3=Phase 0.9 default = PriceDropStrategy + SupportLevelStrategy 보존
+- 학습: "PriceDropStrategy + 분산이 본질" 데이터 근거 입증 (Phase 0.7.3 + 0.8.1 종합)
+- 미진행: 0.8.2 (단기 매매) / 0.8.x (cooldown 도입) — ADR §7.2 / §7.3 거부 박제
+- 시리즈 회고: `phase-0.8.md`
+
+### 명시적 제외 (완료 시점)
+- Phase 0.8.2 (단기 매매 +3~5%) — ADR §7.2 옵션 b 거부
+- Phase 0.8.x (cooldown / tolerance / 슬롯 5 정교화) — ADR §7.3 처방 거부
+- 멀티 종목 + SupportLevel 조합 — Phase 0.9.x 후속 (ADR 0004 §1.10)
 - Phase 0.7.4 (부동산 분산) — ADR 0003 §18.12.4 placeholder
-- §14.7 γ (자산별 다른 정책) — Phase 0.9+ 후속
-- 멀티 종목 + SupportLevel 조합 — Phase 0.8.1 후속
+- §14.7 γ (자산별 다른 정책) — ADR 0003 §19.4 / Phase 1+ 보류
 
 ---
 
-## Phase 0.9 (예정, 가칭): 개별 주식 검증
+## Phase 0.9 (진행 중, 2026-05-06 진입): 개별 주식 검증
 
-### 범위 (후보 박제: ADR 0003 §15.3)
-- ETF → 개별 주식 (종목 성격 차원)
+### 범위 (ADR 0003 §15.3 / ADR 0004 §7.4.2 default 박제)
+- ETF → 개별 주식 (종목 성격 차원). 변수 통제: 종목 차원만 변경
 - 인프라 변경: 호가 단위 가변 / 거래 정지 / 액면분할 / 증권거래세 + 수수료 모델링
-- 변수 통제: 종목 차원만 변경, ETF 분산 비교 가능
+- 매수 전략 default = **PriceDropStrategy** (검증된 가치, ADR §7.4.2)
+- 비교 baseline = Phase 0.7.3 strict (H1=0.3270 / H2=13.2280 / H3=0.5255)
+- Mock Broker 유지 (Phase 1 KIS API 진입과 시점 관계는 ADR 0005 박제 시 결정)
 
-### 진입 게이트
-- Phase 0.8 종료 결정 박제 + ADR 0005 (가칭) 박제
+### 진입 결정 라운드 (예정, ADR 0005 가칭)
+- ETF → 개별 주식 종목 후보 (3 ~ 5 종목, 5-year 백테스트 가용성 검증)
+- 호가 단위 가변 처리 / 거래 정지 / 액면분할 데이터 소스 + 도메인 처리
+- 증권거래세 / 수수료 모델링 정밀도 (`OrderResult` 필드 추가)
+- 백테스트 / 페이퍼 / 실거래 동일성 (CLAUDE.md §7.4) 재검증
+- Phase 1 KIS API 진입과의 시점 관계
+- SupportLevelStrategy + 개별 주식 결합 검토 (Phase 0.9.x sub-step)
+
+### SupportLevelStrategy 보존 (ADR 0004 §7.4.2)
+- 코드 (`src/domain/strategies/support_level.py`) 보존
+- yaml schema 보존 (`buy_strategy: Literal["price_drop", "support_level"]`)
+- ADR 0004 박제 보존
+- Phase 0.9.x 후속 결합 검토 가능
 
 ---
 
