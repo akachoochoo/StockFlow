@@ -672,19 +672,41 @@ B) <옵션 2와 trade-off>
 - §14.7 γ (자산별 다른 정책) — ADR 0003 §19.4 / Phase 1+ 보류
 
 ### Phase 0.9 범위 (진행 중, 2026-05-06 진입) — 개별 주식 검증
-- ETF → 개별 주식 (종목 성격 차원). 변수 통제: 종목 차원만 변경
-- 인프라 변경: 호가 단위 가변 / 거래 정지 / 액면분할 / 증권거래세 + 수수료 모델링
-- 매수 전략 default = **PriceDropStrategy** (ADR 0004 §7.4.2 박제) — Phase 0.8.1 패러다임 비교
-  결과로 검증된 가치
-- SupportLevelStrategy 보존 — Phase 0.9.x 후속 결합 검토 가능 (개별 주식 + SupportLevel 등)
-- 비교 baseline = Phase 0.7.3 (069500 + 132030, EQUAL, PriceDropStrategy) strict — H1=0.3270 /
-  H2=13.2280 / H3=0.5255
-- Mock Broker 유지 (Phase 1 KIS API 진입과 시점 관계는 ADR 0005 박제 시 결정)
-- 결정: ADR 0005 (가칭, 진입 결정 라운드 별도). 후보 박제: ADR 0003 §15.3 / ADR 0004 §7.4.2.
 
-### Phase 0.9에서 명시적으로 제외 (잠정)
+진입 결정 라운드 #12 박제 완료 (2026-05-07) — **ADR 0005 §1**.
+
+- ETF → 개별 주식 (종목 성격 차원). 변수 통제: 종목 차원만 변경
+- 인프라 변경: Market enum (KOSPI / KOSDAQ) / listed_at / delisted_at /
+  호가 단위 가변 (`src/domain/tick_size.py` helper) / 거래 정지 / 액면분할 (수정 종가)
+- 거래세 / 수수료 모델링 = **Phase 1+ 보류** (ADR 0005 §1.13)
+- 매수 전략 default = **PriceDropStrategy** drop=5.0% strict (ADR 0005 §1.8)
+- 매도 / 재진입 default = ProfitTarget +10% / Hybrid cooldown=60 (Phase 0.7.3 그대로)
+- 손절 정책 **미도입** (Phase 0.9 본질 = 인프라 검증). Phase 1 ADR §1 본격 검토
+- 후행 편향 단순화 (현재 살아있는 종목, 낙관적 추정 — ADR 0005 §1.6.3)
+- SupportLevelStrategy 보존 — Phase 0.9.x 후속 결합 검토 가능
+- 비교 baseline = Phase 0.7.3 strict — H1=0.3270 / H2=13.23% / H3=0.5255
+- 게이트: ≥ Phase 0.7.3 baseline strict, 통과 ≥ 2/3
+- Mock Broker 유지 (Phase 1 KIS API 진입 시점은 Phase 0.9 종료 결정 라운드에서 결정)
+
+#### Phase 0.9.1 (진행 중, 2026-05-07) — 인프라 검증 (2 종)
+- 종목: 005930 삼성전자 + 005380 현대차 — Phase 0.7.3 와 동일 종목 수, 변수 통제 strict
+- Sub-step (ADR 0005 §1.12): 0.9.a (ADR 박제) → 0.9.b (CLAUDE.md / roadmap 갱신) →
+  0.9.c (사전 검증) → 0.9.d (Asset 확장) → 0.9.e (다운로드 일반화) → 0.9.f (tick_size
+  helper) → 0.9.g (다운로드 + CSV) → 0.9.h (BacktestRunner + 회귀 invariant) → 0.9.i
+  (백테스트 실행) → 0.9.j (결과 분석 + ADR) → 0.9.k (회고) → 0.9.l (게이트 판정) →
+  0.9.m (Phase 0.9.2 진입 결정)
+
+#### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정) — 분산 효과 (5 종)
+- 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
+- 변수 (vs 0.9.1): 종목 수 (2 → 5) + 분산 효과
+- 게이트 = 0.9.1 결과 후 결정 라운드 (0.9.m) 에서 박제
+
+- 결정: ADR 0005 §1 (라운드 #12 박제 완료). 후보 박제: ADR 0003 §15.3 / ADR 0004 §7.4.2.
+
+### Phase 0.9에서 명시적으로 제외 (ADR 0005 §1.13 박제)
 - 실제 KIS API 연결 — Phase 1 (진입 결정 시 ADR 0006)
-- 손절 로직 — Phase 1+ (H3 거짓 대응, ADR 0002 §12.4.2)
+- 손절 로직 — Phase 1+ (H3 거짓 대응, ADR 0002 §12.4.2 + ADR 0005 §1.9)
+- 거래세 / 수수료 모델링 — Phase 1+ (ADR 0005 §1.13)
 - 텔레그램 알림 — Phase 1
 - AI 차단기 — Phase 2
 - US 주식 직접 거래소, BTC — Phase 3 / 4
@@ -695,8 +717,12 @@ B) <옵션 2와 trade-off>
 - 매도 임계치 +15/+20 % 비교 — Phase 1+ (실거래 데이터 확보 후)
 - Hot reload — Phase 1+ 검토
 - score-based 종목 우선순위 — Phase 1+
-- SupportLevelStrategy 코드 변경 — Phase 0.8 박제 보존 (ADR §7.4.2)
-- 멀티 종목 + SupportLevel 결합 — Phase 0.9.x 후속 결정
+- 박영옥 가치주 스타일 자동 식별 — Phase 0.9.x 또는 Phase 1+
+- 종목 선정 자동화 — Phase 2+ AI 영역
+- 일중 데이터 (분봉 / 틱) — Phase 0.9 일봉만 (pykrx)
+- SupportLevelStrategy 코드 변경 — Phase 0.8 박제 보존 (ADR 0004 §7.4.2)
+- 멀티 종목 + SupportLevel 결합 — Phase 0.9.x 후속 결정 (ADR 0004 §1.10)
+- 그리드 트레이딩 — Phase 0.10+ placeholder (`docs/roadmap.md`, arxiv 2506.11921)
 
 ### Phase 1 (예정, 가칭) — KR 주식 실거래 (소액)
 - KIS API 어댑터 + 100~500만원 소액 + 차단기 비활성 + 1~2개월 운영
@@ -722,14 +748,15 @@ B) <옵션 2와 trade-off>
 ## 16. Phase 1 호환성 의식 (Phase 0.9 동안만 적용)
 
 > **조건부 룰**. Phase 0.9 진행 중 Mock 환경 + 개별 주식 인프라 (호가
-> 가변 / 거래 정지 / 액면분할 / 증권거래세 + 수수료) 가정으로 코드
-> 작성하되, Phase 1 에서 KIS API 실거래 + 손절 진입 예정이므로 다음을
-> 의식한다. Phase 1 시작 시 본 §16 은 제거 또는 갱신.
+> 가변 / 거래 정지 / 액면분할 — 거래세 / 수수료는 Phase 1+ 보류) 가정으로
+> 코드 작성하되, Phase 1 에서 KIS API 실거래 + 손절 진입 예정이므로
+> 다음을 의식한다. Phase 1 시작 시 본 §16 은 제거 또는 갱신.
 >
 > 선행: Phase 0.5 동안 (Phase 0.7 호환성) → Phase 0.7 동안 (Phase 1
 > 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → 본 §16
 > (Phase 1 호환성, Phase 0.9 동안). ADR 0004 §7 (라운드 #11 — Phase
-> 0.8 종료) 박제 후속 갱신 (2026-05-06).
+> 0.8 종료) 박제 후속 → ADR 0005 §1 (라운드 #12 — Phase 0.9 진입
+> 결정) 박제 후속 갱신 (2026-05-07).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
@@ -750,22 +777,30 @@ B) <옵션 2와 trade-off>
    그대로 (Phase 0.9 본질 = 개별 주식 인프라 시뮬레이션, KIS API 는
    Phase 1) — 시그니처가 Phase 1 KIS 응답을 수용 가능하도록 의식.
 
-### 16.2 Phase 0.9 본질 (ADR 0005 박제 시 결정)
+### 16.2 Phase 0.9 본질 (ADR 0005 §1 박제 결과)
 
-Phase 0.9 의 본질적 변경은 **ADR 0005 (가칭) 박제 시 사용자 명시 결정**
-후 작성. ADR 0005 박제 전에는 작성 금지 (§16.3).
+Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
+2026-05-07)**. sub-step 분리 적용 (§16.3) — 각 본질은 박제된 sub-step
+에서만 작성.
 
-1. **호가 단위 가변** — 가격대별 (1 / 5 / 10 / 50 / 100 / 500 / 1000원).
-   `Asset.tick_size` 필드를 함수형 (price → tick) 으로 확장하거나, 별도
-   table 룩업.
-2. **거래 정지 / 액면분할** — 개별 주식 빈번. 데이터 소스 (corp_action
-   table 등) + 도메인 처리 (Position 의 quantity / avg_price 조정).
-3. **증권거래세 + 수수료 모델링** — ETF 면세, 개별 주식 매도 시 ~0.18%
-   거래세 + 수수료. `OrderResult.tax` / `OrderResult.commission` 필드
-   추가.
-4. **개별 주식 데이터 가용성** — 5-year 백테스트 가능한 종목 (상장일
-   ≤ 2019) 후보 + 거래 정지 이력 / 액면분할 이력 + lookback 충분성
-   검증 (Phase 0.7.3 의 329200 학습 정합).
+1. **호가 단위 가변** — `src/domain/tick_size.py` helper 모듈
+   (`calculate_krx_stock_tick_size(price) → Decimal`). `Asset.round_to_tick`
+   이 `asset_class` 분기 — KR_ETF 단일 tick_size 그대로, KR_STOCK 은
+   helper 호출. **sub-step 0.9.f 에서만 작성** (ADR 0005 §1.7.3).
+2. **Asset 모델 확장** — `Market` enum 신규 (KOSPI / KOSDAQ),
+   `listed_at` (필수) + `delisted_at` (옵션, Phase 0.9 미사용)
+   추가. **sub-step 0.9.d 에서만 작성** (ADR 0005 §1.7.1 / §1.7.2).
+3. **거래 정지 / 액면분할** — 거래 정지 = `SkipReason.MARKET_DATA_UNAVAILABLE`
+   재사용 (백테스트 OHLCV 없음). 액면분할 = pykrx `adjusted=True` 수정 종가
+   (도메인 처리 zero). **sub-step 0.9.e / 0.9.g 에서만 작성** (ADR 0005
+   §1.7.4).
+4. **거래세 + 수수료 모델링** — **Phase 1+ 보류** (Phase 0.9 미도입).
+   `OrderResult.tax` / `OrderResult.commission` 필드 추가 금지 — Phase 1
+   ADR 에서 KIS 응답과 함께 박제 (ADR 0005 §1.13).
+5. **개별 주식 데이터 가용성** — 5-year 백테스트 가능 종목 (상장일 ≤ 2019)
+   + 거래 정지 / 액면분할 이력 + lookback 충분성. Phase 0.9.1 = 005930 +
+   005380 / Phase 0.9.2 = + 055550 + 097950 + 015760. **sub-step 0.9.c
+   에서만 사전 검증** (ADR 0005 §1.6.2).
 
 ### 16.3 금지 (Phase 0.9 동안 작성하면 안 되는 것)
 
@@ -784,11 +819,13 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 (가칭) 박제 시 사용자 명�
 - ❌ Hot reload 코드
 - ❌ "추후 Phase 1 확장 가능하게" 만든 unused parameter
 
-**Phase 0.9 본질 (ADR 0005 미박제)**:
-- ❌ 호가 가변 코드 (`tick_size: Callable` 등) — ADR 0005 §X.Y 박제 후
-- ❌ 거래 정지 / 액면분할 처리 코드 — ADR 0005 §X.Y 박제 후
-- ❌ 거래세 / 수수료 OrderResult 필드 도입 — ADR 0005 §X.Y 박제 후
-- ❌ 개별 주식 종목 추가 (asset_factory) — ADR 0005 §X.Y 박제 후
+**Phase 0.9 본질 (ADR 0005 §1 박제 완료, sub-step 분리 적용)**:
+- 🔒 호가 가변 코드 (`src/domain/tick_size.py`) — **sub-step 0.9.f 에서만 작성** (ADR 0005 §1.7.3)
+- 🔒 Asset 모델 확장 (`Market` enum / `listed_at` / `delisted_at`) — **sub-step 0.9.d 에서만 작성** (ADR 0005 §1.7.1 / §1.7.2)
+- 🔒 데이터 다운로드 일반화 + 액면분할 (수정 종가) — **sub-step 0.9.e / 0.9.g 에서만 작성** (ADR 0005 §1.7.4)
+- 🔒 개별 주식 종목 추가 (asset_factory) — **sub-step 0.9.d 에서만 작성**. Phase 0.9.1 = 005930 + 005380, Phase 0.9.2 = + 055550 + 097950 + 015760 (ADR 0005 §1.6.2)
+- ❌ 거래세 / 수수료 OrderResult 필드 — Phase 1+ 보류 (ADR 0005 §1.13)
+- ❌ 거래 정지 처리 코드 (corp_action table 등) — ADR 0005 §1.7.4 박제 = `SkipReason.MARKET_DATA_UNAVAILABLE` 재사용. 별도 코드 추가 금지
 
 **Phase 0.8 보존 (변경 금지, ADR 0004 §7.4.2)**:
 - ❌ `SupportLevelStrategy` 코드 변경 — Phase 0.8 박제 보존
@@ -820,18 +857,30 @@ PriceDropStrategy) 비교 가정 유지. Phase 0.9 본질 (호가 가변 / 거�
 
 ### 16.5 Phase 0.9 ADR 0005 + Phase 1 ADR 0006 트리거 항목
 
-#### Phase 0.9 ADR 0005 (가칭) 트리거 항목
+#### Phase 0.9 ADR 0005 §1 박제 결과 (라운드 #12, 2026-05-07)
 
-Phase 0.9 진입 결정 라운드 시 다뤄질 결정 (ADR 0003 §15.3 + ADR 0004
-§7.4.2 후보 박제 인용):
+ADR 0005 §1 박제 완료 — 다음 결정으로 박제됨:
 
-1. ETF → 개별 주식 종목 후보 (3 ~ 5 종목, 5-year 백테스트 가용성 검증)
-2. 호가 단위 가변 처리 (테이블 룩업 / 함수형)
-3. 거래 정지 / 액면분할 데이터 소스 + 도메인 처리
-4. 증권거래세 / 수수료 모델링 정밀도 (`OrderResult` 필드 추가)
-5. 백테스트 / 페이퍼 / 실거래 동일성 (CLAUDE.md §7.4) 재검증
-6. Phase 1 KIS API 진입과의 시점 관계 (Mock 유지 vs KIS 우선)
-7. SupportLevelStrategy + 개별 주식 결합 검토 (Phase 0.9.x sub-step)
+1. 종목 후보 = 005930 + 005380 (Phase 0.9.1, 인프라 검증) → +
+   055550 + 097950 + 015760 (Phase 0.9.2, 분산 효과). 다양 업종
+   (옵션 3) + 단계적 (옵션 d). ADR 0005 §1.6.1 / §1.6.2.
+2. 호가 단위 가변 = `src/domain/tick_size.py` helper 모듈
+   (`Asset.round_to_tick` asset_class 분기). ADR 0005 §1.7.3.
+3. 거래 정지 = `SkipReason.MARKET_DATA_UNAVAILABLE` 재사용 (백테스트
+   OHLCV 없음) / 액면분할 = pykrx `adjusted=True` 수정 종가 (도메인
+   처리 zero). ADR 0005 §1.7.4.
+4. 거래세 / 수수료 모델링 = **Phase 1+ 보류** (Phase 0.9 미도입,
+   `OrderResult.tax` / `commission` 필드 추가 금지). ADR 0005 §1.13.
+5. 백테스트 / 페이퍼 / 실거래 동일성 (CLAUDE.md §7.4) = sub-step 0.9.h
+   에서 Phase 0.7.3 회귀 invariant 재실행으로 검증.
+6. Phase 1 KIS API 진입 시점 = Phase 0.9 종료 결정 라운드에서 결정
+   (Mock 유지). ADR 0005 §1.13.
+7. SupportLevelStrategy + 개별 주식 결합 = Phase 0.9.x 후속 (보존,
+   ADR 0004 §7.4.2 / §1.10).
+8. 손절 정책 = **Phase 0.9 미도입** (변수 통제 strict). Phase 1 ADR §1
+   본격 검토 (ADR 0002 §12.4.2 H3 거짓 대응). ADR 0005 §1.9.
+9. 후행 편향 = 단순화 (현재 살아있는 종목, 낙관적 추정 명시). Phase 1+
+   정교화 보류. ADR 0005 §1.6.3 / §1.10.
 
 #### Phase 1 ADR 0006 (가칭) 트리거 항목 (ADR 0003 §11.3 인용)
 
@@ -851,4 +900,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-06 (§14 Phase 0.8 시리즈 정식 종료 + Phase 0.9 진입 (개별 주식), §16 Phase 1 호환성 (Phase 0.9 동안) 갱신 — ADR 0004 §7 라운드 #11 박제 후속)*
+*마지막 업데이트: 2026-05-07 (§14 Phase 0.9 진입 결정 박제 후속 + Phase 0.9.1/0.9.2 종목 + sub-step 매핑, §16.0/§16.2/§16.3/§16.5 ADR 0005 §1 박제 결과 반영 — 라운드 #12 sub-step 0.9.b)*
