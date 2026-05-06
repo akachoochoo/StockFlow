@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-06 (Phase 0.8 시리즈 정식 종료 + Phase 0.9 진입 (개별 주식) — ADR 0004 §7 라운드 #11 후속)
+> 마지막 업데이트: 2026-05-07 (Phase 0.9 진입 결정 라운드 #12 박제 — ADR 0005 §1 + sub-step 0.9.a 시작)
 
 ## 현재 상태
 
@@ -14,7 +14,9 @@
 | Phase 0.7 종료 결정 | ✅ 완료 (2026-05-05) — 라운드 #9 ADR 0003 §19 | |
 | Phase 0.8.1 | 완료 (2026-05-06) — 게이트 2/3 PASS (H3 FAIL, 본질적 trade-off) | ADR 0004 §1~§7 / `phase-0.8.1.md` + `phase-0.8.1-results.md` + `phase-0.8.md` |
 | Phase 0.8 종료 결정 | ✅ 완료 (2026-05-06) — 라운드 #11 ADR 0004 §7 (시리즈 종료 + cooldown 거부 + Phase 0.9 직진) | |
-| **Phase 0.9** | **진행 중 (2026-05-06 진입)** — 개별 주식 검증 (PriceDropStrategy default, ADR 0004 §7.4.2) | 진입 결정 라운드 ADR 0005 (예정) |
+| **Phase 0.9** | **진행 중 (2026-05-06 진입)** — 개별 주식 검증 (PriceDropStrategy default, ADR 0004 §7.4.2) | 진입 결정 라운드 #12 박제 완료 (2026-05-07) — ADR 0005 §1 |
+| **Phase 0.9.1** | **진행 중 (2026-05-07 sub-step 0.9.a)** — 005930 삼성전자 + 005380 현대차 (2 종, 인프라 검증) | ADR 0005 §1.6.2 |
+| Phase 0.9.2 | 예정 — 005930 + 005380 + 055550 + 097950 + 015760 (5 종, 분산 효과) | ADR 0005 §1.6.2, 0.9.1 결과 후 진입 결정 |
 | Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액) | 진입 시 ADR 0006 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
@@ -154,26 +156,58 @@
 
 ## Phase 0.9 (진행 중, 2026-05-06 진입): 개별 주식 검증
 
-### 범위 (ADR 0003 §15.3 / ADR 0004 §7.4.2 default 박제)
-- ETF → 개별 주식 (종목 성격 차원). 변수 통제: 종목 차원만 변경
-- 인프라 변경: 호가 단위 가변 / 거래 정지 / 액면분할 / 증권거래세 + 수수료 모델링
-- 매수 전략 default = **PriceDropStrategy** (검증된 가치, ADR §7.4.2)
-- 비교 baseline = Phase 0.7.3 strict (H1=0.3270 / H2=13.2280 / H3=0.5255)
-- Mock Broker 유지 (Phase 1 KIS API 진입과 시점 관계는 ADR 0005 박제 시 결정)
+### 진입 결정 라운드 #12 (완료, 2026-05-07) — ADR 0005 §1 박제
+- sub-step 시리즈 (Phase 0.7 패턴) 채택 — 0.9.1 (인프라 검증, 2 종) → 0.9.2 (분산 효과, 5 종)
+- ADR 0005 신규 (Phase 별 분리 패턴 일관)
+- CLAUDE.md §16 본문 갱신 (Phase 1 호환성 의식 — Phase 0.9 동안 적용, §17 신규 X)
+- 종목 = 다양 업종 (ADR 0005 §1.6.1 옵션 3) + 단계적 (§1.6.2)
+- Asset 모델 확장 = Market enum 신규 (KOSPI / KOSDAQ) + listed_at / delisted_at + tick_size helper (`src/domain/tick_size.py`)
+- Phase 0.7.3 baseline `drop_threshold_pct: 5.0` strict (ADR 0005 §1.8)
+- 손절 정책 미도입 (Phase 0.9 본질 = 인프라 검증, 변수 통제 strict). Phase 1 ADR §1 본격 검토
+- 후행 편향 단순화 (현재 살아있는 종목, 낙관적 추정 명시 — ADR 0005 §1.6.3)
 
-### 진입 결정 라운드 (예정, ADR 0005 가칭)
-- ETF → 개별 주식 종목 후보 (3 ~ 5 종목, 5-year 백테스트 가용성 검증)
-- 호가 단위 가변 처리 / 거래 정지 / 액면분할 데이터 소스 + 도메인 처리
-- 증권거래세 / 수수료 모델링 정밀도 (`OrderResult` 필드 추가)
-- 백테스트 / 페이퍼 / 실거래 동일성 (CLAUDE.md §7.4) 재검증
-- Phase 1 KIS API 진입과의 시점 관계
-- SupportLevelStrategy + 개별 주식 결합 검토 (Phase 0.9.x sub-step)
+### 범위 (ADR 0005 §1 박제)
+- ETF → 개별 주식 (종목 성격 차원). 변수 통제: 종목 차원만 변경 (배분 / 매수 / 매도 / 재진입 동일)
+- 인프라 변경: Market enum / listed_at / delisted_at / 호가 단위 가변 / 거래 정지 / 액면분할 (수정 종가)
+- 거래세 / 수수료 모델링 = Phase 1+ 보류 (Phase 0.9 미도입)
+- 매수 전략 default = **PriceDropStrategy** (검증된 가치, ADR 0004 §7.4.2)
+- 매도 / 재진입 default = ProfitTarget +10% / Hybrid cooldown=60 (Phase 0.7.3 그대로)
+- 비교 baseline = Phase 0.7.3 strict (H1=0.3270 / H2=13.23% / H3=0.5255, drop=5.0%)
+- Mock Broker 유지 (Phase 1 KIS API 진입과 시점 관계는 Phase 0.9 종료 결정 라운드에서 결정)
+
+### Phase 0.9.1 (진행 중, 2026-05-07): 인프라 검증 (2 종)
+- 종목: 005930 삼성전자 (반도체) + 005380 현대차 (자동차) — Phase 0.7.3 와 동일 종목 수, 변수 통제 strict
+- 게이트: H1 ≥ 0.3270 / H2 ≥ 13.23% / H3 ≥ 0.5255 (Phase 0.7.3 baseline strict, 통과 ≥ 2/3)
+- 시나리오 (ADR 0005 §1.2.3):
+  * A: 3/3 PASS → Phase 1 직진 후보
+  * B: H1 + H3 PASS, H2 ❌ → 게이트 2/3 (수익률 trade-off)
+  * C: H1 + H2 PASS, H3 ❌ → 게이트 2/3 (Phase 0.8.1 패턴 반복, H3 본질적 한계)
+  * D: H1 만 PASS → 게이트 1/3 (시스템 한계 + 후속 결정 라운드)
+- Sub-step 매핑 (ADR 0005 §1.12):
+  * 0.9.a: ADR 0005 진입 결정 박제 (본 commit) ✅
+  * 0.9.b: CLAUDE.md §16 / §14 본문 갱신 (별도 commit)
+  * 0.9.c: 사전 검증 (`scripts/verify_phase_0_9_assets.py`) — 종목별 5-year 가용성 / 거래 정지 / 액면분할 / `listed_at` 박제
+  * 0.9.d: Asset 모델 확장 (Market enum / listed_at / delisted_at)
+  * 0.9.e: 데이터 다운로드 스크립트 일반화 (`scripts/download_kr_assets.py`)
+  * 0.9.f: 호가 단위 동적 처리 (`src/domain/tick_size.py` + `Asset.round_to_tick` 분기)
+  * 0.9.g: 데이터 다운로드 + CSV 생성
+  * 0.9.h: BacktestRunner 통합 + Phase 0.7.3 회귀 invariant 재실행
+  * 0.9.i: Phase 0.9.1 백테스트 실행
+  * 0.9.j: 결과 분석 + ADR 박제 (§2 가칭)
+  * 0.9.k: 회고 작성 (`docs/retrospectives/phase-0.9.1.md`)
+  * 0.9.l: 게이트 판정 (시나리오 A/B/C/D)
+  * 0.9.m: Phase 0.9.2 진입 결정 라운드 (5 종 확장)
+
+### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정): 분산 효과 (5 종)
+- 종목: 005930 삼성전자 + 005380 현대차 + 055550 신한지주 (금융) + 097950 CJ제일제당 (소비재) + 015760 한국전력 (에너지)
+- 변수 (vs 0.9.1): 종목 수 (2 → 5) + 분산 효과
+- 게이트: 0.9.1 결과 후 결정 라운드 (0.9.m) 에서 박제
 
 ### SupportLevelStrategy 보존 (ADR 0004 §7.4.2)
 - 코드 (`src/domain/strategies/support_level.py`) 보존
 - yaml schema 보존 (`buy_strategy: Literal["price_drop", "support_level"]`)
 - ADR 0004 박제 보존
-- Phase 0.9.x 후속 결합 검토 가능
+- Phase 0.9.x 후속 결합 검토 가능 (멀티 종목 + SupportLevel — ADR 0004 §1.10)
 
 ---
 
