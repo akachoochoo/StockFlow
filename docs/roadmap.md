@@ -193,3 +193,17 @@
 ## Phase 4 (예정): BTC 추가
 
 상세는 docs/multi-asset-trading-system-design.md 7장 참조.
+
+---
+
+## Phase 0.10+ 후보 (placeholder)
+
+진입 시점 미정. Phase 0.9 결과 후 결정. 각 항목은 진입 라운드 시 ADR 신규 박제 (현재 코드 작성 금지 — CLAUDE.md §13.3 "친절한 추가 금지").
+
+### 그리드 트레이딩 (Phase 0.10+ 후보)
+- 배경: Strategy 패턴의 본질 활용 (박영옥 원전 / `PriceDropStrategy` 패러다임에 묶이지 않음)
+- 형태: 순수 그리드 매매 — slot / split 개념 없음
+- 가정: 횡보장 가정 강함 (추세장 trade-off 인정)
+- 참고 논문: arxiv 2506.11921
+- 모델 영향 후보: `Position` 추상화 일반화 또는 `GridPosition` 신규 (진입 시 ADR 박제)
+- 진입 트리거: Phase 0.9 종료 결정 라운드 시 후보로 검토
