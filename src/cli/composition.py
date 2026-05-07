@@ -366,11 +366,181 @@ def kodex_gold() -> Asset:
     )
 
 
-# Registry: code → factory. Extend here when Phase 0.7.3+ adds more assets.
+# ---------------------------------------------------------------------------
+# Phase 0.9 — 개별 주식 5 종 (ADR 0005 §1.6.2 + §1.7 + §3 합병 박제)
+# ---------------------------------------------------------------------------
+# tick_size 필드는 KR_STOCK 분기에서 미사용 (Asset.round_to_tick 이 helper
+# 호출). 의미적으로는 KRX 개별 주식 최소 호가 단위 = 1원 placeholder
+# (ADR 0005 §3.3.1 박제). lot_size = 1 (KRX 개별 주식 표준).
+
+
+def samsung_electronics() -> Asset:
+    """Phase 0.9.1 — 005930 삼성전자 (반도체).
+
+    ADR 0005 §1.6.2 박제 종목. KOSPI 대형주 (반도체).
+    listed_at = 1975-06-11 (KRX 공식). Phase 0.9 sub-step 0.9.c
+    사전 검증 PASS (lookback 246 + 5-year 데이터 충족, ADR 0005 §2).
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+        Market,
+    )
+
+    return Asset(
+        code="005930",
+        exchange=Exchange.KRX,
+        market=Market.KOSPI,
+        asset_class=AssetClass.KR_STOCK,
+        currency=Currency.KRW,
+        name="삼성전자",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        listed_at=date(1975, 6, 11),
+    )
+
+
+def hyundai_motor() -> Asset:
+    """Phase 0.9.1 — 005380 현대차 (자동차).
+
+    ADR 0005 §1.6.2 박제 종목. KOSPI 대형주 (자동차).
+    listed_at = 1974-06-28 (KRX 공식). Phase 0.9 sub-step 0.9.c
+    사전 검증 PASS.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+        Market,
+    )
+
+    return Asset(
+        code="005380",
+        exchange=Exchange.KRX,
+        market=Market.KOSPI,
+        asset_class=AssetClass.KR_STOCK,
+        currency=Currency.KRW,
+        name="현대차",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        listed_at=date(1974, 6, 28),
+    )
+
+
+def shinhan_financial() -> Asset:
+    """Phase 0.9.2 — 055550 신한지주 (금융).
+
+    ADR 0005 §1.6.2 박제 종목. KOSPI 대형주 (금융).
+    listed_at = 2001-09-10 (지주사 전환 상장, KRX 공식).
+    Phase 0.9 sub-step 0.9.c 사전 검증 PASS.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+        Market,
+    )
+
+    return Asset(
+        code="055550",
+        exchange=Exchange.KRX,
+        market=Market.KOSPI,
+        asset_class=AssetClass.KR_STOCK,
+        currency=Currency.KRW,
+        name="신한지주",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        listed_at=date(2001, 9, 10),
+    )
+
+
+def cj_cheiljedang() -> Asset:
+    """Phase 0.9.2 — 097950 CJ제일제당 (소비재).
+
+    ADR 0005 §1.6.2 박제 종목. KOSPI 대형주 (소비재 — 경기 방어).
+    listed_at = 2007-09-19 (CJ 분할 후 재상장, KRX 공식).
+    Phase 0.9 sub-step 0.9.c 사전 검증 PASS.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+        Market,
+    )
+
+    return Asset(
+        code="097950",
+        exchange=Exchange.KRX,
+        market=Market.KOSPI,
+        asset_class=AssetClass.KR_STOCK,
+        currency=Currency.KRW,
+        name="CJ제일제당",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        listed_at=date(2007, 9, 19),
+    )
+
+
+def kepco() -> Asset:
+    """Phase 0.9.2 — 015760 한국전력 (에너지).
+
+    ADR 0005 §1.6.2 박제 종목. KOSPI 대형주 (에너지 / 유틸리티).
+    listed_at = 1989-08-10 (KRX 공식). Phase 0.9 sub-step 0.9.c
+    사전 검증 PASS.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+        Market,
+    )
+
+    return Asset(
+        code="015760",
+        exchange=Exchange.KRX,
+        market=Market.KOSPI,
+        asset_class=AssetClass.KR_STOCK,
+        currency=Currency.KRW,
+        name="한국전력",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        listed_at=date(1989, 8, 10),
+    )
+
+
+# Registry: code → factory. Phase 0.7.x: 3 ETF. Phase 0.9 (ADR 0005 §1.6.2
+# + §3 합병 박제): + 5 KR_STOCK 추가 (Phase 0.9.1 = 005930 + 005380,
+# Phase 0.9.2 = + 055550 + 097950 + 015760).
 _ASSET_FACTORIES: dict[str, Callable[[], Asset]] = {
     "069500": kodex200,
     "214980": kodex_short_bond_plus,
     "132030": kodex_gold,
+    "005930": samsung_electronics,
+    "005380": hyundai_motor,
+    "055550": shinhan_financial,
+    "097950": cj_cheiljedang,
+    "015760": kepco,
 }
 
 
