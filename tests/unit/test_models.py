@@ -21,6 +21,7 @@ from src.domain.models import (
     Currency,
     Decision,
     Exchange,
+    Market,
     Money,
     Order,
     OrderRequest,
@@ -49,15 +50,27 @@ UTC_NOW = datetime(2026, 4, 30, 6, 0, 0, tzinfo=UTC)
 UTC_LATER = datetime(2026, 4, 30, 7, 0, 0, tzinfo=UTC)
 
 
-def make_asset(code: str = "069500", name: str = "KODEX 200") -> Asset:
+def make_asset(
+    code: str = "069500",
+    name: str = "KODEX 200",
+    *,
+    asset_class: AssetClass = AssetClass.KR_ETF,
+    market: Market = Market.KOSPI,
+    listed_at: date = date(2002, 10, 14),
+    delisted_at: date | None = None,
+    tick_size: Decimal = Decimal("5"),
+) -> Asset:
     return Asset(
         code=code,
         exchange=Exchange.KRX,
-        asset_class=AssetClass.KR_ETF,
+        market=market,
+        asset_class=asset_class,
         currency=Currency.KRW,
         name=name,
-        tick_size=Decimal("5"),
+        tick_size=tick_size,
         lot_size=Decimal("1"),
+        listed_at=listed_at,
+        delisted_at=delisted_at,
     )
 
 
@@ -276,10 +289,12 @@ class TestAsset:
         a = Asset(
             code="069500",
             exchange=Exchange.KRX,
+            market=Market.KOSPI,
             asset_class=AssetClass.KR_ETF,
             currency=Currency.KRW,
             name="KODEX 200",
             tick_size=Decimal("5"),
+            listed_at=date(2002, 10, 14),
         )
         assert a.lot_size == Decimal(1)
 
@@ -288,10 +303,12 @@ class TestAsset:
             Asset(
                 code="",
                 exchange=Exchange.KRX,
+                market=Market.KOSPI,
                 asset_class=AssetClass.KR_ETF,
                 currency=Currency.KRW,
                 name="x",
                 tick_size=Decimal("5"),
+                listed_at=date(2002, 10, 14),
             )
 
     def test_empty_name_rejected(self):
@@ -299,10 +316,12 @@ class TestAsset:
             Asset(
                 code="069500",
                 exchange=Exchange.KRX,
+                market=Market.KOSPI,
                 asset_class=AssetClass.KR_ETF,
                 currency=Currency.KRW,
                 name="",
                 tick_size=Decimal("5"),
+                listed_at=date(2002, 10, 14),
             )
 
     def test_zero_tick_size_rejected(self):
@@ -310,10 +329,12 @@ class TestAsset:
             Asset(
                 code="069500",
                 exchange=Exchange.KRX,
+                market=Market.KOSPI,
                 asset_class=AssetClass.KR_ETF,
                 currency=Currency.KRW,
                 name="x",
                 tick_size=Decimal("0"),
+                listed_at=date(2002, 10, 14),
             )
 
     def test_negative_tick_size_rejected(self):
@@ -321,10 +342,12 @@ class TestAsset:
             Asset(
                 code="069500",
                 exchange=Exchange.KRX,
+                market=Market.KOSPI,
                 asset_class=AssetClass.KR_ETF,
                 currency=Currency.KRW,
                 name="x",
                 tick_size=Decimal("-1"),
+                listed_at=date(2002, 10, 14),
             )
 
     def test_float_tick_size_rejected(self):
@@ -332,20 +355,24 @@ class TestAsset:
             Asset(
                 code="069500",
                 exchange=Exchange.KRX,
+                market=Market.KOSPI,
                 asset_class=AssetClass.KR_ETF,
                 currency=Currency.KRW,
                 name="x",
                 tick_size=0.05,
+                listed_at=date(2002, 10, 14),
             )
 
     def test_string_tick_size_coerced(self):
         a = Asset(
             code="069500",
             exchange=Exchange.KRX,
+            market=Market.KOSPI,
             asset_class=AssetClass.KR_ETF,
             currency=Currency.KRW,
             name="x",
             tick_size="5",
+            listed_at=date(2002, 10, 14),
         )
         assert a.tick_size == Decimal("5")
 
@@ -373,11 +400,13 @@ class TestAsset:
         a = Asset(
             code="X",
             exchange=Exchange.KRX,
+            market=Market.KOSPI,
             asset_class=AssetClass.KR_ETF,
             currency=Currency.KRW,
             name="X",
             tick_size=Decimal("0.01"),
             lot_size=Decimal("1"),
+            listed_at=date(2002, 10, 14),
         )
         assert a.round_to_tick(Decimal("35.034")) == Decimal("35.03")
 
@@ -386,6 +415,159 @@ class TestAsset:
         # in practice (price ~35,000 vs tick 5), but documents the behavior.
         a = make_asset()  # tick_size = 5
         assert a.round_to_tick(Decimal("3")) == Decimal("0")
+
+    # ---- Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 / §1.7.3 + §3) ----
+    def test_market_field_required(self):
+        with pytest.raises(ValidationError):
+            Asset(
+                code="069500",
+                exchange=Exchange.KRX,
+                # market omitted
+                asset_class=AssetClass.KR_ETF,
+                currency=Currency.KRW,
+                name="x",
+                tick_size=Decimal("5"),
+                listed_at=date(2002, 10, 14),
+            )
+
+    def test_listed_at_field_required(self):
+        with pytest.raises(ValidationError):
+            Asset(
+                code="069500",
+                exchange=Exchange.KRX,
+                market=Market.KOSPI,
+                asset_class=AssetClass.KR_ETF,
+                currency=Currency.KRW,
+                name="x",
+                tick_size=Decimal("5"),
+                # listed_at omitted
+            )
+
+    def test_delisted_at_defaults_none(self):
+        a = make_asset()
+        assert a.delisted_at is None
+
+    def test_delisted_at_optional_set(self):
+        a = make_asset(delisted_at=date(2030, 1, 1))
+        assert a.delisted_at == date(2030, 1, 1)
+
+    def test_delisted_at_must_exceed_listed_at(self):
+        with pytest.raises(ValidationError, match="delisted_at"):
+            make_asset(
+                listed_at=date(2020, 1, 1),
+                delisted_at=date(2020, 1, 1),  # equal — must be strictly greater
+            )
+
+    def test_delisted_at_before_listed_at_rejected(self):
+        with pytest.raises(ValidationError, match="delisted_at"):
+            make_asset(
+                listed_at=date(2020, 1, 1),
+                delisted_at=date(2019, 12, 31),
+            )
+
+    # ---- is_tradeable (ADR 0005 §1.7.2) ----
+    def test_is_tradeable_on_listed_at_returns_true(self):
+        a = make_asset(listed_at=date(2020, 1, 2))
+        assert a.is_tradeable(date(2020, 1, 2)) is True
+
+    def test_is_tradeable_after_listed_at_returns_true(self):
+        a = make_asset(listed_at=date(2020, 1, 2))
+        assert a.is_tradeable(date(2024, 12, 30)) is True
+
+    def test_is_tradeable_before_listed_at_returns_false(self):
+        a = make_asset(listed_at=date(2020, 1, 2))
+        assert a.is_tradeable(date(2020, 1, 1)) is False
+
+    def test_is_tradeable_no_delisted_remains_true(self):
+        a = make_asset(listed_at=date(2020, 1, 2))  # delisted_at default None
+        assert a.is_tradeable(date(9999, 1, 1)) is True
+
+    def test_is_tradeable_on_delisted_at_returns_false(self):
+        a = make_asset(
+            listed_at=date(2020, 1, 2),
+            delisted_at=date(2024, 12, 31),
+        )
+        # delisted_at 일자부터는 거래 불가 (>= 폐지일 → False)
+        assert a.is_tradeable(date(2024, 12, 31)) is False
+
+    def test_is_tradeable_after_delisted_at_returns_false(self):
+        a = make_asset(
+            listed_at=date(2020, 1, 2),
+            delisted_at=date(2024, 12, 31),
+        )
+        assert a.is_tradeable(date(2025, 1, 1)) is False
+
+    def test_is_tradeable_before_delisted_at_returns_true(self):
+        a = make_asset(
+            listed_at=date(2020, 1, 2),
+            delisted_at=date(2024, 12, 31),
+        )
+        assert a.is_tradeable(date(2024, 12, 30)) is True
+
+    # ---- round_to_tick KR_STOCK dispatch (ADR 0005 §1.7.3 + §3) ----
+    def test_round_to_tick_kr_etf_uses_static_tick_size(self):
+        """KR_ETF 분기 = 기존 단일 tick_size (Phase 0.7.3 회귀 invariant)."""
+        a = make_asset(asset_class=AssetClass.KR_ETF, tick_size=Decimal("5"))
+        assert a.round_to_tick(Decimal("35003")) == Decimal("35000")
+        assert a.round_to_tick(Decimal("100000")) == Decimal("100000")
+
+    def test_round_to_tick_kr_stock_uses_helper_low_price(self):
+        """KR_STOCK 1,000원 미만 → tick=1 (가격대별 helper)."""
+        a = make_asset(
+            code="X",
+            asset_class=AssetClass.KR_STOCK,
+            tick_size=Decimal("1"),  # placeholder, helper 가 우선
+        )
+        # 999 → tick 1 → floor 999
+        assert a.round_to_tick(Decimal("999")) == Decimal("999")
+
+    def test_round_to_tick_kr_stock_uses_helper_50000_bracket(self):
+        """KR_STOCK 50,000~99,999원 → tick=100."""
+        a = make_asset(
+            code="005930",
+            asset_class=AssetClass.KR_STOCK,
+            tick_size=Decimal("1"),
+        )
+        # 70,049 → tick 100 → floor 70000
+        assert a.round_to_tick(Decimal("70049")) == Decimal("70000")
+        assert a.round_to_tick(Decimal("70000")) == Decimal("70000")
+
+    def test_round_to_tick_kr_stock_uses_helper_100000_bracket(self):
+        """KR_STOCK 100,000~499,999원 → tick=500."""
+        a = make_asset(
+            code="005380",
+            asset_class=AssetClass.KR_STOCK,
+            tick_size=Decimal("1"),
+        )
+        # 200,499 → tick 500 → floor 200000
+        assert a.round_to_tick(Decimal("200499")) == Decimal("200000")
+        assert a.round_to_tick(Decimal("200500")) == Decimal("200500")
+
+    def test_round_to_tick_kr_stock_ignores_static_tick_size(self):
+        """KR_STOCK 분기는 Asset.tick_size 무시, helper 결과만 사용."""
+        # tick_size=Decimal("99999") (말도 안 되는 값) 이어도 helper 결과 사용
+        a = make_asset(
+            code="X",
+            asset_class=AssetClass.KR_STOCK,
+            tick_size=Decimal("99999"),
+        )
+        # 70,049 → helper 100 → floor 70000 (tick_size 99999 무시)
+        assert a.round_to_tick(Decimal("70049")) == Decimal("70000")
+
+
+# ---------------------------------------------------------------------------
+# Market enum (Phase 0.9 — ADR 0005 §1.7.1)
+# ---------------------------------------------------------------------------
+class TestMarket:
+    def test_kospi_value(self):
+        assert Market.KOSPI.value == "KOSPI"
+
+    def test_kosdaq_value(self):
+        assert Market.KOSDAQ.value == "KOSDAQ"
+
+    def test_only_two_markets(self):
+        assert {m.value for m in Market} == {"KOSPI", "KOSDAQ"}
+
 
 
 # ---------------------------------------------------------------------------
@@ -2173,11 +2355,13 @@ class TestPortfolioSnapshot:
         a_usd = Asset(
             code="SPY",
             exchange=Exchange.KRX,
+            market=Market.KOSPI,
             asset_class=AssetClass.KR_ETF,
             currency=Currency.USD,
             name="SPY",
             tick_size=Decimal("1"),
             lot_size=Decimal("1"),
+            listed_at=date(2002, 10, 14),
         )
         v_usd = PositionValuation(
             asset=a_usd,

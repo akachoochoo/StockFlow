@@ -20,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 
+from src.domain.tick_size import calculate_krx_stock_tick_size
+
 # ---------------------------------------------------------------------------
 # Helpers (private)
 # ---------------------------------------------------------------------------
@@ -102,6 +104,19 @@ class Exchange(StrEnum):
     """Supported exchanges. Phase 0 = KRX only."""
 
     KRX = "KRX"
+
+
+class Market(StrEnum):
+    """KRX 시장 구분 (Phase 0.9 — ADR 0005 §1.7.1 박제).
+
+    Phase 0.7.3 까지는 ETF 만 (KOSPI 단일 시장 가정), Phase 0.9 부터
+    개별 주식 — KOSPI / KOSDAQ 시장 구분 필요. exchange=KRX 통일,
+    market 필드로 시장 구분. KOSDAQ 은 Phase 0.9 미사용 (Phase 0.9.x
+    또는 Phase 1+ 활용 — 박제만).
+    """
+
+    KOSPI = "KOSPI"
+    KOSDAQ = "KOSDAQ"
 
 
 class AssetClass(StrEnum):
@@ -283,20 +298,48 @@ class Asset(DomainModel):
     """Tradable asset (stock, ETF, etc.).
 
     Identified by (exchange, code) pair; `fqn` exposes the canonical form.
+
+    Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 / §1.7.3 + §3 합병 박제) 확장:
+        - ``market``     : KOSPI / KOSDAQ 시장 구분 (필수)
+        - ``listed_at``  : 상장일 — 5-year 백테스트 가용성 + tradeable
+                           판정의 기준일 (필수)
+        - ``delisted_at``: 상장 폐지일 (옵션, Phase 0.9 미사용 / Phase 1+
+                           미래 대비)
+        - ``round_to_tick``: ``asset_class`` 분기 — KR_ETF 는 단일
+          ``tick_size`` 그대로 (회귀 invariant 보존), KR_STOCK 은
+          ``calculate_krx_stock_tick_size(price)`` helper 호출 (가격대별
+          동적). ADR 0005 §1.7.3 + §3 박제.
+
+    KR_STOCK 의 ``tick_size`` 필드는 round_to_tick 분기에서 미사용 (helper
+    가 가격대별 산정). 의미적으로는 "KRX 개별 주식 최소 호가 단위 = 1원"
+    placeholder — factory 에서 ``Decimal("1")`` 채택 (ADR 0005 §3.3.1
+    근거 1 박제).
     """
 
     code: str = Field(min_length=1, max_length=20)
     exchange: Exchange
+    market: Market
     asset_class: AssetClass
     currency: Currency
     name: str = Field(min_length=1, max_length=200)
     tick_size: Decimal = Field(gt=Decimal(0))
     lot_size: Decimal = Field(default=Decimal(1), gt=Decimal(0))
+    listed_at: date
+    delisted_at: date | None = None
 
     @field_validator("tick_size", "lot_size", mode="before")
     @classmethod
     def _coerce_size(cls, v: object) -> Decimal:
         return _to_decimal(v)
+
+    @model_validator(mode="after")
+    def _check_listed_delisted(self) -> Asset:
+        if self.delisted_at is not None and self.delisted_at <= self.listed_at:
+            raise ValueError(
+                f"delisted_at ({self.delisted_at}) must be > "
+                f"listed_at ({self.listed_at})"
+            )
+        return self
 
     @property
     def fqn(self) -> str:
@@ -310,14 +353,36 @@ class Asset(DomainModel):
         """
         return f"{self.exchange.value}:{self.code}"
 
+    def is_tradeable(self, as_of: date) -> bool:
+        """거래 가능 여부 (상장일 ≤ as_of < 폐지일).
+
+        Phase 0.9 (ADR 0005 §1.7.2 박제). 백테스트 시 ``listed_at <= as_of``
+        검증 + ``delisted_at`` 미설정 종목만 사용 (Phase 0.9 본질 — 후행
+        편향 단순화, ADR 0005 §1.6.3 / §1.10).
+        """
+        if as_of < self.listed_at:
+            return False
+        return self.delisted_at is None or as_of < self.delisted_at
+
     def round_to_tick(self, price: Decimal) -> Decimal:
-        """Floor `price` to the nearest `tick_size` multiple.
+        """Floor `price` to a valid KRX tick.
+
+        Phase 0~0.7: ``Asset.tick_size`` 단일값 사용 (모든 자산).
+        Phase 0.9 (ADR 0005 §1.7.3 + §3 박제): ``asset_class`` 분기 —
+            - KR_ETF  : ``Asset.tick_size`` 단일값 (KOSPI ETF 표준 5원,
+                        Phase 0.7.3 회귀 invariant 보존)
+            - KR_STOCK: ``calculate_krx_stock_tick_size(price)`` 가격대별
+                        동적 산정 (helper)
 
         Used for LIMIT order pricing per CLAUDE.md §4.2: a buy LIMIT placed
         at-or-below the conceptual target is conservative — flooring to a
         valid tick guarantees the price is acceptable to the exchange.
         """
-        return (price // self.tick_size) * self.tick_size
+        if self.asset_class is AssetClass.KR_STOCK:
+            tick = calculate_krx_stock_tick_size(price)
+        else:
+            tick = self.tick_size
+        return (price // tick) * tick
 
 
 class Price(ValueObject):

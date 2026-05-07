@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
-from src.domain.models import Asset, AssetClass, Currency, Exchange
+from src.domain.models import Asset, AssetClass, Currency, Exchange, Market
 from src.infrastructure.csv_market_data_loader import load_ohlcv_csv
 
 if TYPE_CHECKING:
@@ -19,11 +19,13 @@ def _asset() -> Asset:
     return Asset(
         code="069500",
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 200",
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2002, 10, 14),
     )
 
 

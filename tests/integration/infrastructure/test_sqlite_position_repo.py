@@ -14,6 +14,7 @@ from src.domain.models import (
     AssetClass,
     Currency,
     Exchange,
+    Market,
     Position,
     SlotState,
     SplitEntry,
@@ -32,11 +33,13 @@ def _asset(code: str = "069500", name: str = "KODEX 200") -> Asset:
     return Asset(
         code=code,
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name=name,
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2002, 10, 14),
     )
 
 

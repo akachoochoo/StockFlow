@@ -24,6 +24,7 @@ from src.domain.models import (
     CircuitBreakerSignal,
     Currency,
     Exchange,
+    Market,
     Money,
     SignalLevel,
     SignalSource,
@@ -39,11 +40,13 @@ def _asset() -> Asset:
     return Asset(
         code="069500",
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 200",
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2002, 10, 14),
     )
 
 
@@ -463,11 +466,13 @@ def _asset_bond() -> Asset:
     return Asset(
         code="214980",
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 단기채권 PLUS",
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2014, 4, 22),
     )
 
 

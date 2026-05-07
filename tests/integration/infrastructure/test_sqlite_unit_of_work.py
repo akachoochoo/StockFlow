@@ -1,7 +1,7 @@
 """Tests for SqliteUnitOfWork — transactional behavior + repo wiring."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -12,6 +12,7 @@ from src.domain.models import (
     Currency,
     Decision,
     Exchange,
+    Market,
     Order,
     OrderSide,
     OrderStatus,
@@ -30,11 +31,13 @@ def _asset() -> Asset:
     return Asset(
         code="069500",
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 200",
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2002, 10, 14),
     )
 
 

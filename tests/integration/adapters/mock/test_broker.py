@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import random
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -16,6 +16,7 @@ from src.domain.models import (
     Balance,
     Currency,
     Exchange,
+    Market,
     Money,
     OrderRequest,
     OrderSide,
@@ -31,11 +32,13 @@ def _asset(code: str = "069500", lot_size: str = "1") -> Asset:
     return Asset(
         code=code,
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 200",
         tick_size=Decimal("5"),
         lot_size=Decimal(lot_size),
+        listed_at=date(2002, 10, 14),
     )
 
 

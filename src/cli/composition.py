@@ -270,24 +270,31 @@ def kodex200() -> Asset:
 
     Hardcoded here so the CLI default works without a config file. When
     Phase 1 adds multiple assets this graduates to a YAML lookup.
+
+    Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 + §3 합병 박제): ``market`` /
+    ``listed_at`` 필수 필드 추가. listed_at = 2002-10-14 (KRX 공식).
     """
-    from decimal import Decimal  # local import: keeps top imports tight
+    from datetime import date  # local import: keeps top imports tight
+    from decimal import Decimal
 
     from src.domain.models import (
         Asset,
         AssetClass,
         Currency,
         Exchange,
+        Market,
     )
 
     return Asset(
         code="069500",
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 200",
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2002, 10, 14),
     )
 
 
@@ -297,24 +304,31 @@ def kodex_short_bond_plus() -> Asset:
     Asset-class: KR_ETF on KRX, KRW-settled. tick_size / lot_size are
     Phase 0.7.1 placeholders; Phase 1 KIS adapter will supply the real
     KRX market rules.
+
+    Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 + §3 합병 박제): ``market`` /
+    ``listed_at`` 필수 필드 추가. listed_at = 2014-04-22 (KRX 공식).
     """
-    from decimal import Decimal  # local import: keeps top imports tight
+    from datetime import date
+    from decimal import Decimal
 
     from src.domain.models import (
         Asset,
         AssetClass,
         Currency,
         Exchange,
+        Market,
     )
 
     return Asset(
         code="214980",
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 단기채권 PLUS",
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2014, 4, 22),
     )
 
 
@@ -324,24 +338,31 @@ def kodex_gold() -> Asset:
     ADR 0003 §18 (라운드 #8) + §18.12 (fallback (d) 채택) 박제 종목.
     Asset-class: KR_ETF on KRX, KRW-settled. tick_size / lot_size 는
     Phase 0.7.3 placeholders; Phase 1 KIS adapter 가 KRX 시장 규칙 공급.
+
+    Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 + §3 합병 박제): ``market`` /
+    ``listed_at`` 필수 필드 추가. listed_at = 2010-10-01 (KRX 공식).
     """
-    from decimal import Decimal  # local import: keeps top imports tight
+    from datetime import date
+    from decimal import Decimal
 
     from src.domain.models import (
         Asset,
         AssetClass,
         Currency,
         Exchange,
+        Market,
     )
 
     return Asset(
         code="132030",
         exchange=Exchange.KRX,
+        market=Market.KOSPI,
         asset_class=AssetClass.KR_ETF,
         currency=Currency.KRW,
         name="KODEX 골드선물(H)",
         tick_size=Decimal("5"),
         lot_size=Decimal("1"),
+        listed_at=date(2010, 10, 1),
     )
 
 
