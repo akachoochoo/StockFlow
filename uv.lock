@@ -665,6 +665,19 @@ wheels = [
 ]
 
 [[package]]
+name = "mplfinance"
+version = "0.12.10b0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "pandas" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/a9/34e7998d02fb58fae04f750444ce4e95e75f3a08dad17fb2d32098a97834/mplfinance-0.12.10b0.tar.gz", hash = "sha256:7da150b5851aa5119ad6e06b55e48338b619bb6773f1b85df5de67a5ffd917bf", size = 70117, upload-time = "2023-08-02T15:13:53.829Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/d9/31c436ea7673c21a5bf3fc747bc7f63377582dfe845c3004d3e46f9deee0/mplfinance-0.12.10b0-py3-none-any.whl", hash = "sha256:76d3b095f05ff35de730751649de063bea4064d0c49b21b6182c82997a7f52bb", size = 75016, upload-time = "2023-08-02T15:13:52.022Z" },
+]
+
+[[package]]
 name = "multipledispatch"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1297,12 +1310,20 @@ dev = [
     { name = "ruff" },
     { name = "types-pyyaml" },
 ]
+reporting = [
+    { name = "matplotlib" },
+    { name = "mplfinance" },
+    { name = "pandas" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "freezegun", marker = "extra == 'dev'", specifier = ">=1.4" },
+    { name = "matplotlib", marker = "extra == 'reporting'", specifier = ">=3.8" },
+    { name = "mplfinance", marker = "extra == 'reporting'", specifier = ">=0.12.10b0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "pandas", marker = "extra == 'reporting'", specifier = ">=2.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pykrx", specifier = ">=1.0.45" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -1311,7 +1332,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "reporting"]
 
 [[package]]
 name = "six"

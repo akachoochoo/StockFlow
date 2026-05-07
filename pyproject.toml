@@ -26,6 +26,14 @@ dev = [
     "mypy>=1.10",
     "types-PyYAML",
 ]
+# Phase 0.10 (ADR 0006 §6.1) — Backtest Reporting Enhancement.
+# 핵심 백테스트는 본 의존성 zero — `uv run --extra reporting trading report ...`
+# 또는 dev 환경에서 `uv sync --extra reporting` 으로 추가.
+reporting = [
+    "matplotlib>=3.8",
+    "mplfinance>=0.12.10b0",
+    "pandas>=2.0",
+]
 
 [project.scripts]
 trading = "src.cli:main"
