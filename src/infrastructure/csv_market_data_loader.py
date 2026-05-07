@@ -11,8 +11,8 @@ deterministic data feed serves both flows. Numeric strings are passed
 directly to ``Decimal`` (CLAUDE.md §2.3 — never via float). The OHLCV
 domain model enforces OHLC consistency at construction.
 
-A pykrx-based downloader lives separately in ``scripts/download_kodex200.py``
-(Phase 1 placeholder, intentionally not a Phase 0 runtime dependency).
+A pykrx-based downloader lives separately in ``scripts/download_kr_assets.py``
+(ADR 0005 §1.12 + §3 박제 — Phase 0.9 부터 ETF + KR_STOCK 양쪽 지원).
 """
 from __future__ import annotations
 
