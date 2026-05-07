@@ -157,7 +157,7 @@ ADR §6.6.3 박제 (Phase 0.9.1 시점, sub-step 0.9.j) 의 두 가설:
 - Phase 0.9.x / Phase 1 에서 종목 수 ↑ 시 per_split_amount 또는 max_split
   조정 필요
 - 또는 동적 자본 배분 정책 (현재 cash 기준 per_split 비례 산정 등)
-- Phase 0.9 미예측 발견 — Phase 1 ADR 0006 박제 항목 trigger
+- Phase 0.9 미예측 발견 — Phase 1 ADR 0007 박제 항목 trigger
 
 ### 5.3 신규 발견 — "all-in lock-in" 패턴 (ADR §9.3.1)
 
@@ -176,7 +176,7 @@ ADR §6.6.3 박제 (Phase 0.9.1 시점, sub-step 0.9.j) 의 두 가설:
 시장 동조성 강함 (KOSPI 대형주) → 시장 하락 시 동시에 모든 종목 lock-in
 → 매도 trigger (+10%) 미달로 끝까지 보유 → 손실 잠금.
 
-→ Phase 1 ADR 0006 의 **손절 정책 트리거 항목** (CLAUDE.md §16.5 박제).
+→ Phase 1 ADR 0007 의 **손절 정책 트리거 항목** (CLAUDE.md §16.5 박제).
 Phase 0.9 본질 외 차원이지만 데이터 근거 확보.
 
 ### 5.4 lock-in 패턴 5배 증가 — `all_slots_filled_no_profit` (ADR §9.4)
@@ -234,7 +234,7 @@ H3 미달의 결정적 증거. Phase 0.7.3 의 **자산군 분산** 이 유일�
 ### 6.1 자본 분산 부족 (`insufficient_balance` 1299회) — Phase 0.9.2 신규
 
 ADR §9.4.1 박제. 5 종 × max_split=7 × per_split=5M = 175M 필요 vs 자본
-100M → 21% skip 비율. Phase 1 ADR 0006 의 자본 배분 정교화 항목 trigger.
+100M → 21% skip 비율. Phase 1 ADR 0007 의 자본 배분 정교화 항목 trigger.
 
 ### 6.2 "all-in lock-in" 패턴 — Phase 0.9.2 강화
 
@@ -289,15 +289,15 @@ ADR 0005 §9 박제 그대로 — 본 회고는 narrative 보강 + 시각화. �
   - H3 미달 본질 = 자산군 분산 부재 (Phase 1 도입 차원)
   - + 시리즈 회고 (`phase-0.9.md`) + CLAUDE.md §16 갱신
 
-→ **0.9.2.f 라운드 #15 결정 후 Phase 1 ADR 0006 박제** (가능성 가장 높음).
+→ **0.9.2.f 라운드 #15 결정 후 Phase 1 ADR 0007 박제** (가능성 가장 높음).
 
 ---
 
-## 8. 후속 권고 (Phase 1 ADR 0006)
+## 8. 후속 권고 (Phase 1 ADR 0007)
 
 ADR §9.8.3 박제 + CLAUDE.md §16.5 박제 결합:
 
-### 8.1 Phase 1 ADR 0006 박제 항목 (10 항목)
+### 8.1 Phase 1 ADR 0007 박제 항목 (10 항목)
 
 | 항목 | 근거 데이터 |
 |---|---|
@@ -325,7 +325,7 @@ ADR §9.8.3 박제 + CLAUDE.md §16.5 박제 결합:
 ADR §9.8.2 박제. 후보:
 - 손절 정책 / SupportLevel + 개별 주식 결합
 - 채권 / 골드 ETF 추가 (자산군 분산 회복)
-- 다만 Phase 0.9 본질 (인프라 검증) 완료 → Phase 1 ADR 0006 박제로
+- 다만 Phase 0.9 본질 (인프라 검증) 완료 → Phase 1 ADR 0007 박제로
   처리 가능
 
 → **0.9.2.f 라운드 #15 에서 사용자 명시 결정** (Phase 1 직진 vs Phase
@@ -363,7 +363,7 @@ ADR §9.8.2 박제. 후보:
 - [ ] sub-step 0.9.2.f — Phase 0.9 시리즈 종료 결정 라운드 #15:
   - 시리즈 회고 (`phase-0.9.md`)
   - CLAUDE.md §16 갱신 (Phase 1 호환성 의식 → Phase 1 진입)
-  - Phase 1 ADR 0006 박제 trigger (가능성 가장 높음)
+  - Phase 1 ADR 0007 박제 trigger (가능성 가장 높음)
 
 ---
 

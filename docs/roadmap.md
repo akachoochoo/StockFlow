@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-08 (sub-step 0.9.2.e 완료 — ADR 0005 §10 박제, Phase 0.9.2 시나리오 C / 게이트 2/3 PASS 정식 박제)
+> 마지막 업데이트: 2026-05-08 (sub-step 0.9.2.f / 0.10.a 완료 — ADR 0005 §11 + ADR 0006 §1 박제, Phase 0.9 종료 + Phase 0.10 진입)
 
 ## 현재 상태
 
@@ -17,7 +17,8 @@
 | **Phase 0.9** | **진행 중 (2026-05-06 진입)** — 개별 주식 검증 (PriceDropStrategy default, ADR 0004 §7.4.2) | 진입 결정 라운드 #12 박제 완료 (2026-05-07) — ADR 0005 §1 |
 | **Phase 0.9.1** | **진행 중 (2026-05-07 sub-step 0.9.c PASS)** — 005930 삼성전자 + 005380 현대차 (2 종, 인프라 검증). 사전 검증 lookback 246 + 백테스트 데이터 충족 | ADR 0005 §1.6.2 / §2 |
 | **Phase 0.9.2** | **진행 중 (2026-05-07 진입 결정 라운드 #14 박제)** — 005930 + 005380 + 055550 + 097950 + 015760 (5 종, 업종 분산). 가설: 분산 효과 회복 → 시나리오 C → A/B 변경 가능 여부 검증 | ADR 0005 §8 (라운드 #14 — Phase 0.9.2 진입 결정) |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액) | 진입 시 ADR 0006 |
+| Phase 0.10 | 진행 중 (2026-05-08 진입 결정 라운드 #16) — Backtest Reporting Enhancement (drawdown episode + strategy-agnostic markers) | ADR 0006 |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액) | 진입 시 ADR 0007 (기존 ADR 0006 명명 변경 — ADR 0005 §11.5) |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -154,7 +155,7 @@
 
 ---
 
-## Phase 0.9 (진행 중, 2026-05-06 진입): 개별 주식 검증
+## Phase 0.9 (완료, 2026-05-08): 개별 주식 검증
 
 ### 진입 결정 라운드 #12 (완료, 2026-05-07) — ADR 0005 §1 박제
 - sub-step 시리즈 (Phase 0.7 패턴) 채택 — 0.9.1 (인프라 검증, 2 종) → 0.9.2 (분산 효과, 5 종)
@@ -175,7 +176,7 @@
 - 비교 baseline = Phase 0.7.3 strict (H1=0.3270 / H2=13.23% / H3=0.5255, drop=5.0%)
 - Mock Broker 유지 (Phase 1 KIS API 진입과 시점 관계는 Phase 0.9 종료 결정 라운드에서 결정)
 
-### Phase 0.9.1 (진행 중, 2026-05-07): 인프라 검증 (2 종)
+### Phase 0.9.1 (완료, 2026-05-07): 인프라 검증 (2 종)
 - 종목: 005930 삼성전자 (반도체) + 005380 현대차 (자동차) — Phase 0.7.3 와 동일 종목 수, 변수 통제 strict
 - 게이트: H1 ≥ 0.3270 / H2 ≥ 13.23% / H3 ≥ 0.5255 (Phase 0.7.3 baseline strict, 통과 ≥ 2/3)
 - 시나리오 (ADR 0005 §1.2.3):
@@ -204,19 +205,21 @@
   * 0.9.2.c: 결과 분석 + ADR §9 박제 — §6.6.3 가설 1 ❌ / 가설 2 ✅ 강력 입증, 자산군 분산 = H3 회복 충분 조건 일반화 박제 ✅
   * 0.9.2.d: 회고 (`docs/retrospectives/phase-0.9.2.md`) ✅
   * 0.9.2.e: 게이트 판정 박제 — 시나리오 C / 게이트 2/3 PASS 정식 박제 (ADR 0005 §10), Phase 0.9 시리즈 양쪽 진입 자격 충족 확인 ✅
-  * **0.9.2.f: Phase 0.9 시리즈 종료 결정 라운드 #15 + 시리즈 회고 (`phase-0.9.md`) + CLAUDE.md §16 갱신 + Phase 1 trigger**
-  * 0.9.2.d: 회고 (`docs/retrospectives/phase-0.9.2.md`)
-  * 0.9.2.e: 게이트 판정 박제 (ADR §10 가칭)
-  * 0.9.2.f: Phase 0.9 시리즈 종료 결정 라운드 #15 + 시리즈 회고 (`phase-0.9.md`) + CLAUDE.md §16 갱신 + Phase 1 trigger
-  * 0.9.j: 결과 분석 + ADR 박제
-  * 0.9.k: 회고 작성 (`docs/retrospectives/phase-0.9.1.md`)
-  * 0.9.l: 게이트 판정 (시나리오 A/B/C/D)
-  * 0.9.m: Phase 0.9.2 진입 결정 라운드 (5 종 확장)
+  * 0.9.2.f: Phase 0.9 시리즈 종료 결정 라운드 #15 — Phase 1 직진 거부 + Phase 0.10 (Backtest Reporting Enhancement) 진입 채택 (ADR 0005 §11 박제) ✅
 
-### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정): 분산 효과 (5 종)
+### Phase 0.9.2 (완료, 2026-05-08): 분산 효과 (5 종)
 - 종목: 005930 삼성전자 + 005380 현대차 + 055550 신한지주 (금융) + 097950 CJ제일제당 (소비재) + 015760 한국전력 (에너지)
-- 변수 (vs 0.9.1): 종목 수 (2 → 5) + 분산 효과
-- 게이트: 0.9.1 결과 후 결정 라운드 (0.9.m) 에서 박제
+- 변수 (vs 0.9.1): 종목 수 (2 → 5) + 업종 분산
+- 5-year 백테스트 결과: H1=1.1893 ✅ / H2=14.8676% ✅ / H3=0.2424 ❌ → 시나리오 C (게이트 2/3 PASS, MDD -37.65% Phase 0.9.1 보다 더 악화)
+- ADR §6.6.3 가설 검증: 업종 다양화 ❌ → H3 회복 실패 / KOSPI 대형주 분산 부족 ✅ 강력 입증
+- 자산군 분산 일반화 박제 (ADR §9.6.2): "자산군 분산 = H3 회복의 충분 조건"
+
+### Phase 0.9 종료 결정 (완료, 2026-05-08, 라운드 #15) — ADR 0005 §11
+- Phase 0.9 시리즈 정식 종료 + Phase 1 직진 거부 + Phase 0.10 진입
+- 학습 종합: 시나리오 C 3 회 반복 (Phase 0.8.1 / 0.9.1 / 0.9.2) — 자산군 분산 부재 → H3 미달 본질
+- 인프라 검증 본질 100% 충족 (Asset 모델 / tick_size helper / 다운로드 / registry / BacktestRunner)
+- 시리즈 회고: `docs/retrospectives/phase-0.9.md` (sub-step 0.10.a 동시)
+- ADR 0006 / 0007 명명 변경: 기존 "Phase 1 ADR 0006 (가칭)" → ADR 0007. ADR 0006 = Phase 0.10 신규 (Backtest Reporting)
 
 ### SupportLevelStrategy 보존 (ADR 0004 §7.4.2)
 - 코드 (`src/domain/strategies/support_level.py`) 보존
@@ -226,12 +229,48 @@
 
 ---
 
+## Phase 0.10 (진행 중, 2026-05-08 진입): Backtest Reporting Enhancement
+
+### 진입 결정 라운드 #16 (완료, 2026-05-08) — ADR 0006 §1 박제
+- 사용자 명시 결정: Phase 1 이전 백테스트 진단 도구 강화 (Phase 0.9 결과의 시각적·구조적 진단 + 다중 전략 운용 대비)
+- ADR 0006 신규 (Phase 별 분리 패턴 일관)
+- CLAUDE.md §16 in-place 갱신 (Phase 1 호환성 의식 — Phase 0.10 동안 적용)
+
+### 본질 (ADR 0006 §1.2 박제)
+- **인프라 강화 (analytical reporting layer)** — 가설 / 게이트 없음
+- 변경 차원: 백테스트 출력 리포팅 (drawdown episode + strategy-agnostic trade markers)
+- 평가 기준: Acceptance Criteria 5 항목 (ADR 0006 §1.3)
+- Mock 환경 유지 (Phase 1 미진입)
+- 기존 코드 영향: **변경 zero** (신규 추가만)
+
+### 핵심 결정 (ADR 0006 §3 ~ §7)
+- ADR-1 (§3): TradeView (application view model, 도메인 엔티티 추가 zero — 기존 BuyActionRecord/SellActionRecord 활용)
+- ADR-2 (§4): StrategyRenderer Protocol + Registry (`src/ports/` + `src/adapters/reporting/renderers/`)
+- ADR-3 (§5): DrawdownEpisodeDetector (application layer, strategy-agnostic)
+- 차트 라이브러리: mplfinance (정적 PNG embed in HTML)
+- HTML 출력: stdlib f-string (jinja2 미도입)
+- 출력 위치: `reports/backtest/<config>_<window>/episode_<n>.html` (`.gitignore` 추가)
+- 임계치 default: -5% (yaml/CLI override 가능)
+- Episode 정의: portfolio default + asset 옵션 + both
+- 신규 의존성: matplotlib / mplfinance / pandas (`[project.optional-dependencies] reporting`)
+
+### Sub-step 매핑 (ADR 0006 §11 박제)
+  * **0.10.a: 본 commit — ADR 0006 박제 + ADR 0005 §11 + 시리즈 회고 (`phase-0.9.md`) + CLAUDE.md §16 in-place 갱신 + ADR 0006/0007 명명 변경 + roadmap 갱신** ✅
+  * 0.10.b: Step A — Domain entities 검토 + Drawdown episode detector + 단위 테스트
+  * 0.10.c: Step B — Renderer Protocol + SevenSplitRenderer + DefaultRenderer + Registry
+  * 0.10.d: Step C — Chart adapter (mplfinance) + HTML 리포트 출력기
+  * 0.10.e: Step D — Phase 0.9.2 결과로 end-to-end 통합 + CLI 명령 (`trading report`) + 신규 dummy strategy 검증
+  * 0.10.f: 회고 작성 (`docs/retrospectives/phase-0.10.md`) + Acceptance Criteria 검증 박제
+  * 0.10.g: Phase 0.10 종료 결정 라운드 #17 + Phase 1 진입 trigger
+
+---
+
 ## Phase 1 (예정): KR 주식 실거래 - 소액
 - KIS API 연동
 - 100~500만원 소액
 - 차단기 비활성, 룰만 검증
 - 1~2개월 운영
-- 진입 게이트: Phase 0.9 종료 결정 박제 + ADR 0006 (가칭) 박제
+- 진입 게이트: Phase 0.10 종료 결정 박제 + ADR 0007 (가칭, 기존 ADR 0006 명명 변경 — ADR 0005 §11.5) 박제
 
 ## Phase 2 (예정): AI 차단기 추가
 - 차단기 신호 파이프라인

@@ -320,7 +320,7 @@ C → A / B 변경 가능. 다만 모두 KOSPI 대형주 → 자산군 분산 (P
 
 ### 8.2 Phase 1 직진 시 (Phase 0.9 종료 결정)
 
-게이트 2/3 PASS = 진입 자격 충족. Phase 1 ADR 0006 (가칭) 박제 항목
+게이트 2/3 PASS = 진입 자격 충족. Phase 1 ADR 0007 (가칭, 기존 ADR 0006 명명 변경 — ADR 0005 §11.5) 박제 항목
 (CLAUDE.md §16.5 박제):
 1. KIS API 어댑터 (BrokerPort / MarketDataPort 구현)
 2. 손절 정책 — H3 거짓 대응 + lock-in loss 처방 (ADR §6.3 인용)

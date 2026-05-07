@@ -710,8 +710,37 @@ B) <옵션 2와 trade-off>
   → 0.9.2.b (yaml + 백테스트 실행, 시나리오 C 또 발현 — H1/H2 ✅ H3 ❌, MDD
   -37.65% 더 악화) ✅ → 0.9.2.c (결과 분석 + ADR §9, 자산군 분산 일반화 박제) ✅
   → 0.9.2.d (회고 `phase-0.9.2.md`) ✅ → 0.9.2.e (게이트 판정 — ADR §10, Phase
-  0.9 양쪽 진입 자격 충족) ✅ → **0.9.2.f (Phase 0.9 시리즈 종료 결정 라운드
-  #15 + 시리즈 회고 `phase-0.9.md` + CLAUDE.md §16 갱신 + Phase 1 trigger)**
+  0.9 양쪽 진입 자격 충족) ✅ → 0.9.2.f (Phase 0.9 시리즈 종료 결정 라운드 #15
+  — ADR §11 박제, Phase 1 직진 거부 + Phase 0.10 진입) ✅
+
+### Phase 0.9 종료 결정 (완료, 2026-05-08, 라운드 #15) — ADR 0005 §11
+- Phase 0.9 시리즈 정식 종료 + Phase 1 직진 거부 + Phase 0.10 (Backtest Reporting Enhancement) 진입
+- 시리즈 회고: `docs/retrospectives/phase-0.9.md` (sub-step 0.10.a 동시)
+- ADR 0006 / 0007 명명 변경: 기존 "Phase 1 ADR 0006 (가칭)" → ADR 0007. ADR 0006 = Phase 0.10 신규
+- Phase 0.9 학습 종합: "자산군 분산 = H3 회복의 충분 조건" (3 회 반복 검증, ADR §9.6.2 일반화 박제)
+
+### Phase 0.10 (진행 중, 2026-05-08 진입) — Backtest Reporting Enhancement
+- 본질: 인프라 강화 (analytical reporting layer) — 가설 / 게이트 없음
+- 평가 기준: Acceptance Criteria 5 항목 (ADR 0006 §1.3)
+- 변경 차원: 백테스트 출력 리포팅 (drawdown episode + strategy-agnostic trade markers)
+- Mock 환경 유지 (Phase 1 미진입)
+- 기존 코드 영향: 변경 zero (신규 추가만)
+- 결정: ADR 0006 (라운드 #16). 회고: `docs/retrospectives/phase-0.10.md` (예정)
+- 핵심 결정 (ADR 0006):
+  * ADR-1 (§3): TradeView (application view model, 도메인 엔티티 추가 zero)
+  * ADR-2 (§4): StrategyRenderer Protocol + Registry (`src/ports/` + `src/adapters/reporting/renderers/`)
+  * ADR-3 (§5): DrawdownEpisodeDetector (application layer, strategy-agnostic)
+  * 차트 라이브러리: mplfinance (정적 PNG embed in HTML)
+  * HTML 출력: stdlib f-string (jinja2 미도입)
+  * 출력 위치: `reports/backtest/<config>_<window>/episode_<n>.html` (.gitignore)
+  * 임계치 default: -5% (yaml/CLI override 가능)
+  * Episode 정의: portfolio default + asset 옵션 + both
+- 신규 의존성: matplotlib / mplfinance / pandas (`[project.optional-dependencies] reporting`)
+- Sub-step (ADR 0006 §11 박제): **0.10.a (본 commit — ADR 박제 + ADR 0005 §11 + 시리즈
+  회고 + CLAUDE.md/roadmap 갱신 + ADR 0006/0007 명명 변경)** → 0.10.b (Step A — Domain
+  + episode detector) → 0.10.c (Step B — Renderer Protocol + builtin) → 0.10.d (Step C —
+  Chart + HTML) → 0.10.e (Step D — end-to-end 통합 + 신규 dummy strategy) → 0.10.f (회고
+  `phase-0.10.md`) → 0.10.g (Phase 0.10 종료 결정 라운드 #17 + Phase 1 진입 trigger)
 
 #### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정) — 분산 효과 (5 종)
 - 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
@@ -721,7 +750,7 @@ B) <옵션 2와 trade-off>
 - 결정: ADR 0005 §1 (라운드 #12 박제 완료). 후보 박제: ADR 0003 §15.3 / ADR 0004 §7.4.2.
 
 ### Phase 0.9에서 명시적으로 제외 (ADR 0005 §1.13 박제)
-- 실제 KIS API 연결 — Phase 1 (진입 결정 시 ADR 0006)
+- 실제 KIS API 연결 — Phase 1 (진입 결정 시 ADR 0007 — ADR 0006 = Phase 0.10 Backtest Reporting 명명 후 변경)
 - 손절 로직 — Phase 1+ (H3 거짓 대응, ADR 0002 §12.4.2 + ADR 0005 §1.9)
 - 거래세 / 수수료 모델링 — Phase 1+ (ADR 0005 §1.13)
 - 텔레그램 알림 — Phase 1
@@ -743,7 +772,7 @@ B) <옵션 2와 trade-off>
 
 ### Phase 1 (예정, 가칭) — KR 주식 실거래 (소액)
 - KIS API 어댑터 + 100~500만원 소액 + 차단기 비활성 + 1~2개월 운영
-- 결정: ADR 0006 (가칭, 진입 시 박제). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7.
+- 결정: ADR 0007 (가칭, 진입 시 박제 — 기존 ADR 0006 명명 변경, ADR 0005 §11.5 박제). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7 / ADR 0005 §10.6.3.
 
 이 범위를 벗어나는 코드 작성 시 사용자 확인 필수.
 
@@ -762,18 +791,19 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 16. Phase 1 호환성 의식 (Phase 0.9 동안만 적용)
+## 16. Phase 1 호환성 의식 (Phase 0.10 동안 적용)
 
-> **조건부 룰**. Phase 0.9 진행 중 Mock 환경 + 개별 주식 인프라 (호가
-> 가변 / 거래 정지 / 액면분할 — 거래세 / 수수료는 Phase 1+ 보류) 가정으로
-> 코드 작성하되, Phase 1 에서 KIS API 실거래 + 손절 진입 예정이므로
-> 다음을 의식한다. Phase 1 시작 시 본 §16 은 제거 또는 갱신.
+> **조건부 룰**. Phase 0.10 (Backtest Reporting Enhancement) 진행 중
+> Mock 환경 + 분석 도구 추가 (drawdown episode + strategy-agnostic
+> renderer + chart + HTML) 가정으로 코드 작성하되, Phase 1 에서 KIS API
+> 실거래 + 손절 진입 예정이므로 다음을 의식한다. Phase 1 시작 시 본
+> §16 은 제거 또는 갱신.
 >
 > 선행: Phase 0.5 동안 (Phase 0.7 호환성) → Phase 0.7 동안 (Phase 1
-> 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → 본 §16
-> (Phase 1 호환성, Phase 0.9 동안). ADR 0004 §7 (라운드 #11 — Phase
-> 0.8 종료) 박제 후속 → ADR 0005 §1 (라운드 #12 — Phase 0.9 진입
-> 결정) 박제 후속 갱신 (2026-05-07).
+> 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
+> 동안 (Phase 1 호환성) → 본 §16 (Phase 1 호환성, Phase 0.10 동안).
+> ADR 0005 §11 (라운드 #15 — Phase 0.9 종료 + Phase 0.10 진입 결정) +
+> ADR 0006 §1 (라운드 #16 — Phase 0.10 진입) 박제 후속 갱신 (2026-05-08).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
@@ -849,10 +879,33 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
 - ❌ `SupportLevelStrategy` 코드 변경 — Phase 0.8 박제 보존
 - ❌ `SupportSlot` / `src/domain/indicators/` 모듈 변경 — 보존
 - ❌ ADR 0004 신규 §X 추가 (Phase 0.8 박제 후속이 아닌 경우) — Phase
-  0.9 결정은 ADR 0005 에 박제
+  0.9 결정은 ADR 0005 에 박제 / Phase 0.10 결정은 ADR 0006 에 박제
 - ❌ cooldown 도입 (SupportLevelStrategy + cooldown) — ADR 0004 §7.3.2
   거부 박제 (data snooping 위험). Phase 0.9.x / Phase 1+ 어느 시점에
   검토 시 §7.3.2 인용 후 결정
+
+**Phase 0.10 본질 (ADR 0006 박제 완료, sub-step 분리 적용)**:
+- 🔒 `src/application/reporting/` 모듈 (TradeView / DrawdownEpisode /
+  detector / report use case) — **sub-step 0.10.b ~ 0.10.e 에서만 작성**
+  (ADR 0006 §3 / §5 / §11)
+- 🔒 `src/ports/strategy_renderer.py` Protocol (StrategyRenderer +
+  MarkerStyle + Panel) — **sub-step 0.10.c 에서만 작성** (ADR 0006 §4.2)
+- 🔒 `src/adapters/reporting/` 모듈 (renderers / chart / html_writer /
+  registry) — **sub-step 0.10.c ~ 0.10.d 에서만 작성** (ADR 0006 §4 /
+  §6 / §7)
+- 🔒 신규 의존성 (matplotlib / mplfinance / pandas) — pyproject.toml
+  `[project.optional-dependencies] reporting` extras (ADR 0006 §6.1).
+  Phase 0.10 한정 의존성, 핵심 백테스트는 의존성 zero 유지
+- 🔒 `reports/` 디렉토리 — `.gitignore` 추가, 로컬 artifact (ADR 0006 §7.1)
+- ❌ Domain 엔티티 추가 (`Trade` / `BacktestReport` 등) — `TradeView` 는
+  application view model only (ADR 0006 §3.2 — 사용자 spec ADR-1 거부 박제)
+- ❌ jinja2 / plotly 도입 — Phase 0.11+ 검토 (ADR 0006 §6 / §7.2)
+- ❌ 동적 plugin discovery (entry points 등) — Phase 0.11+ 검토 (ADR 0006 §10)
+- ❌ BacktestResult / BuyActionRecord / SellActionRecord 영구화 변경 —
+  Phase 0.10 = view model only (ADR 0006 §3.5 / §10)
+- ❌ BacktestRunner 인터페이스 변경 — Phase 0.10 신규 추가만 (ADR 0006 §9.2)
+- ❌ 실시간 모니터링 / 라이브 알람 / 전략 변경 — Phase 1+ (ADR 0006 §1.4
+  Non-Goals)
 
 **Phase 0.9 후속 (sub-step 미박제)**:
 - ❌ Phase 0.7.4 (부동산 분산) 코드 (ADR 0003 §18.12.4 / §19.3 placeholder
@@ -873,7 +926,7 @@ PriceDropStrategy) 비교 가정 유지. Phase 0.9 본질 (호가 가변 / 거�
 호가 가변 / 거래세 / KIS API / 손절 / 텔레그램 인터페이스 짜기 금지
 (CLAUDE.md §13.3 "친절한 추가 금지" 정신).
 
-### 16.5 Phase 0.9 ADR 0005 + Phase 1 ADR 0006 트리거 항목
+### 16.5 Phase 0.9 ADR 0005 + Phase 0.10 ADR 0006 + Phase 1 ADR 0007 트리거 항목
 
 #### Phase 0.9 ADR 0005 §1 박제 결과 (라운드 #12, 2026-05-07)
 
@@ -901,7 +954,7 @@ ADR 0005 §1 박제 완료 — 다음 결정으로 박제됨:
 9. 후행 편향 = 단순화 (현재 살아있는 종목, 낙관적 추정 명시). Phase 1+
    정교화 보류. ADR 0005 §1.6.3 / §1.10.
 
-#### Phase 1 ADR 0006 (가칭) 트리거 항목 (ADR 0003 §11.3 인용)
+#### Phase 1 ADR 0007 (가칭) 트리거 항목 (ADR 0003 §11.3 / ADR 0005 §10.6.3 인용, 기존 ADR 0006 명명 변경 — ADR 0005 §11.5)
 
 Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 
@@ -919,4 +972,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-08 (§14 — sub-step 0.9.2.e 완료 표기 갱신, ADR 0005 §10 박제 후속 — Phase 0.9.2 시나리오 C / 게이트 2/3 PASS 정식 박제, Phase 0.9 양쪽 진입 자격 충족 확인)*
+*마지막 업데이트: 2026-05-08 (§14 + §16 in-place 갱신 — Phase 0.9 종료 + Phase 0.10 진입 박제, ADR 0005 §11 + ADR 0006 §1 박제 후속, sub-step 0.10.a)*
