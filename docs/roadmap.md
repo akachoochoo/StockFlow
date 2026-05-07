@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-08 (sub-step 0.9.2.c 완료 — ADR 0005 §9 박제, Phase 0.9.2 결과 분석 + Phase 0.9 시리즈 종합 학습)
+> 마지막 업데이트: 2026-05-08 (sub-step 0.9.2.d 완료 — `phase-0.9.2.md` narrative 회고)
 
 ## 현재 상태
 
@@ -202,7 +202,8 @@
   * 0.9.2.a: ADR §8 박제 (본 라운드 #14) + CLAUDE.md / roadmap 갱신 ✅
   * 0.9.2.b: `config/strategies-0.9.2.yaml` + 5 종 백테스트 실행 — H1=1.1893 ✅ / H2=14.8676% ✅ / H3=0.2424 ❌ → 시나리오 C 또 발현 (Phase 0.9.1 패턴 반복, MDD -37.65% 더 악화) ✅
   * 0.9.2.c: 결과 분석 + ADR §9 박제 — §6.6.3 가설 1 ❌ / 가설 2 ✅ 강력 입증, 자산군 분산 = H3 회복 충분 조건 일반화 박제 ✅
-  * **0.9.2.d: 회고 (`docs/retrospectives/phase-0.9.2.md`)**
+  * 0.9.2.d: 회고 (`docs/retrospectives/phase-0.9.2.md`) ✅
+  * **0.9.2.e: 게이트 판정 박제 (ADR §10 — 시나리오 C 정식 박제)**
   * 0.9.2.d: 회고 (`docs/retrospectives/phase-0.9.2.md`)
   * 0.9.2.e: 게이트 판정 박제 (ADR §10 가칭)
   * 0.9.2.f: Phase 0.9 시리즈 종료 결정 라운드 #15 + 시리즈 회고 (`phase-0.9.md`) + CLAUDE.md §16 갱신 + Phase 1 trigger
