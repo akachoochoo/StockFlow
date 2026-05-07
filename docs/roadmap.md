@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-07 (sub-step 0.9.d ↔ 0.9.f 합병 박제 — ADR 0005 §3 + 라운드 #13)
+> 마지막 업데이트: 2026-05-07 (sub-step 0.9.d / 0.9.e / 0.9.g 완료 — ADR 0005 §4 박제, 8 종 5-year 데이터 가용)
 
 ## 현재 상태
 
@@ -187,11 +187,11 @@
   * 0.9.a: ADR 0005 진입 결정 박제 (본 commit) ✅
   * 0.9.b: CLAUDE.md §16 / §14 본문 갱신 (별도 commit) ✅
   * 0.9.c: 사전 검증 (`scripts/verify_phase_0_9_assets.py`) — 종목별 5-year 가용성 / 거래 정지 / 액면분할 / `listed_at` 박제 ✅
-  * **0.9.d: Asset 모델 확장 (Market enum / listed_at / delisted_at) + tick_size helper (`src/domain/tick_size.py` + `Asset.round_to_tick` 분기) — ADR 0005 §3 박제 후속, 0.9.f 합병 (라운드 #13)**
-  * 0.9.e: 데이터 다운로드 스크립트 일반화 (`scripts/download_kr_assets.py`)
+  * 0.9.d: Asset 모델 확장 (Market enum / listed_at / delisted_at) + tick_size helper (`src/domain/tick_size.py` + `Asset.round_to_tick` 분기) — ADR 0005 §3 박제 후속, 0.9.f 합병 (라운드 #13) ✅
+  * 0.9.e: 데이터 다운로드 스크립트 일반화 (`scripts/download_kr_assets.py`) ✅
   * ~~0.9.f: 호가 단위 동적 처리~~ → 폐기, 0.9.d 와 합병 (ADR 0005 §3)
-  * 0.9.g: 데이터 다운로드 + CSV 생성
-  * 0.9.h: BacktestRunner 통합 + Phase 0.7.3 회귀 invariant 재실행
+  * 0.9.g: 데이터 다운로드 + CSV 생성 — 8 종 1477 rows × 5-year 윈도우, 3 ETF byte-identical 회귀 PASS (ADR 0005 §4) ✅
+  * **0.9.h: BacktestRunner 통합 + Phase 0.7.3 회귀 invariant 재실행**
   * 0.9.i: Phase 0.9.1 백테스트 실행
   * 0.9.j: 결과 분석 + ADR 박제
   * 0.9.k: 회고 작성 (`docs/retrospectives/phase-0.9.1.md`)
