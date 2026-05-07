@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-07 (sub-step 0.9.j 완료 — ADR 0005 §6 박제, Phase 0.9.1 결과 분석 + 시나리오 C 박제)
+> 마지막 업데이트: 2026-05-07 (sub-step 0.9.k 완료 — `phase-0.9.1.md` narrative 회고)
 
 ## 현재 상태
 
@@ -194,7 +194,8 @@
   * 0.9.h: BacktestRunner 통합 + Phase 0.7.3 회귀 invariant 재실행 — H1=0.3270 / H2=13.23% / H3=0.5255 ALL PASS (ADR 0005 §5) ✅
   * 0.9.i: Phase 0.9.1 백테스트 실행 (005930 + 005380) — H1=0.6173 ✅ / H2=18.8266% ✅ / H3=0.4139 ❌ → 시나리오 C (게이트 2/3 PASS, Phase 0.8.1 패턴 반복) ✅
   * 0.9.j: 결과 분석 + ADR §6 박제 — 종목별 기여도 / final snapshot / Phase 0.7.3 + 0.8.1 비교, "분산 효과 약화" 가 H3 미달 본질 확인 ✅
-  * **0.9.k: 회고 작성 (`docs/retrospectives/phase-0.9.1.md`)**
+  * 0.9.k: 회고 작성 (`docs/retrospectives/phase-0.9.1.md`) ✅
+  * **0.9.l: 게이트 판정 박제 (시나리오 A/B/C/D)**
   * 0.9.j: 결과 분석 + ADR 박제
   * 0.9.k: 회고 작성 (`docs/retrospectives/phase-0.9.1.md`)
   * 0.9.l: 게이트 판정 (시나리오 A/B/C/D)
