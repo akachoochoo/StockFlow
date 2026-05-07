@@ -690,11 +690,12 @@ B) <옵션 2와 trade-off>
 
 #### Phase 0.9.1 (진행 중, 2026-05-07) — 인프라 검증 (2 종)
 - 종목: 005930 삼성전자 + 005380 현대차 — Phase 0.7.3 와 동일 종목 수, 변수 통제 strict
-- Sub-step (ADR 0005 §1.12): 0.9.a (ADR 박제) → 0.9.b (CLAUDE.md / roadmap 갱신) →
-  0.9.c (사전 검증) → 0.9.d (Asset 확장) → 0.9.e (다운로드 일반화) → 0.9.f (tick_size
-  helper) → 0.9.g (다운로드 + CSV) → 0.9.h (BacktestRunner + 회귀 invariant) → 0.9.i
-  (백테스트 실행) → 0.9.j (결과 분석 + ADR) → 0.9.k (회고) → 0.9.l (게이트 판정) →
-  0.9.m (Phase 0.9.2 진입 결정)
+- Sub-step (ADR 0005 §1.12 + §3 합병 박제): 0.9.a (ADR 박제) → 0.9.b (CLAUDE.md
+  / roadmap 갱신) → 0.9.c (사전 검증) → **0.9.d (Asset 확장 + tick_size helper —
+  ADR 0005 §3 박제, 0.9.f 합병)** → 0.9.e (다운로드 일반화) → ~~0.9.f (폐기, 0.9.d
+  합병)~~ → 0.9.g (다운로드 + CSV) → 0.9.h (BacktestRunner + 회귀 invariant) →
+  0.9.i (백테스트 실행) → 0.9.j (결과 분석 + ADR) → 0.9.k (회고) → 0.9.l (게이트
+  판정) → 0.9.m (Phase 0.9.2 진입 결정)
 
 #### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정) — 분산 효과 (5 종)
 - 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
@@ -786,7 +787,8 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
 1. **호가 단위 가변** — `src/domain/tick_size.py` helper 모듈
    (`calculate_krx_stock_tick_size(price) → Decimal`). `Asset.round_to_tick`
    이 `asset_class` 분기 — KR_ETF 단일 tick_size 그대로, KR_STOCK 은
-   helper 호출. **sub-step 0.9.f 에서만 작성** (ADR 0005 §1.7.3).
+   helper 호출. **sub-step 0.9.d (0.9.f 합병) 에서 작성** (ADR 0005 §1.7.3
+   + §3 박제 — 라운드 #13).
 2. **Asset 모델 확장** — `Market` enum 신규 (KOSPI / KOSDAQ),
    `listed_at` (필수) + `delisted_at` (옵션, Phase 0.9 미사용)
    추가. **sub-step 0.9.d 에서만 작성** (ADR 0005 §1.7.1 / §1.7.2).
@@ -819,8 +821,8 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
 - ❌ Hot reload 코드
 - ❌ "추후 Phase 1 확장 가능하게" 만든 unused parameter
 
-**Phase 0.9 본질 (ADR 0005 §1 박제 완료, sub-step 분리 적용)**:
-- 🔒 호가 가변 코드 (`src/domain/tick_size.py`) — **sub-step 0.9.f 에서만 작성** (ADR 0005 §1.7.3)
+**Phase 0.9 본질 (ADR 0005 §1 박제 완료, sub-step 분리 적용 — §3 합병 박제 후속)**:
+- 🔒 호가 가변 코드 (`src/domain/tick_size.py`) — **sub-step 0.9.d (0.9.f 합병) 에서 작성** (ADR 0005 §1.7.3 + §3 박제 — 라운드 #13)
 - 🔒 Asset 모델 확장 (`Market` enum / `listed_at` / `delisted_at`) — **sub-step 0.9.d 에서만 작성** (ADR 0005 §1.7.1 / §1.7.2)
 - 🔒 데이터 다운로드 일반화 + 액면분할 (수정 종가) — **sub-step 0.9.e / 0.9.g 에서만 작성** (ADR 0005 §1.7.4)
 - 🔒 개별 주식 종목 추가 (asset_factory) — **sub-step 0.9.d 에서만 작성**. Phase 0.9.1 = 005930 + 005380, Phase 0.9.2 = + 055550 + 097950 + 015760 (ADR 0005 §1.6.2)
@@ -865,7 +867,8 @@ ADR 0005 §1 박제 완료 — 다음 결정으로 박제됨:
    055550 + 097950 + 015760 (Phase 0.9.2, 분산 효과). 다양 업종
    (옵션 3) + 단계적 (옵션 d). ADR 0005 §1.6.1 / §1.6.2.
 2. 호가 단위 가변 = `src/domain/tick_size.py` helper 모듈
-   (`Asset.round_to_tick` asset_class 분기). ADR 0005 §1.7.3.
+   (`Asset.round_to_tick` asset_class 분기). ADR 0005 §1.7.3. **sub-step
+   = 0.9.d (0.9.f 합병)** — ADR 0005 §3 박제 (라운드 #13).
 3. 거래 정지 = `SkipReason.MARKET_DATA_UNAVAILABLE` 재사용 (백테스트
    OHLCV 없음) / 액면분할 = pykrx `adjusted=True` 수정 종가 (도메인
    처리 zero). ADR 0005 §1.7.4.
@@ -900,4 +903,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-07 (§14 Phase 0.9 진입 결정 박제 후속 + Phase 0.9.1/0.9.2 종목 + sub-step 매핑, §16.0/§16.2/§16.3/§16.5 ADR 0005 §1 박제 결과 반영 — 라운드 #12 sub-step 0.9.b)*
+*마지막 업데이트: 2026-05-07 (§14 / §16.2 / §16.3 / §16.5 — ADR 0005 §3 박제 후속, sub-step 0.9.d ↔ 0.9.f 합병 — 라운드 #13)*
