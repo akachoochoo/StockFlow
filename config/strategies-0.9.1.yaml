@@ -1,0 +1,53 @@
+# Phase 0.9.1 strategy config — 개별 주식 인프라 검증 (2 종).
+# ADR 0005 §1 (라운드 #12 진입 결정) + §1.11 (비교 baseline) + §3
+# (sub-step 합병) 박제.
+#
+# 종목: 005930 (삼성전자, 반도체) + 005380 (현대차, 자동차).
+# Phase 0.7.3 baseline (069500 + 132030) 와 동일 종목 수 (2 종) — 변수
+# 통제 strict (자산 종류 ETF → 개별 주식 1 차원만 변경).
+#
+# 정책 동일성 강제 (Phase 0.7.3 그대로) — drop=5.0% / max_split=7 /
+# per_split=5,000,000 KRW / target=10.0% / cooldown=60.
+#
+# allocation_policy=EQUAL (Phase 0.7.3 동일) → per_split_amount yaml 그대로.
+#
+# 게이트 (ADR 0005 §1.2.3 박제, Phase 0.7.3 baseline strict, 통과 ≥ 2/3):
+#   H1 (capital_turnover): ≥ 0.3270
+#   H2 (total_return_pct): ≥ 13.23%
+#   H3 (sharpe_ratio):     ≥ 0.5255
+
+version: "0.5"
+allocation_policy: EQUAL
+assets:
+  "005930":
+    name: "삼성전자"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
+  "005380":
+    name: "현대차"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 5000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
