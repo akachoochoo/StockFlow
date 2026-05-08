@@ -740,8 +740,24 @@ B) <옵션 2와 trade-off>
   (Step A — TradeView + DrawdownEpisode + detector) ✅ → 0.10.c (Step B — Renderer
   Protocol + SevenSplit/Default + Registry) ✅ → 0.10.d (Step C — chart mplfinance +
   HTML stdlib) ✅ → 0.10.e (Step D — Phase 0.9.2 E2E + AC3 검증, 4 episodes 진단) ✅
-  → 0.10.f (회고 `phase-0.10.md` + AC 5/5 박제 ADR §12) ✅ → **0.10.g (Phase 0.10 종료
-  결정 라운드 #17 + Phase 1 진입 trigger)**
+  → 0.10.f (회고 `phase-0.10.md` + AC 5/5 박제 ADR §12) ✅ → 0.10.g (Phase 0.10 종료
+  결정 라운드 #17 — Phase 1 진입 보류 + 분석 phase 시작, ADR 0006 §13) ✅
+
+### Phase 0.10 종료 결정 (완료, 2026-05-08, 라운드 #17) — ADR 0006 §13
+- Phase 0.10 정식 종료 + Acceptance Criteria 5/5 충족 (ADR 0006 §12)
+- Phase 1 진입 결정 보류 (사용자 명시 — "결과를 좀 더 분석 해보고 결정")
+- 분석 phase 시작 — 코드 변경 zero, Phase 0.10 박제 보존
+- 다음 phase = 미결정 — 라운드 #18 (가칭, 사용자 분석 후) 에서 결정
+- Phase 1 ADR 0007 박제 = 라운드 #18 후속
+
+### 분석 phase (진행 중, 2026-05-08 시작) — 사용자 분석 보류
+- 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes / AC 5/5 / ADR 0006 §1~§13)
+  검토 후 다음 trajectory 결정
+- 코드 변경 zero (Phase 0.10 박제 보존)
+- 분석 대상 (예시): Phase 0.7.3 vs 0.9.2 비교 / Phase 1 ADR 0007 박제 항목
+  우선순위 / Phase 0.10.x 가능성 / 기타 trajectory (Phase 0.7.4 부동산
+  / SupportLevel + 개별 주식 / 손절 단독 검증 등)
+- 종료: 라운드 #18 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
 
 #### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정) — 분산 효과 (5 종)
 - 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
@@ -792,19 +808,19 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 16. Phase 1 호환성 의식 (Phase 0.10 동안 적용)
+## 16. Phase 1 호환성 의식 (Phase 0.10 종료 + 분석 phase 동안 적용)
 
-> **조건부 룰**. Phase 0.10 (Backtest Reporting Enhancement) 진행 중
-> Mock 환경 + 분석 도구 추가 (drawdown episode + strategy-agnostic
-> renderer + chart + HTML) 가정으로 코드 작성하되, Phase 1 에서 KIS API
-> 실거래 + 손절 진입 예정이므로 다음을 의식한다. Phase 1 시작 시 본
-> §16 은 제거 또는 갱신.
+> **조건부 룰**. Phase 0.10 정식 종료 (라운드 #17, ADR 0006 §13 박제,
+> 2026-05-08) 후 사용자 분석 phase 동안 본 §16 적용. Phase 1 진입 결정
+> 보류 (라운드 #18 가칭, 사용자 분석 후) — 그동안 코드 변경 zero +
+> Phase 1 호환성 의식 유지.
 >
 > 선행: Phase 0.5 동안 (Phase 0.7 호환성) → Phase 0.7 동안 (Phase 1
 > 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
-> 동안 (Phase 1 호환성) → 본 §16 (Phase 1 호환성, Phase 0.10 동안).
-> ADR 0005 §11 (라운드 #15 — Phase 0.9 종료 + Phase 0.10 진입 결정) +
-> ADR 0006 §1 (라운드 #16 — Phase 0.10 진입) 박제 후속 갱신 (2026-05-08).
+> 동안 (Phase 1 호환성) → Phase 0.10 동안 (Phase 1 호환성) → 본 §16
+> (Phase 1 호환성, Phase 0.10 종료 + 분석 phase 동안). ADR 0006 §13
+> (라운드 #17 — Phase 0.10 종료 + Phase 1 진입 보류) 박제 후속 갱신
+> (2026-05-08).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
@@ -973,4 +989,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-08 (§14 — sub-step 0.10.f 완료, ADR 0006 §12 박제 후속, Acceptance Criteria 5/5 충족)*
+*마지막 업데이트: 2026-05-08 (§14 + §16 in-place 갱신 — sub-step 0.10.g 완료, ADR 0006 §13 박제 후속, Phase 0.10 정식 종료 + 분석 phase 시작 — 라운드 #17)*

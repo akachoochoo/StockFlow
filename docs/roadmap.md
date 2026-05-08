@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-08 (sub-step 0.10.f 완료 — Phase 0.10 회고 + Acceptance Criteria 5/5 충족 박제, ADR 0006 §12)
+> 마지막 업데이트: 2026-05-08 (sub-step 0.10.g 완료 — Phase 0.10 정식 종료 + 분석 phase 시작, 라운드 #17 ADR 0006 §13)
 
 ## 현재 상태
 
@@ -17,8 +17,9 @@
 | **Phase 0.9** | **진행 중 (2026-05-06 진입)** — 개별 주식 검증 (PriceDropStrategy default, ADR 0004 §7.4.2) | 진입 결정 라운드 #12 박제 완료 (2026-05-07) — ADR 0005 §1 |
 | **Phase 0.9.1** | **진행 중 (2026-05-07 sub-step 0.9.c PASS)** — 005930 삼성전자 + 005380 현대차 (2 종, 인프라 검증). 사전 검증 lookback 246 + 백테스트 데이터 충족 | ADR 0005 §1.6.2 / §2 |
 | **Phase 0.9.2** | **진행 중 (2026-05-07 진입 결정 라운드 #14 박제)** — 005930 + 005380 + 055550 + 097950 + 015760 (5 종, 업종 분산). 가설: 분산 효과 회복 → 시나리오 C → A/B 변경 가능 여부 검증 | ADR 0005 §8 (라운드 #14 — Phase 0.9.2 진입 결정) |
-| Phase 0.10 | 진행 중 (2026-05-08 진입 결정 라운드 #16) — Backtest Reporting Enhancement (drawdown episode + strategy-agnostic markers) | ADR 0006 |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액) | 진입 시 ADR 0007 (기존 ADR 0006 명명 변경 — ADR 0005 §11.5) |
+| Phase 0.10 | 완료 (2026-05-08, 라운드 #17 종료) — Backtest Reporting Enhancement, AC 5/5 충족 | ADR 0006 §1 ~ §13 |
+| 분석 phase | 진행 중 (2026-05-08 시작) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #18 (가칭) |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #18 후속 | 진입 시 ADR 0007 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -261,7 +262,18 @@
   * 0.10.d: Step C — Chart adapter (mplfinance) + HTML 리포트 출력기 ✅
   * 0.10.e: Step D — Phase 0.9.2 결과로 end-to-end 통합 + 신규 dummy strategy 검증 (Phase 0.9.2 = 4 episodes 진단, AC3 검증) ✅
   * 0.10.f: 회고 (`docs/retrospectives/phase-0.10.md`) + Acceptance Criteria 검증 박제 (ADR 0006 §12, 5/5 충족) ✅
-  * **0.10.g: Phase 0.10 종료 결정 라운드 #17 + Phase 1 진입 trigger**
+  * 0.10.g: Phase 0.10 종료 결정 라운드 #17 — Phase 1 진입 보류 + 분석 phase 시작 (Q1=C / Q2=B / Q3=B, ADR 0006 §13) ✅
+
+### 분석 phase (진행 중, 2026-05-08 시작) — 사용자 분석 보류
+- 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes 리포트 + AC 5/5 검증 결과) 검토 후 다음 trajectory 결정
+- 코드 변경 zero (Phase 0.10 박제 보존)
+- 분석 대상 (예시):
+  * Phase 0.9.2 episode 리포트 (HTML) 시각적 분석
+  * Phase 0.7.3 vs 0.9.2 비교 (자산군 분산 효과)
+  * Phase 1 ADR 0007 박제 항목 10 의 우선순위 재검토
+  * Phase 0.10.x 가능성 (asset scope / 다중 차트 등) 재검토
+  * 기타 trajectory (Phase 0.7.4 부동산 / SupportLevel + 개별 주식 / 손절 단독 검증 등)
+- 종료: 라운드 #18 박제 (사용자 분석 결과 + 다음 trajectory 결정)
 
 ---
 
