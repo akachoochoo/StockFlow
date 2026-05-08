@@ -736,11 +736,12 @@ B) <옵션 2와 trade-off>
   * 임계치 default: -5% (yaml/CLI override 가능)
   * Episode 정의: portfolio default + asset 옵션 + both
 - 신규 의존성: matplotlib / mplfinance / pandas (`[project.optional-dependencies] reporting`)
-- Sub-step (ADR 0006 §11 박제): **0.10.a (본 commit — ADR 박제 + ADR 0005 §11 + 시리즈
-  회고 + CLAUDE.md/roadmap 갱신 + ADR 0006/0007 명명 변경)** → 0.10.b (Step A — Domain
-  + episode detector) → 0.10.c (Step B — Renderer Protocol + builtin) → 0.10.d (Step C —
-  Chart + HTML) → 0.10.e (Step D — end-to-end 통합 + 신규 dummy strategy) → 0.10.f (회고
-  `phase-0.10.md`) → 0.10.g (Phase 0.10 종료 결정 라운드 #17 + Phase 1 진입 trigger)
+- Sub-step (ADR 0006 §11 박제): 0.10.a (ADR 박제 + 시리즈 회고 + 명명 변경) ✅ → 0.10.b
+  (Step A — TradeView + DrawdownEpisode + detector) ✅ → 0.10.c (Step B — Renderer
+  Protocol + SevenSplit/Default + Registry) ✅ → 0.10.d (Step C — chart mplfinance +
+  HTML stdlib) ✅ → 0.10.e (Step D — Phase 0.9.2 E2E + AC3 검증, 4 episodes 진단) ✅
+  → 0.10.f (회고 `phase-0.10.md` + AC 5/5 박제 ADR §12) ✅ → **0.10.g (Phase 0.10 종료
+  결정 라운드 #17 + Phase 1 진입 trigger)**
 
 #### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정) — 분산 효과 (5 종)
 - 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
@@ -972,4 +973,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-08 (§14 + §16 in-place 갱신 — Phase 0.9 종료 + Phase 0.10 진입 박제, ADR 0005 §11 + ADR 0006 §1 박제 후속, sub-step 0.10.a)*
+*마지막 업데이트: 2026-05-08 (§14 — sub-step 0.10.f 완료, ADR 0006 §12 박제 후속, Acceptance Criteria 5/5 충족)*

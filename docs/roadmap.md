@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-08 (sub-step 0.9.2.f / 0.10.a 완료 — ADR 0005 §11 + ADR 0006 §1 박제, Phase 0.9 종료 + Phase 0.10 진입)
+> 마지막 업데이트: 2026-05-08 (sub-step 0.10.f 완료 — Phase 0.10 회고 + Acceptance Criteria 5/5 충족 박제, ADR 0006 §12)
 
 ## 현재 상태
 
@@ -256,12 +256,12 @@
 
 ### Sub-step 매핑 (ADR 0006 §11 박제)
   * **0.10.a: 본 commit — ADR 0006 박제 + ADR 0005 §11 + 시리즈 회고 (`phase-0.9.md`) + CLAUDE.md §16 in-place 갱신 + ADR 0006/0007 명명 변경 + roadmap 갱신** ✅
-  * 0.10.b: Step A — Domain entities 검토 + Drawdown episode detector + 단위 테스트
-  * 0.10.c: Step B — Renderer Protocol + SevenSplitRenderer + DefaultRenderer + Registry
-  * 0.10.d: Step C — Chart adapter (mplfinance) + HTML 리포트 출력기
-  * 0.10.e: Step D — Phase 0.9.2 결과로 end-to-end 통합 + CLI 명령 (`trading report`) + 신규 dummy strategy 검증
-  * 0.10.f: 회고 작성 (`docs/retrospectives/phase-0.10.md`) + Acceptance Criteria 검증 박제
-  * 0.10.g: Phase 0.10 종료 결정 라운드 #17 + Phase 1 진입 trigger
+  * 0.10.b: Step A — Domain entities 검토 + Drawdown episode detector + 단위 테스트 ✅
+  * 0.10.c: Step B — Renderer Protocol + SevenSplitRenderer + DefaultRenderer + Registry ✅
+  * 0.10.d: Step C — Chart adapter (mplfinance) + HTML 리포트 출력기 ✅
+  * 0.10.e: Step D — Phase 0.9.2 결과로 end-to-end 통합 + 신규 dummy strategy 검증 (Phase 0.9.2 = 4 episodes 진단, AC3 검증) ✅
+  * 0.10.f: 회고 (`docs/retrospectives/phase-0.10.md`) + Acceptance Criteria 검증 박제 (ADR 0006 §12, 5/5 충족) ✅
+  * **0.10.g: Phase 0.10 종료 결정 라운드 #17 + Phase 1 진입 trigger**
 
 ---
 
