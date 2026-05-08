@@ -753,11 +753,44 @@ B) <옵션 2와 trade-off>
 ### 분석 phase (진행 중, 2026-05-08 시작) — 사용자 분석 보류
 - 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes / AC 5/5 / ADR 0006 §1~§13)
   검토 후 다음 trajectory 결정
-- 코드 변경 zero (Phase 0.10 박제 보존)
+- 코드 변경 zero (Phase 0.10 박제 보존) — **단, 라운드 #18 (2026-05-09)
+  에서 Phase 0.10.x trajectory 채택 후 본 가독성 sub-step 만 진행 +
+  즉시 종결 (분석 phase 자체는 유지)**
 - 분석 대상 (예시): Phase 0.7.3 vs 0.9.2 비교 / Phase 1 ADR 0007 박제 항목
   우선순위 / Phase 0.10.x 가능성 / 기타 trajectory (Phase 0.7.4 부동산
   / SupportLevel + 개별 주식 / 손절 단독 검증 등)
-- 종료: 라운드 #18 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
+- 종료: 라운드 #19 (가칭) 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
+
+### Phase 0.10.x (완료, 2026-05-09 — 라운드 #18) — Episode HTML Readability
+- 본질: 인프라 후속 보강 (analytical reporting layer 가독성 강화).
+  가설 / 게이트 없음 — Phase 0.10 패턴 동일
+- 평가 기준: Acceptance Criteria 10 항목 (ADR 0006 §14.10) — 10/10 충족
+- 박제 인터페이스 변경 zero (TradeView / Renderer Protocol /
+  DrawdownEpisode 동결). 신규 의존성 zero (`pyproject.toml` 변경 0 줄).
+  도메인 변경 zero
+- ralplan consensus 2 iter — Planner → Architect AGREE-WITH-CHANGES →
+  Critic ITERATE → Planner revise → Architect AGREE → Critic APPROVE
+- 결정: ADR 0006 §14 (라운드 #18). 회고 파일은 분석 phase 종료 시 결정
+- 핵심 결정 (ADR 0006 §14):
+  * §14.5 포매팅 정책 (Decimal places=2 / KRW ``₩`` prefix /
+    KST 일봉 ``"YYYY-MM-DD (요일)"`` / `Decimal.quantize` ROUND_HALF_UP
+    / float 미경유)
+  * §14.6 Cycle 페어링 정책 (list-order FIFO primary, annotation
+    `entry_price` diagnostic only, `realized_pnl (FIFO 표시)` 라벨링,
+    Phase 1 reconciliation 후속)
+  * §14.7 KPI strip 5 deterministic (Drawdown / Duration / Recovered /
+    Trades / Invested) — Realized 미포함
+  * §14.8 표시 vs 모델 분리 원칙 (CLAUDE.md §2.1 / §3.1 보강)
+  * §14.9 SYMBOL_NAMES 위치 (`src/adapters/reporting/symbol_names.py`,
+    DI 주입 가능, Phase 0.11 yaml 분리 보류)
+- 신규 모듈: `src/adapters/reporting/{formatters.py, symbol_names.py}` +
+  `src/application/reporting/cycle_pairing.py`. 수정: `html_writer.py`
+  + 두 renderer (Episode 요약 panel KRW prefix)
+- 신규 테스트: 56개 (formatters 33 + symbol_names 9 + cycle_pairing 14
+  — 7-case rule incl. list-order vs annotation 충돌). 전체 1010/1010 PASS
+- Sub-step (ADR 0006 §14.11 박제): 0.10.h (포매터 + 거래 행) ✅ →
+  0.10.i (KPI strip) ✅ → 0.10.j (cycle pairing application layer +
+  종목별 details) ✅ → 0.10.k (index aggregate + ADR §14 박제 + commit) ✅
 
 #### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정) — 분산 효과 (5 종)
 - 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
@@ -811,16 +844,18 @@ B) <옵션 2와 trade-off>
 ## 16. Phase 1 호환성 의식 (Phase 0.10 종료 + 분석 phase 동안 적용)
 
 > **조건부 룰**. Phase 0.10 정식 종료 (라운드 #17, ADR 0006 §13 박제,
-> 2026-05-08) 후 사용자 분석 phase 동안 본 §16 적용. Phase 1 진입 결정
-> 보류 (라운드 #18 가칭, 사용자 분석 후) — 그동안 코드 변경 zero +
-> Phase 1 호환성 의식 유지.
+> 2026-05-08) 후 사용자 분석 phase 동안 본 §16 적용. **라운드 #18
+> (2026-05-09, ADR 0006 §14 박제) 에서 Phase 0.10.x readability 채택 +
+> 즉시 종결** — 분석 phase 그대로 유지. Phase 1 진입 결정 보류 (라운드
+> #19 가칭, 분석 phase 종료 후) — 그동안 reporting layer 외 코드 변경
+> zero + Phase 1 호환성 의식 유지.
 >
 > 선행: Phase 0.5 동안 (Phase 0.7 호환성) → Phase 0.7 동안 (Phase 1
 > 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
 > 동안 (Phase 1 호환성) → Phase 0.10 동안 (Phase 1 호환성) → 본 §16
-> (Phase 1 호환성, Phase 0.10 종료 + 분석 phase 동안). ADR 0006 §13
-> (라운드 #17 — Phase 0.10 종료 + Phase 1 진입 보류) 박제 후속 갱신
-> (2026-05-08).
+> (Phase 1 호환성, Phase 0.10 종료 + 분석 phase + Phase 0.10.x 동안).
+> ADR 0006 §14 (라운드 #18 — Phase 0.10.x readability) 박제 후속 갱신
+> (2026-05-09).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
@@ -910,6 +945,32 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
 - 🔒 `src/adapters/reporting/` 모듈 (renderers / chart / html_writer /
   registry) — **sub-step 0.10.c ~ 0.10.d 에서만 작성** (ADR 0006 §4 /
   §6 / §7)
+
+**Phase 0.10.x 본질 (ADR 0006 §14 박제 완료, 라운드 #18, 2026-05-09)**:
+- 🔒 `src/adapters/reporting/formatters.py` (Decimal/통화/timestamp/
+  symbol 표시 helper) — **sub-step 0.10.h 에서만 작성** (ADR 0006 §14.5)
+- 🔒 `src/adapters/reporting/symbol_names.py` (SYMBOL_NAMES dict +
+  display_symbol DI) — **sub-step 0.10.h 에서만 작성** (ADR 0006 §14.9)
+- 🔒 `src/application/reporting/cycle_pairing.py` (pair_cycles +
+  match_realized_pnl + Cycle local-frozen) — **sub-step 0.10.j 에서만
+  작성** (ADR 0006 §14.6). list-order FIFO primary, annotation
+  diagnostic only
+- 🔒 `html_writer.py` 가독성 보강 (KPI strip / 종목별 details / cycle
+  table / annotation mini-table / index aggregate) — **sub-step
+  0.10.h~k 에서만 작성** (ADR 0006 §14.7 / §14.11)
+- 🔒 두 renderer (`default.py`, `seven_split.py`) Episode 요약 패널
+  formatter 사용 — **sub-step 0.10.h 에서만 변경** (KRW prefix /
+  format_pct 정합)
+- ❌ `TradeCycleView` 도메인 / application view-model 승격 — Phase
+  0.11 검토 (ADR 0006 §14.4 Option B 거부 박제)
+- ❌ Renderer Protocol `cycle_columns` 확장 — Phase 0.11 검토
+- ❌ jinja2 / plotly / pandas styler / inline JS — Phase 0.11+ (ADR
+  0006 §7.2 / §14.4 Option C 거부)
+- ❌ asset-scope / both-scope episode (`generate_episode_report(scope=...)`)
+  — ADR 0006 §5.5 박제 portfolio only 그대로
+- ❌ 종목 yaml 분리 (`config/symbol_names.yaml`) — Phase 0.11 후보
+- ❌ Realized P&L 외 위험조정 지표 (Sharpe / Calmar episode-내) — KPI
+  5 개로 한정 (ADR 0006 §14.7)
 - 🔒 신규 의존성 (matplotlib / mplfinance / pandas) — pyproject.toml
   `[project.optional-dependencies] reporting` extras (ADR 0006 §6.1).
   Phase 0.10 한정 의존성, 핵심 백테스트는 의존성 zero 유지
@@ -989,4 +1050,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-08 (§14 + §16 in-place 갱신 — sub-step 0.10.g 완료, ADR 0006 §13 박제 후속, Phase 0.10 정식 종료 + 분석 phase 시작 — 라운드 #17)*
+*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.h ~ 0.10.k 완료, ADR 0006 §14 박제 후속, Phase 0.10.x readability 즉시 종결 — 라운드 #18, 분석 phase 그대로 유지)*

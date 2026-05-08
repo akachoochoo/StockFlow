@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-08 (sub-step 0.10.g 완료 — Phase 0.10 정식 종료 + 분석 phase 시작, 라운드 #17 ADR 0006 §13)
+> 마지막 업데이트: 2026-05-09 (sub-step 0.10.h ~ 0.10.k 완료 — Phase 0.10.x readability 즉시 종결, 라운드 #18 ADR 0006 §14, 분석 phase 그대로 유지)
 
 ## 현재 상태
 
@@ -18,8 +18,9 @@
 | **Phase 0.9.1** | **진행 중 (2026-05-07 sub-step 0.9.c PASS)** — 005930 삼성전자 + 005380 현대차 (2 종, 인프라 검증). 사전 검증 lookback 246 + 백테스트 데이터 충족 | ADR 0005 §1.6.2 / §2 |
 | **Phase 0.9.2** | **진행 중 (2026-05-07 진입 결정 라운드 #14 박제)** — 005930 + 005380 + 055550 + 097950 + 015760 (5 종, 업종 분산). 가설: 분산 효과 회복 → 시나리오 C → A/B 변경 가능 여부 검증 | ADR 0005 §8 (라운드 #14 — Phase 0.9.2 진입 결정) |
 | Phase 0.10 | 완료 (2026-05-08, 라운드 #17 종료) — Backtest Reporting Enhancement, AC 5/5 충족 | ADR 0006 §1 ~ §13 |
-| 분석 phase | 진행 중 (2026-05-08 시작) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #18 (가칭) |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #18 후속 | 진입 시 ADR 0007 |
+| Phase 0.10.x | 완료 (2026-05-09, 라운드 #18) — Episode HTML readability, AC 10/10 충족, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §14 |
+| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #19 (가칭) |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #19 후속 | 진입 시 ADR 0007 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -266,14 +267,46 @@
 
 ### 분석 phase (진행 중, 2026-05-08 시작) — 사용자 분석 보류
 - 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes 리포트 + AC 5/5 검증 결과) 검토 후 다음 trajectory 결정
-- 코드 변경 zero (Phase 0.10 박제 보존)
+- 코드 변경 zero (Phase 0.10 박제 보존). **단, 라운드 #18 (2026-05-09)
+  에서 Phase 0.10.x readability 채택 + 즉시 종결 — 분석 phase 자체는 유지**
 - 분석 대상 (예시):
   * Phase 0.9.2 episode 리포트 (HTML) 시각적 분석
   * Phase 0.7.3 vs 0.9.2 비교 (자산군 분산 효과)
   * Phase 1 ADR 0007 박제 항목 10 의 우선순위 재검토
-  * Phase 0.10.x 가능성 (asset scope / 다중 차트 등) 재검토
+  * Phase 0.10.y 가능성 (차트 가독성 / asset scope / 다중 차트 등) 재검토
   * 기타 trajectory (Phase 0.7.4 부동산 / SupportLevel + 개별 주식 / 손절 단독 검증 등)
-- 종료: 라운드 #18 박제 (사용자 분석 결과 + 다음 trajectory 결정)
+- 종료: 라운드 #19 박제 (사용자 분석 결과 + 다음 trajectory 결정)
+
+## Phase 0.10.x (완료, 2026-05-09 — 라운드 #18): Episode HTML Readability
+
+### 진입 + 즉시 종결 결정 라운드 #18 (완료, 2026-05-09) — ADR 0006 §14 박제
+- 사용자 명시: "report 결과가 사람이 알아보기 힘들어. 개선할수 없을까?"
+- ralplan consensus 2 iter (Planner → Architect AGREE-WITH-CHANGES → Critic ITERATE → Planner revise → Architect AGREE → Critic APPROVE)
+- 채택: Option A (in-place formatter helpers + per-symbol details + cycle pairing)
+- 거부: Option B (TradeCycleView + Renderer 확장, Phase 0.11 검토) / Option C (인터랙티브 JS, ADR 0006 §7.2 위반)
+- 분석 phase 자체는 유지 — 라운드 #19 (가칭) 에서 Phase 1 vs Phase 0.10.y vs 기타 trajectory 결정
+
+### 본질 (ADR 0006 §14 박제)
+- 인프라 후속 보강 (analytical reporting layer 가독성 강화)
+- 가설 / 게이트 없음 — Phase 0.10 패턴 동일
+- Acceptance Criteria 10 항목 (ADR 0006 §14.10) — 10/10 충족
+- 박제 인터페이스 변경 zero (TradeView / Renderer Protocol / DrawdownEpisode 동결)
+- 신규 의존성 zero (`pyproject.toml` 변경 0 줄)
+- 도메인 변경 zero
+- 전체 테스트 1010/1010 PASS (신규 56 tests 추가)
+
+### 핵심 결정 (ADR 0006 §14)
+- §14.5 포매팅 정책 — Decimal places=2 / KRW ``₩`` prefix / KST 일봉 ``"YYYY-MM-DD (요일)"`` / `Decimal.quantize` ROUND_HALF_UP / float 미경유
+- §14.6 Cycle 페어링 정책 — list-order FIFO primary, annotation `entry_price` diagnostic only, ``realized_pnl (FIFO 표시)`` 라벨링, Phase 1 reconciliation 후속
+- §14.7 KPI strip 5 deterministic — Drawdown / Duration / Recovered / Trades / Invested (Realized 미포함)
+- §14.8 표시 vs 모델 분리 원칙 — CLAUDE.md §2.1 / §3.1 보강 박제
+- §14.9 SYMBOL_NAMES 위치 — `src/adapters/reporting/symbol_names.py`, DI 주입 가능, Phase 0.11 yaml 분리 보류
+
+### Sub-step 매핑 (ADR 0006 §14.11 박제)
+- 0.10.h (포매터 + 거래 행 + annotation 표) ✅
+- 0.10.i (KPI strip + episode 메타 포매팅) ✅
+- 0.10.j (application-layer cycle pairing + 종목별 details) ✅
+- 0.10.k (index aggregate + ADR §14 박제 + commit) ✅
 
 ---
 
