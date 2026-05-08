@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from src.adapters.reporting.formatters import format_money, format_pct
 from src.ports.strategy_renderer import MarkerStyle, Panel
 
 if TYPE_CHECKING:
@@ -53,11 +54,11 @@ class DefaultRenderer:
             Panel(
                 title="Episode 요약",
                 rows=[
-                    ("episode peak", str(episode.peak_value)),
-                    ("episode trough", str(episode.trough_value)),
-                    ("drawdown_pct", f"{episode.drawdown_pct:+.4f}%"),
+                    ("episode peak", format_money(episode.peak_value)),
+                    ("episode trough", format_money(episode.trough_value)),
+                    ("drawdown_pct", format_pct(episode.drawdown_pct)),
                     ("recovered", "yes" if episode.recovered else "no"),
-                    ("duration_days", str(episode.duration_days)),
+                    ("duration_days", f"{episode.duration_days}일"),
                     ("total buys", str(buys)),
                     ("total sells", str(sells)),
                 ],

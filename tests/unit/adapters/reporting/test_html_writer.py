@@ -97,9 +97,11 @@ class TestWriteEpisodeHtml:
         assert "Episode 메타데이터" in html
         assert "<th>peak_date</th><td>2024-01-01</td>" in html
         assert "<th>trough_date</th><td>2024-01-05</td>" in html
-        assert "-15.0000%" in html
+        # AC1: places <= 2; AC2: KRW thousand separator
+        assert "-15.00%" in html
+        assert "<th>peak_value</th><td>₩100</td>" in html
         assert "<th>recovered</th><td>yes</td>" in html
-        assert "<th>duration_days</th><td>9</td>" in html
+        assert "<th>duration_days</th><td>9일</td>" in html
 
     def test_unrecovered_episode_meta(self, tmp_path: Path):
         out = tmp_path / "ep.html"
@@ -166,9 +168,15 @@ class TestWriteEpisodeHtml:
         write_episode_html(_episode(), _TINY_PNG, trades, [], out)
         html = out.read_text(encoding="utf-8")
         assert "거래 로그 (2)" in html
-        assert "069500" in html
-        assert "split_number=2" in html
-        assert "slot_number=1" in html
+        # AC3: code + name display
+        assert "069500 KODEX 200" in html
+        # AC8: annotations rendered as mini-table, NOT comma string
+        assert "split_number=" not in html  # legacy comma format gone
+        assert '<table class="annot-mini">' in html
+        assert "<th>split_number</th><td>2</td>" in html
+        assert "<th>slot_number</th><td>1</td>" in html
+        # AC1: profit_pct formatted to 2 places, signed
+        assert "<th>profit_pct</th><td>+10.00%</td>" in html
         # CSS class for side
         assert 'class="side-buy">BUY' in html
         assert 'class="side-sell">SELL' in html
@@ -203,6 +211,124 @@ class TestWriteEpisodeHtml:
         html = out.read_text(encoding="utf-8")
         assert html.startswith("<!DOCTYPE html>")
         assert 'charset="utf-8"' in html
+
+    def test_kpi_strip_renders(self, tmp_path: Path):
+        # AC6 — 5 deterministic KPIs, no realized P&L in top strip.
+        out = tmp_path / "ep.html"
+        trades = [
+            _trade(
+                side="BUY",
+                timestamp=datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+                annotations={"actual_cost": "9990"},
+            ),
+            _trade(
+                side="SELL",
+                timestamp=datetime(2024, 1, 5, 0, 0, 0, tzinfo=UTC),
+            ),
+        ]
+        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        html = out.read_text(encoding="utf-8")
+        assert '<div class="kpi-strip">' in html
+        # 5 KPI labels — exact text
+        for label in ("Drawdown", "Duration", "Recovered", "Trades",
+                      "Invested"):
+            assert f"<div class=\"label\">{label}</div>" in html, label
+        # Trades 카운트 split
+        assert "1 buys / 1 sells" in html
+        # No realized P&L in top strip
+        assert "Realized" not in html
+
+    def test_per_symbol_details_renders(self, tmp_path: Path):
+        # AC4 — <details> 그룹 per symbol
+        out = tmp_path / "ep.html"
+        trades = [
+            _trade(
+                side="BUY",
+                timestamp=datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+            ),
+            _trade(
+                side="SELL",
+                timestamp=datetime(2024, 1, 5, 0, 0, 0, tzinfo=UTC),
+            ),
+        ]
+        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        html = out.read_text(encoding="utf-8")
+        assert '<details class="symbol-group" open>' in html
+        # Symbol display name in summary
+        assert "069500 KODEX 200" in html
+        # FIFO 표시 column header (Critic patch C3)
+        assert "realized_pnl (FIFO 표시)" in html
+
+    def test_multi_symbol_groups(self, tmp_path: Path):
+        out = tmp_path / "ep.html"
+        trades = [
+            TradeView(
+                timestamp=datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+                symbol="005930", side="BUY", price=Decimal("70000"),
+                quantity=Decimal("10"), strategy_id="price_drop",
+                annotations={},
+            ),
+            TradeView(
+                timestamp=datetime(2024, 1, 3, 0, 0, 0, tzinfo=UTC),
+                symbol="005380", side="BUY", price=Decimal("130000"),
+                quantity=Decimal("5"), strategy_id="price_drop",
+                annotations={},
+            ),
+        ]
+        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        html = out.read_text(encoding="utf-8")
+        # Two <details> groups
+        assert html.count('<details class="symbol-group" open>') == 2
+        assert "005930 삼성전자" in html
+        assert "005380 현대차" in html
+
+    def test_symbol_names_injected_overrides_default(self, tmp_path: Path):
+        # AC: symbol_names DI works
+        out = tmp_path / "ep.html"
+        trades = [
+            _trade(
+                side="BUY",
+                timestamp=datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+            ),
+        ]
+        write_episode_html(
+            _episode(), _TINY_PNG, trades, [], out,
+            symbol_names={"069500": "MyAlias"},
+        )
+        html = out.read_text(encoding="utf-8")
+        assert "069500 MyAlias" in html
+        assert "KODEX 200" not in html  # default mapping overridden
+
+    def test_no_thousand_long_decimals_in_html(self, tmp_path: Path):
+        # AC1 regression — no Decimal.full_repr (>= 3 decimal places)
+        # in trade table values. Excludes annotations container which may
+        # hold unknown-key strings (handled by escape only).
+        import re
+        out = tmp_path / "ep.html"
+        trades = [
+            _trade(
+                side="BUY",
+                timestamp=datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+                annotations={
+                    "trigger_price": "37947.64529058116232464929860",
+                    "profit_pct": "11.11111111111111111",
+                },
+            ),
+        ]
+        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        html = out.read_text(encoding="utf-8")
+        # Strip chart base64 line + raw embed lines
+        # then check no >\d+\.\d{3,}< (cell-bounded numbers with 3+
+        # decimals).
+        no_chart = re.sub(
+            r'data:image/png;base64,[A-Za-z0-9+/=]+', '', html,
+        )
+        long_decimal_in_cell = re.search(
+            r'>[+-]?\d+\.\d{3,}', no_chart,
+        )
+        assert long_decimal_in_cell is None, (
+            f"Found long decimal: {long_decimal_in_cell.group()}"
+        )
 
 
 class TestWriteIndexHtml:
@@ -256,4 +382,28 @@ class TestWriteIndexHtml:
         out = tmp_path / "index.html"
         write_index_html([_episode()], [Path("ep.html")], out)
         html = out.read_text(encoding="utf-8")
-        assert "-15.0000%" in html
+        # AC1: places <= 2 (was 4 places before Phase 0.10.h)
+        assert "-15.00%" in html
+        assert "-15.0000%" not in html
+
+    def test_aggregate_row(self, tmp_path: Path):
+        # AC: index page aggregate (Phase 0.10.k)
+        out = tmp_path / "index.html"
+        eps = [
+            _episode(asset_code="005930"),
+            _episode(asset_code="005380", recovered=False),
+        ]
+        write_index_html(
+            eps, [Path("e1.html"), Path("e2.html")], out,
+        )
+        html = out.read_text(encoding="utf-8")
+        assert '<div class="aggregate">' in html
+        assert "총 episode: 2" in html
+        assert "recovered ratio: 1/2" in html
+
+    def test_aggregate_omitted_when_empty(self, tmp_path: Path):
+        out = tmp_path / "index.html"
+        write_index_html([], [], out)
+        html = out.read_text(encoding="utf-8")
+        # No episodes → no aggregate
+        assert '<div class="aggregate">' not in html

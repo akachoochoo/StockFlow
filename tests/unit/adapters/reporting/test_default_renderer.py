@@ -80,8 +80,9 @@ class TestDiagnosticPanels:
     def test_summary_includes_metrics(self):
         panels = DefaultRenderer().diagnostic_panels([], _episode())
         rows = dict(panels[0].rows)
-        assert rows["episode peak"] == "100"
-        assert rows["episode trough"] == "88"
+        # Phase 0.10.h — Money formatted via format_money (KRW prefix)
+        assert rows["episode peak"] == "₩100"
+        assert rows["episode trough"] == "₩88"
         assert "drawdown_pct" in rows
         assert rows["recovered"] == "yes"
         assert rows["total buys"] == "0"

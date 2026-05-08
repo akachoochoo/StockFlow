@@ -124,8 +124,9 @@ class TestDiagnosticPanels:
         e = _episode()
         panels = r.diagnostic_panels([], e)
         rows = dict(panels[0].rows)
-        assert rows["episode peak"] == "100"
-        assert rows["episode trough"] == "85"
+        # Phase 0.10.h — Money formatted via format_money (KRW prefix)
+        assert rows["episode peak"] == "₩100"
+        assert rows["episode trough"] == "₩85"
         assert "drawdown_pct" in rows
         assert rows["recovered"] == "yes"
         assert rows["total buys"] == "0"
