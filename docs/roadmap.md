@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-09 (sub-step 0.10.z.a 완료 — Phase 0.10.z slot annotation injection 즉시 종결, 라운드 #20 ADR 0006 §16, 분석 phase 그대로 유지)
+> 마지막 업데이트: 2026-05-09 (sub-step 0.10.aa.a 완료 — Phase 0.10.aa per-symbol chart panels 즉시 종결, 라운드 #21 ADR 0006 §17, 분석 phase 그대로 유지)
 
 ## 현재 상태
 
@@ -21,8 +21,9 @@
 | Phase 0.10.x | 완료 (2026-05-09, 라운드 #18) — Episode HTML readability, AC 10/10 충족, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §14 |
 | Phase 0.10.y | 완료 (2026-05-09, 라운드 #19) — Chart legend + Strategy info, AC 12/12 충족, Protocol §4.2 + slot §4.3.1 보존, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §15 |
 | Phase 0.10.z | 완료 (2026-05-09, 라운드 #20) — Slot annotation injection (chart 검정 마커 버그 fix), AC 12/12 충족, Protocol + slot palette 보존, 도메인 reasoning dict 변경 zero — Clean Architecture 정합 | ADR 0006 §16 |
-| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x / 0.10.y / 0.10.z 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #21 (가칭) |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #21 후속 | 진입 시 ADR 0007 |
+| Phase 0.10.aa | 완료 (2026-05-09, 라운드 #21) — Per-symbol chart panels (단일 차트에 5종목 marker outlier 문제 fix), AC 14/14 충족, Protocol + slot palette 보존, `write_episode_html` charts list 시그니처 (breaking) | ADR 0006 §17 |
+| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x / 0.10.y / 0.10.z / 0.10.aa 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #22 (가칭) |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #22 후속 | 진입 시 ADR 0007 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -273,7 +274,8 @@
   에서 Phase 0.10.x readability 채택 + 즉시 종결, 라운드 #19 (2026-05-09)
   에서 Phase 0.10.y chart legend + strategy info 채택 + 즉시 종결, 라운드
   #20 (2026-05-09) 에서 Phase 0.10.z slot annotation injection 채택 + 즉시
-  종결 — 분석 phase 자체는 유지**
+  종결, 라운드 #21 (2026-05-09) 에서 Phase 0.10.aa per-symbol chart panels
+  채택 + 즉시 종결 — 분석 phase 자체는 유지**
 - 분석 대상 (예시):
   * Phase 0.9.2 episode 리포트 (HTML) 시각적 분석
   * Phase 0.7.3 vs 0.9.2 비교 (자산군 분산 효과)
@@ -281,7 +283,7 @@
   * Phase 0.10.aa 가능성 (vestigial cleanup / asset scope / 다중 차트 / 멀티
     strategy 등) 재검토
   * 기타 trajectory (Phase 0.7.4 부동산 / SupportLevel + 개별 주식 / 손절 단독 검증 등)
-- 종료: 라운드 #21 박제 (사용자 분석 결과 + 다음 trajectory 결정)
+- 종료: 라운드 #22 박제 (사용자 분석 결과 + 다음 trajectory 결정)
 
 ## Phase 0.10.x (완료, 2026-05-09 — 라운드 #18): Episode HTML Readability
 
@@ -397,6 +399,52 @@
 
 ### Sub-step 매핑 (ADR 0006 §16.9 박제, 1 sub-step)
 - 0.10.z.a (application enrichment + adapter align + tests + 박제 + commit) ✅
+
+---
+
+## Phase 0.10.aa (완료, 2026-05-09 — 라운드 #21): Per-Symbol Chart Panels
+
+### 진입 + 즉시 종결 결정 라운드 #21 (완료, 2026-05-09) — ADR 0006 §17 박제
+- 사용자 명시 (트리거): "종목이 5개인데 차트는 하나이고, 종목별 가격대가
+  다른데 여기에 모든 매수/매도 마트를 찍으니 확인하기 어려운 차트가
+  되어버린것 같아"
+- 사용자 명시 (옵션): "/ralplan A로 진행해줘 종목별 per-symbol chart panel"
+- ralplan consensus 2 iter (Architect AGREE-WITH-CHANGES E1-E5 + Critic
+  ITERATE 8 patches → APPROVE)
+- 채택: A1 application-layer per-symbol orchestration — N independent
+  charts in `<details class="chart-symbol" open>` stack
+- 거부: A2 (adapter helper iteration), 단일 차트 + symbol marker 필터만,
+  multi-panel mpf (panel_ratios), `chart_symbol` no-op deprecated
+- 분석 phase 그대로 유지 — 라운드 #22 (가칭) 에서 Phase 1 vs 기타 trajectory 결정
+
+### 본질 (ADR 0006 §17.2 박제)
+- 인프라 보강 (chart layout per-symbol panels). 5종목 가격대 25k~250k 차이로
+  단일 chart 의 y-axis auto-scale 이 outlier marker 에 지배되어 캔들 납작화
+  발생 — 종목별 panel stack 으로 해결
+- Acceptance Criteria 14 항목 — 14/14 충족
+- 박제 인터페이스 변경: `write_episode_html(charts: Sequence[tuple[str, bytes]])`
+  (breaking — `chart_png: bytes` 폐기). Protocol §4.2 / `MarkerStyle` /
+  SevenSplit slot palette §4.3.1 모두 보존
+- 신규 의존성 zero / 도메인 변경 zero
+- 전체 테스트 1050/1050 PASS (신규 4 tests). 시각: 5 chart panels per episode,
+  sorted 순서 (005380 / 005930 / 015760 / 055550 / 097950)
+
+### 핵심 결정 (ADR 0006 §17)
+- §17.3 A1 application-layer per-symbol orchestration — `chart.py` 단일-symbol
+  계약 보존 (adapter portfolio-aware 강요 회피)
+- §17.4 `skip_empty_symbols: bool = False` kwarg — default render-all
+  (cross-symbol context 보존)
+- §17.5 `<details class="chart-symbol" open>` per-symbol HTML 구조 — CSS
+  shared selector with `.symbol-group, .strategy-info`
+- §17.6 `chart_symbol` 파라미터 explicit 제거 — silent-ignore "no-op
+  deprecated" 거부 (CLAUDE.md §13.3 정합)
+- §17.7 Pinned chart symbol order = `sorted(bars_by_asset.keys())` —
+  yaml load order / dict 구성에 결합되지 않은 deterministic layout
+- §17.8 자동화된 figure-leak AC — `plt.get_fignums() == []` (CI 게이트)
+- §17.9 multi-panel mpf 거부 — N independent figures 단순성 우선
+
+### Sub-step 매핑 (ADR 0006 §17.11 박제, 1 sub-step)
+- 0.10.aa.a (application orchestrator + adapter HTML template + script + tests + ADR 박제) ✅
 
 ---
 

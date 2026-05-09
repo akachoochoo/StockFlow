@@ -761,6 +761,49 @@ B) <옵션 2와 trade-off>
   / SupportLevel + 개별 주식 / 손절 단독 검증 등)
 - 종료: 라운드 #19 (가칭) 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
 
+### Phase 0.10.aa (완료, 2026-05-09 — 라운드 #21) — Per-Symbol Chart Panels
+- 본질: episode HTML 의 단일 chart 가 5 종목 (가격대 25k~250k) 의 모든
+  trade marker 를 그려서 y-axis auto-scale 이 outlier 에 지배됨 + 캔들
+  납작화 발생. 종목별 chart panel stack 으로 해결
+- 평가 기준: Acceptance Criteria 14 항목 (ADR 0006 §17.10) — 14/14 충족
+- 박제 인터페이스 변경: `write_episode_html(charts: Sequence[tuple[str, bytes]])`
+  (breaking — `chart_png: bytes` 폐기). Protocol §4.2 / `MarkerStyle` /
+  SevenSplit slot palette §4.3.1 모두 보존
+- 신규 의존성 zero. 도메인 변경 zero
+- ralplan consensus 2 iter — Architect E1-E5 (sorted order / figure-leak AC /
+  no-op kwarg 삭제 / skip_empty_symbols / tab UI deferral) + Critic 8 patches
+  후 APPROVE
+- 결정: ADR 0006 §17 (라운드 #21). 회고는 분석 phase 종료 시 결정
+- 핵심 결정 (ADR 0006 §17):
+  * §17.3 A1 application-layer per-symbol orchestration — `report.py` 가
+    `for symbol in sorted(bars_by_asset.keys())` 루프. `chart.py` 단일-symbol
+    계약 보존 (adapter portfolio-aware 강요 회피, ADR §8 dependency 정합)
+  * §17.4 `skip_empty_symbols: bool = False` kwarg — default render-all
+    (cross-symbol context 보존), True 시 trade 없는 symbol 의 panel 제외
+  * §17.5 `<details class="chart-symbol" open>` per-symbol HTML 구조 — CSS
+    shared selector with `.symbol-group, .strategy-info` (per-symbol 정합)
+  * §17.6 `chart_symbol` 파라미터 explicit 제거 — silent-ignore "no-op
+    deprecated" 거부 (CLAUDE.md §13.3 정합). E3-A 채택
+  * §17.7 Pinned chart symbol order = `sorted(bars_by_asset.keys())` —
+    yaml load order / dict 구성에 결합되지 않은 deterministic layout
+  * §17.8 자동화된 figure-leak AC — `plt.get_fignums() == []` after
+    `generate_episode_report` (CI 게이트, smoke test 거부)
+  * §17.9 multi-panel mpf 거부 — N independent figures 단순성 우선
+- 변경: `src/application/reporting/report.py` (sorted loop +
+  `_filter_trades_by_symbol` helper + `skip_empty_symbols` kwarg +
+  `chart_symbol` 제거) / `src/adapters/reporting/html_writer.py`
+  (`charts: Sequence[tuple[str, bytes]]` 시그니처 + `_render_charts_section`
+  helper + `<details class="chart-symbol">` 템플릿 + CSS shared selector) /
+  `scripts/generate_phase_0_9_2_report.py` (--chart-symbol argparse 제거 +
+  kwarg 제거)
+- 신규 테스트: 4 (chart_panel_order_sorted / no_figure_leak / skip_empty_symbols
+  excludes / default renders all). 기존 1 test 제거 (test_unknown_chart_symbol_rejected).
+  전체 1050/1050 PASS
+- 시각 검증: `report/episode_1.html` 재생성 — 5 chart panels (5 종목, sorted
+  순서: 005380 / 005930 / 015760 / 055550 / 097950), `<img>` count = 5
+- Sub-step (ADR 0006 §17.11 박제): 0.10.aa.a (single sub-step — 코드 + 테스트 +
+  ADR 박제 + commit) ✅
+
 ### Phase 0.10.z (완료, 2026-05-09 — 라운드 #20) — Slot Annotation Injection
 - 본질: 분석 phase 발견 버그 fix (chart 마커 모두 검정 = `_slot()` fallback 0).
   Application layer 가 view-only annotations 에 도메인 typed `slot_number`
@@ -927,7 +970,7 @@ B) <옵션 2와 trade-off>
 > 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
 > 동안 (Phase 1 호환성) → Phase 0.10 동안 (Phase 1 호환성) → 본 §16
 > (Phase 1 호환성, Phase 0.10 종료 + 분석 phase + Phase 0.10.x 동안).
-> ADR 0006 §16 (라운드 #20 — Phase 0.10.z slot annotation injection) 박제
+> ADR 0006 §17 (라운드 #21 — Phase 0.10.aa per-symbol chart panels) 박제
 > 후속 갱신 (2026-05-09).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
@@ -1100,6 +1143,26 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
 - ❌ `html_writer.py:575` `_INT_KEYS` 의 `split_number` 부분 cleanup — Phase
   0.11+ deferred (ADR 0006 §16.7)
 - ❌ 멀티 strategy 동시 차트 (renderer-per-trade dispatch) — Phase 1+ ADR 0007
+
+**Phase 0.10.aa 본질 (ADR 0006 §17 박제 완료, 라운드 #21, 2026-05-09)**:
+- 🔒 `src/application/reporting/report.py` `generate_episode_report` 내부
+  `for symbol in sorted(bars_by_asset.keys())` 루프 + `_filter_trades_by_symbol`
+  helper + `skip_empty_symbols: bool = False` kwarg — **sub-step 0.10.aa.a
+  에서만 작성** (ADR 0006 §17.3, §17.4, §17.7)
+- 🔒 `src/adapters/reporting/html_writer.py` `write_episode_html(charts:
+  Sequence[tuple[str, bytes]])` 시그니처 (breaking — `chart_png: bytes` 폐기)
+  + `_render_charts_section` helper + `<details class="chart-symbol" open>`
+  per-symbol 템플릿 + CSS shared selector `.symbol-group, .chart-symbol,
+  .strategy-info` — **sub-step 0.10.aa.a 에서만 작성** (ADR 0006 §17.5)
+- 🔒 자동화된 figure-leak AC — `plt.get_fignums() == []` after
+  `generate_episode_report` (CI 게이트). smoke test 거부 (ADR 0006 §17.8)
+- 🔒 `chart_symbol` 파라미터 explicit 제거 — silent-ignore "no-op deprecated"
+  거부 (E3-A, ADR §17.6). 복원 금지
+- ❌ 탭 UI (`<input type=radio>` + CSS `:checked`) — Phase 0.10.bb / Phase
+  0.11+ multi-asset KIS (≥10 symbols) 시 검토 (ADR 0006 §17.12)
+- ❌ `mpf.plot(panel_ratios=...)` multi-panel single figure — Q5b 거부
+  (per-panel y-axis 격리 부분적 + 독립 legend mpf API 제약)
+- ❌ Asset-scope episode (`scope="asset"` / `"both"`) — ADR §5.5 박제 그대로
 - 🔒 신규 의존성 (matplotlib / mplfinance / pandas) — pyproject.toml
   `[project.optional-dependencies] reporting` extras (ADR 0006 §6.1).
   Phase 0.10 한정 의존성, 핵심 백테스트는 의존성 zero 유지
@@ -1179,4 +1242,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.z.a 완료, ADR 0006 §16 박제 후속, Phase 0.10.z slot annotation injection 즉시 종결 — 라운드 #20, 분석 phase 그대로 유지)*
+*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.aa.a 완료, ADR 0006 §17 박제 후속, Phase 0.10.aa per-symbol chart panels 즉시 종결 — 라운드 #21, 분석 phase 그대로 유지)*
