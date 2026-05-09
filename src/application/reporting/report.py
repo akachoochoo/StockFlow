@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from src.application.backtest_runner import BacktestResult
     from src.application.reporting.episode import DrawdownEpisode
+    from src.application.reporting.strategy_info import StrategyInfo
     from src.application.reporting.trade_view import TradeView
     from src.domain.models import OHLCV, PortfolioSnapshot
 
@@ -67,6 +68,7 @@ def generate_episode_report(
     scope: ScopeT = "portfolio",
     chart_symbol: str | None = None,
     title: str = "Backtest Drawdown Episodes",
+    strategy_info: StrategyInfo | None = None,
 ) -> EpisodeReportResult:
     """Generate per-episode HTML report from a BacktestResult.
 
@@ -162,6 +164,7 @@ def generate_episode_report(
             trades=ep_trades,
             panels=panels,
             output_path=ep_path,
+            strategy_info=strategy_info,
         )
         episode_html_paths.append(ep_path)
 
@@ -173,6 +176,7 @@ def generate_episode_report(
         episode_paths=[_Path(p.name) for p in episode_html_paths],
         output_path=index_path,
         title=title,
+        strategy_info=strategy_info,
     )
 
     return EpisodeReportResult(
