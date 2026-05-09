@@ -58,24 +58,26 @@ def _trade(
 # Tiny PNG header bytes for chart embed test
 _PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 _TINY_PNG = _PNG_HEADER + b"\x00" * 50
+# Phase 0.10.aa (ADR §17): write_episode_html now takes charts list
+_TINY_CHARTS: list[tuple[str, bytes]] = [("069500", _TINY_PNG)]
 
 
 class TestWriteEpisodeHtml:
     def test_writes_file(self, tmp_path: Path):
         out = tmp_path / "episode_1.html"
-        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], [], out)
         assert out.exists()
         assert out.is_file()
 
     def test_creates_parent_dirs(self, tmp_path: Path):
         out = tmp_path / "deep" / "nested" / "dir" / "ep.html"
-        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], [], out)
         assert out.exists()
 
     def test_includes_title(self, tmp_path: Path):
         out = tmp_path / "ep.html"
         write_episode_html(
-            _episode(asset_code="005930"), _TINY_PNG, [], [], out,
+            _episode(asset_code="005930"), _TINY_CHARTS, [], [], out,
         )
         html = out.read_text(encoding="utf-8")
         assert "005930" in html
@@ -84,7 +86,7 @@ class TestWriteEpisodeHtml:
     def test_custom_title(self, tmp_path: Path):
         out = tmp_path / "ep.html"
         write_episode_html(
-            _episode(), _TINY_PNG, [], [], out, title="Custom Title 42",
+            _episode(), _TINY_CHARTS, [], [], out, title="Custom Title 42",
         )
         html = out.read_text(encoding="utf-8")
         assert "<title>Custom Title 42</title>" in html
@@ -92,7 +94,7 @@ class TestWriteEpisodeHtml:
 
     def test_episode_meta_table(self, tmp_path: Path):
         out = tmp_path / "ep.html"
-        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], [], out)
         html = out.read_text(encoding="utf-8")
         assert "Episode 메타데이터" in html
         assert "<th>peak_date</th><td>2024-01-01</td>" in html
@@ -106,7 +108,7 @@ class TestWriteEpisodeHtml:
     def test_unrecovered_episode_meta(self, tmp_path: Path):
         out = tmp_path / "ep.html"
         write_episode_html(
-            _episode(recovered=False), _TINY_PNG, [], [], out,
+            _episode(recovered=False), _TINY_CHARTS, [], [], out,
         )
         html = out.read_text(encoding="utf-8")
         assert "<th>recovered</th><td>no</td>" in html
@@ -114,7 +116,7 @@ class TestWriteEpisodeHtml:
 
     def test_chart_base64_embed(self, tmp_path: Path):
         out = tmp_path / "ep.html"
-        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], [], out)
         html = out.read_text(encoding="utf-8")
         expected_b64 = base64.b64encode(_TINY_PNG).decode("ascii")
         assert f"data:image/png;base64,{expected_b64}" in html
@@ -131,7 +133,7 @@ class TestWriteEpisodeHtml:
                 rows=[("slot 1", "buys=2 / sells=1")],
             ),
         ]
-        write_episode_html(_episode(), _TINY_PNG, [], panels, out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], panels, out)
         html = out.read_text(encoding="utf-8")
         assert "<h2>Episode 요약</h2>" in html
         assert "<th>total buys</th><td>5</td>" in html
@@ -142,7 +144,7 @@ class TestWriteEpisodeHtml:
         out = tmp_path / "ep.html"
         write_episode_html(
             _episode(),
-            _TINY_PNG,
+            _TINY_CHARTS,
             [],
             [Panel(title="Empty", rows=[])],
             out,
@@ -165,7 +167,7 @@ class TestWriteEpisodeHtml:
                 annotations={"slot_number": "1", "profit_pct": "10.0"},
             ),
         ]
-        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, trades, [], out)
         html = out.read_text(encoding="utf-8")
         assert "거래 로그 (2)" in html
         # AC3: code + name display
@@ -186,7 +188,7 @@ class TestWriteEpisodeHtml:
 
     def test_empty_trades_shows_placeholder(self, tmp_path: Path):
         out = tmp_path / "ep.html"
-        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], [], out)
         html = out.read_text(encoding="utf-8")
         assert "거래 로그 (0)" in html
         assert "no trades in episode" in html
@@ -195,7 +197,7 @@ class TestWriteEpisodeHtml:
         """special chars escaped — XSS / 깨진 HTML 방지."""
         out = tmp_path / "ep.html"
         evil_trade = _trade(annotations={"key": "<script>alert(1)</script>"})
-        write_episode_html(_episode(), _TINY_PNG, [evil_trade], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [evil_trade], [], out)
         html = out.read_text(encoding="utf-8")
         assert "<script>alert" not in html
         assert "&lt;script&gt;" in html
@@ -203,14 +205,14 @@ class TestWriteEpisodeHtml:
     def test_portfolio_asset_label_default(self, tmp_path: Path):
         out = tmp_path / "ep.html"
         write_episode_html(
-            _episode(asset_code=None), _TINY_PNG, [], [], out,
+            _episode(asset_code=None), _TINY_CHARTS, [], [], out,
         )
         html = out.read_text(encoding="utf-8")
         assert "(portfolio)" in html
 
     def test_doctype_and_charset(self, tmp_path: Path):
         out = tmp_path / "ep.html"
-        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], [], out)
         html = out.read_text(encoding="utf-8")
         assert html.startswith("<!DOCTYPE html>")
         assert 'charset="utf-8"' in html
@@ -229,7 +231,7 @@ class TestWriteEpisodeHtml:
                 timestamp=datetime(2024, 1, 5, 0, 0, 0, tzinfo=UTC),
             ),
         ]
-        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, trades, [], out)
         html = out.read_text(encoding="utf-8")
         assert '<div class="kpi-strip">' in html
         # 5 KPI labels — exact text
@@ -254,7 +256,7 @@ class TestWriteEpisodeHtml:
                 timestamp=datetime(2024, 1, 5, 0, 0, 0, tzinfo=UTC),
             ),
         ]
-        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, trades, [], out)
         html = out.read_text(encoding="utf-8")
         assert '<details class="symbol-group" open>' in html
         # Symbol display name in summary
@@ -278,7 +280,7 @@ class TestWriteEpisodeHtml:
                 annotations={},
             ),
         ]
-        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, trades, [], out)
         html = out.read_text(encoding="utf-8")
         # Two <details> groups
         assert html.count('<details class="symbol-group" open>') == 2
@@ -295,7 +297,7 @@ class TestWriteEpisodeHtml:
             ),
         ]
         write_episode_html(
-            _episode(), _TINY_PNG, trades, [], out,
+            _episode(), _TINY_CHARTS, trades, [], out,
             symbol_names={"069500": "MyAlias"},
         )
         html = out.read_text(encoding="utf-8")
@@ -318,7 +320,7 @@ class TestWriteEpisodeHtml:
                 },
             ),
         ]
-        write_episode_html(_episode(), _TINY_PNG, trades, [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, trades, [], out)
         html = out.read_text(encoding="utf-8")
         # Strip chart base64 line + raw embed lines
         # then check no >\d+\.\d{3,}< (cell-bounded numbers with 3+
@@ -442,7 +444,7 @@ class TestStrategyInfoSection:
         # AC11 — section present with all 8 rows
         out = tmp_path / "ep.html"
         write_episode_html(
-            _episode(), _TINY_PNG, [], [], out,
+            _episode(), _TINY_CHARTS, [], [], out,
             strategy_info=self._info(),
         )
         html = out.read_text(encoding="utf-8")
@@ -469,7 +471,7 @@ class TestStrategyInfoSection:
     ):
         # AC12 — backwards-compat
         out = tmp_path / "ep.html"
-        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        write_episode_html(_episode(), _TINY_CHARTS, [], [], out)
         html = out.read_text(encoding="utf-8")
         assert html.count("전략 정보") == 0
         assert '<details class="strategy-info"' not in html
@@ -512,7 +514,7 @@ class TestStrategyInfoSection:
         )
         out = tmp_path / "ep.html"
         write_episode_html(
-            _episode(), _TINY_PNG, [], [], out, strategy_info=info,
+            _episode(), _TINY_CHARTS, [], [], out, strategy_info=info,
         )
         html = out.read_text(encoding="utf-8")
         # No raw < > in attacker-controlled positions (strategy / params /

@@ -77,18 +77,20 @@ th {{ background: #f8f9fa; font-weight: 600; }}
                 text-transform: uppercase; letter-spacing: 0.5px; }}
 .kpi .value {{ font-size: 18px; font-weight: 600; color: #2c3e50;
                 margin-top: 4px; }}
-.symbol-group {{ margin: 14px 0; }}
-.symbol-group summary {{ cursor: pointer; padding: 8px 12px;
-                          background: #f8f9fa; border: 1px solid #ddd;
-                          border-radius: 4px; font-weight: 600; }}
-.symbol-group summary:hover {{ background: #ecf0f1; }}
-.symbol-group[open] summary {{ background: #e8eef4; }}
-.strategy-info {{ margin: 14px 0; }}
+.symbol-group, .chart-symbol, .strategy-info {{ margin: 14px 0; }}
+.symbol-group summary,
+.chart-symbol summary,
 .strategy-info summary {{ cursor: pointer; padding: 8px 12px;
                            background: #f8f9fa; border: 1px solid #ddd;
                            border-radius: 4px; font-weight: 600; }}
+.symbol-group summary:hover,
+.chart-symbol summary:hover,
 .strategy-info summary:hover {{ background: #ecf0f1; }}
+.symbol-group[open] summary,
+.chart-symbol[open] summary,
 .strategy-info[open] summary {{ background: #e8eef4; }}
+.chart-symbol img {{ max-width: 100%; height: auto;
+                     border: 1px solid #ddd; margin-top: 8px; }}
 .cycle-table {{ margin: 8px 0 16px 0; }}
 .cycle-pnl-pos {{ color: #27ae60; }}
 .cycle-pnl-neg {{ color: #c0392b; }}
@@ -117,10 +119,8 @@ th {{ background: #f8f9fa; font-weight: 600; }}
 {episode_meta_rows}
 </table>
 
-<div class="chart">
 <h2>차트</h2>
-<img src="data:image/png;base64,{chart_b64}" alt="Episode chart">
-</div>
+{charts_html}
 
 {panels_html}
 
@@ -192,7 +192,7 @@ th {{ background: #f8f9fa; font-weight: 600; }}
 
 def write_episode_html(
     episode: DrawdownEpisode,
-    chart_png: bytes,
+    charts: Sequence[tuple[str, bytes]],
     trades: Sequence[TradeView],
     panels: Sequence[Panel],
     output_path: Path,
@@ -205,7 +205,11 @@ def write_episode_html(
 
     Args:
         episode: DrawdownEpisode
-        chart_png: render_episode_chart() 결과 (PNG bytes, base64 embed)
+        charts: per-symbol chart panel list — ``[(symbol_code, png_bytes), ...]``.
+            ``sorted(symbol)`` order 권장 (caller 책임). 각 PNG 는 base64
+            embed 되어 ``<details class="chart-symbol" open>`` 블록 안에 표시.
+            Phase 0.10.aa (ADR §17) 박제 — 이전 단일 ``chart_png: bytes``
+            시그니처 breaking change.
         trades: 거래 로그 (전체 또는 episode 구간 — 호출자가 필터)
         panels: 전략별 진단 패널 (renderer.diagnostic_panels 결과)
         output_path: 출력 HTML 경로 (parent dirs 자동 생성)
@@ -213,6 +217,7 @@ def write_episode_html(
         symbol_names: 종목 코드 → 표시명 mapping. None = 모듈 default
             ``SYMBOL_NAMES`` (Phase 0.10.h). Phase 0.11 yaml 분리 시
             single-arg flip 으로 교체.
+        strategy_info: 전략 정보 (Phase 0.10.y, ADR §15.6).
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -226,7 +231,7 @@ def write_episode_html(
             f"drawdown {format_pct(episode.drawdown_pct)}"
         )
 
-    chart_b64 = base64.b64encode(chart_png).decode("ascii")
+    charts_html = _render_charts_section(charts, symbol_names)
 
     # KPI strip — 5 deterministic facts (Phase 0.10.i, ADR §14)
     kpi_strip = _render_kpi_strip(episode, trades)
@@ -282,7 +287,7 @@ def write_episode_html(
         strategy_info_html=_render_strategy_info_section(strategy_info),
         kpi_strip=kpi_strip,
         episode_meta_rows=episode_meta_rows,
-        chart_b64=chart_b64,
+        charts_html=charts_html,
         panels_html=panels_html,
         symbol_groups_html=symbol_groups_html,
         trade_count=len(trades),
@@ -637,6 +642,35 @@ def _to_date_str(value: Any) -> str:
 # ---------------------------------------------------------------------------
 # Index page aggregate (Phase 0.10.k)
 # ---------------------------------------------------------------------------
+
+def _render_charts_section(
+    charts: Sequence[tuple[str, bytes]],
+    symbol_names: Mapping[str, str] | None,
+) -> str:
+    """Render per-symbol chart panel stack (Phase 0.10.aa, ADR §17).
+
+    Each chart wrapped in ``<details class="chart-symbol" open>`` with
+    ``<summary>차트 — {display_symbol(code)}</summary>`` consistent with the
+    per-symbol cycle group pattern (`html_writer.py:.symbol-group`).
+
+    Empty ``charts`` → returns ``""`` (caller controlled via
+    ``skip_empty_symbols`` in ``generate_episode_report``).
+    """
+    if not charts:
+        return '<p><em>(no chart panels)</em></p>'
+    parts = []
+    for symbol, png_bytes in charts:
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        label = display_symbol(symbol, symbol_names)
+        parts.append(
+            f'<details class="chart-symbol" open>'
+            f"<summary>차트 — {escape(label)}</summary>\n"
+            f'<img src="data:image/png;base64,{b64}" '
+            f'alt="Episode chart for {escape(symbol)}">\n'
+            "</details>"
+        )
+    return "\n".join(parts)
+
 
 def _render_strategy_info_section(info: StrategyInfo | None) -> str:
     """전략 정보 section (Phase 0.10.y §15.5).

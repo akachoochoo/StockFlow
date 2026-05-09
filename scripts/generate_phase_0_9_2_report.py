@@ -77,10 +77,6 @@ def main() -> int:
         help="Initial capital (KRW int, default 100M)",
     )
     parser.add_argument(
-        "--chart-symbol", default=None,
-        help="Chart 그릴 symbol (default = first asset)",
-    )
-    parser.add_argument(
         "--csv-dir", default="data/historical", type=Path,
     )
     args = parser.parse_args()
@@ -164,7 +160,6 @@ def main() -> int:
         registry=registry,
         threshold_pct=args.threshold,
         scope="portfolio",
-        chart_symbol=args.chart_symbol,
         title=f"Phase 0.9.2 — {args.start}~{args.end}",
         strategy_info=strategy_info,
     )

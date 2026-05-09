@@ -330,6 +330,101 @@ class TestGenerateEpisodeReportPipeline:
         # Index still written (with empty placeholder)
         assert report.index_html_path.exists()
 
+    def test_chart_panel_order_sorted(self, tmp_path: Path):
+        # AC13 — chart panel order pinned to sorted(bars_by_asset.keys())
+        # regardless of dict insertion order. Phase 0.10.aa, ADR §17.8.
+        result = _build_backtest_result()
+        # Insert keys in REVERSE alphabetical order to test pinning.
+        shuffled_bars = {
+            "069500": _bars(n=80, asset_code="069500"),
+            "005930": _bars(n=80, asset_code="005930"),
+        }
+        generate_episode_report(
+            backtest_result=result,
+            strategy_id="price_drop",
+            output_dir=tmp_path,
+            bars_by_asset=shuffled_bars,
+        )
+        ep1 = tmp_path / "episode_1.html"
+        if not ep1.exists():
+            return  # No episode produced (depends on synthetic data)
+        html = ep1.read_text(encoding="utf-8")
+        # Sorted order: 005930 first, 069500 second
+        idx_005930 = html.find("005930")
+        idx_069500 = html.find("069500")
+        assert idx_005930 != -1 and idx_069500 != -1, "symbols missing"
+        assert idx_005930 < idx_069500, (
+            f"chart panel order not sorted: 005930@{idx_005930} after "
+            f"069500@{idx_069500}"
+        )
+
+    def test_no_figure_leak_after_full_regen(self, tmp_path: Path):
+        # AC11 — automated figure-leak assertion (NOT smoke).
+        # Phase 0.10.aa, ADR §17.7. With N symbols × M episodes, leaked
+        # matplotlib figures exhaust memory under repeat regen.
+        import matplotlib.pyplot as plt
+        plt.close("all")
+        result = _build_backtest_result()
+        generate_episode_report(
+            backtest_result=result,
+            strategy_id="price_drop",
+            output_dir=tmp_path,
+            bars_by_asset={
+                "005930": _bars(n=80, asset_code="005930"),
+                "069500": _bars(n=80, asset_code="069500"),
+            },
+        )
+        leaked = plt.get_fignums()
+        assert leaked == [], f"figure leak: {leaked}"
+
+    def test_skip_empty_symbols_excludes_no_trade_symbol(
+        self, tmp_path: Path,
+    ):
+        # AC14 — skip_empty_symbols=True excludes symbols with zero
+        # trades during episode window. Phase 0.10.aa, ADR §17.4.
+        result = _build_backtest_result()  # all decisions on 069500
+        generate_episode_report(
+            backtest_result=result,
+            strategy_id="price_drop",
+            output_dir=tmp_path,
+            bars_by_asset={
+                "005930": _bars(n=80, asset_code="005930"),
+                "069500": _bars(n=80, asset_code="069500"),
+            },
+            skip_empty_symbols=True,
+        )
+        ep1 = tmp_path / "episode_1.html"
+        if not ep1.exists():
+            return
+        html = ep1.read_text(encoding="utf-8")
+        # Only 069500 chart panel rendered (005930 has no trades)
+        chart_blocks = html.count('<details class="chart-symbol"')
+        assert chart_blocks == 1, (
+            f"expected 1 chart panel (skip_empty), got {chart_blocks}"
+        )
+
+    def test_skip_empty_symbols_default_renders_all(self, tmp_path: Path):
+        # AC14 default — skip_empty_symbols=False keeps all symbol panels
+        result = _build_backtest_result()
+        generate_episode_report(
+            backtest_result=result,
+            strategy_id="price_drop",
+            output_dir=tmp_path,
+            bars_by_asset={
+                "005930": _bars(n=80, asset_code="005930"),
+                "069500": _bars(n=80, asset_code="069500"),
+            },
+            # default skip_empty_symbols=False
+        )
+        ep1 = tmp_path / "episode_1.html"
+        if not ep1.exists():
+            return
+        html = ep1.read_text(encoding="utf-8")
+        chart_blocks = html.count('<details class="chart-symbol"')
+        assert chart_blocks == 2, (
+            f"expected 2 chart panels (render all), got {chart_blocks}"
+        )
+
     def test_returns_episode_report_result(self, tmp_path: Path):
         result = _build_backtest_result()
         report = generate_episode_report(
@@ -374,13 +469,3 @@ class TestErrorHandling:
                 bars_by_asset={},
             )
 
-    def test_unknown_chart_symbol_rejected(self, tmp_path: Path):
-        result = _build_backtest_result()
-        with pytest.raises(ValueError, match="not in bars_by_asset"):
-            generate_episode_report(
-                backtest_result=result,
-                strategy_id="price_drop",
-                output_dir=tmp_path,
-                bars_by_asset={"069500": _bars(n=80)},
-                chart_symbol="999999",
-            )
