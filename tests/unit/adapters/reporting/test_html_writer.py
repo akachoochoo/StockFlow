@@ -407,3 +407,114 @@ class TestWriteIndexHtml:
         html = out.read_text(encoding="utf-8")
         # No episodes → no aggregate
         assert '<div class="aggregate">' not in html
+
+
+class TestStrategyInfoSection:
+    """Phase 0.10.y §15.5 — Strategy Info section rendering tests."""
+
+    def _info(self):
+        from src.application.reporting.strategy_info import StrategyInfo
+        return StrategyInfo(
+            buy_strategy_name="price_drop",
+            buy_parameters={
+                "drop_threshold_pct": "5.00%",
+                "max_split_count": "7",
+                "per_split_amount": "₩5,000,000",
+                "max_split_per_day": "1",
+            },
+            sell_strategy_name="profit_target",
+            sell_parameters={
+                "profit_target_pct": "10.00%",
+                "max_sells_per_day": "7",
+            },
+            reentry_strategy_name="hybrid",
+            reentry_parameters={"cooldown_days": "60"},
+            config_source="config/strategies-0.9.2.yaml",
+            asset_codes=("005380", "005930", "055550"),
+        )
+
+    def test_episode_html_with_strategy_info_renders_section(
+        self, tmp_path: Path,
+    ):
+        # AC11 — section present with all 8 rows
+        out = tmp_path / "ep.html"
+        write_episode_html(
+            _episode(), _TINY_PNG, [], [], out,
+            strategy_info=self._info(),
+        )
+        html = out.read_text(encoding="utf-8")
+        # Wrapped in <details class="strategy-info" open> (Patch S1)
+        assert '<details class="strategy-info" open>' in html
+        assert "<summary>전략 정보</summary>" in html
+        # 8 row labels
+        for label in (
+            "매수 전략", "매수 파라미터", "매도 전략", "매도 파라미터",
+            "재진입 전략", "재진입 파라미터", "적용 종목", "설정 파일",
+        ):
+            assert f"<th>{label}</th>" in html, f"missing row: {label}"
+        # Strategy values
+        assert "price_drop" in html
+        assert "5.00%" in html
+        assert "₩5,000,000" in html
+        # 종목 line: hard-coded "{N} 종목 동일 정책 (loader-enforced uniformity)"
+        assert "3 종목 동일 정책 (loader-enforced uniformity)" in html
+        # Config source
+        assert "config/strategies-0.9.2.yaml" in html
+
+    def test_episode_html_without_strategy_info_omits_section(
+        self, tmp_path: Path,
+    ):
+        # AC12 — backwards-compat
+        out = tmp_path / "ep.html"
+        write_episode_html(_episode(), _TINY_PNG, [], [], out)
+        html = out.read_text(encoding="utf-8")
+        assert html.count("전략 정보") == 0
+        assert '<details class="strategy-info"' not in html
+
+    def test_index_html_with_strategy_info_renders_section(
+        self, tmp_path: Path,
+    ):
+        out = tmp_path / "index.html"
+        write_index_html(
+            [_episode()], [Path("ep.html")], out,
+            strategy_info=self._info(),
+        )
+        html = out.read_text(encoding="utf-8")
+        assert '<details class="strategy-info" open>' in html
+        assert "<summary>전략 정보</summary>" in html
+        assert "<th>매수 전략</th>" in html
+        assert "<th>설정 파일</th>" in html
+
+    def test_index_html_without_strategy_info_omits_section(
+        self, tmp_path: Path,
+    ):
+        # AC12 — backwards-compat on index too
+        out = tmp_path / "index.html"
+        write_index_html([_episode()], [Path("ep.html")], out)
+        html = out.read_text(encoding="utf-8")
+        assert html.count("전략 정보") == 0
+
+    def test_strategy_info_html_escaped(self, tmp_path: Path):
+        # XSS / HTML escape on yaml path
+        from src.application.reporting.strategy_info import StrategyInfo
+        info = StrategyInfo(
+            buy_strategy_name="<script>",
+            buy_parameters={"key<": "val>"},
+            sell_strategy_name="profit_target",
+            sell_parameters={},
+            reentry_strategy_name="hybrid",
+            reentry_parameters={},
+            config_source="path<with>chars.yaml",
+            asset_codes=("AAA",),
+        )
+        out = tmp_path / "ep.html"
+        write_episode_html(
+            _episode(), _TINY_PNG, [], [], out, strategy_info=info,
+        )
+        html = out.read_text(encoding="utf-8")
+        # No raw < > in attacker-controlled positions (strategy / params /
+        # config_source). Allowed unescaped < > only in legitimate template
+        # tags; quick check: <script> tag should NOT appear from the
+        # attacker payload.
+        assert "<script>" not in html or "&lt;script&gt;" in html
+        assert "&lt;" in html  # at least some escape happened

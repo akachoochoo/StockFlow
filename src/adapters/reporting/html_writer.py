@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from src.application.reporting.episode import DrawdownEpisode
+    from src.application.reporting.strategy_info import StrategyInfo
     from src.application.reporting.trade_view import TradeView
     from src.ports.strategy_renderer import Panel
 
@@ -82,6 +83,12 @@ th {{ background: #f8f9fa; font-weight: 600; }}
                           border-radius: 4px; font-weight: 600; }}
 .symbol-group summary:hover {{ background: #ecf0f1; }}
 .symbol-group[open] summary {{ background: #e8eef4; }}
+.strategy-info {{ margin: 14px 0; }}
+.strategy-info summary {{ cursor: pointer; padding: 8px 12px;
+                           background: #f8f9fa; border: 1px solid #ddd;
+                           border-radius: 4px; font-weight: 600; }}
+.strategy-info summary:hover {{ background: #ecf0f1; }}
+.strategy-info[open] summary {{ background: #e8eef4; }}
 .cycle-table {{ margin: 8px 0 16px 0; }}
 .cycle-pnl-pos {{ color: #27ae60; }}
 .cycle-pnl-neg {{ color: #c0392b; }}
@@ -100,6 +107,8 @@ th {{ background: #f8f9fa; font-weight: 600; }}
 </head>
 <body>
 <h1>{title}</h1>
+
+{strategy_info_html}
 
 {kpi_strip}
 
@@ -154,10 +163,17 @@ th {{ background: #f8f9fa; font-weight: 600; }}
                border: 1px solid #e1e6ec; border-radius: 6px; }}
 .aggregate ul {{ margin: 0; padding-left: 20px; }}
 .aggregate li {{ font-size: 14px; padding: 2px 0; }}
+.strategy-info {{ margin: 14px 0; }}
+.strategy-info summary {{ cursor: pointer; padding: 8px 12px;
+                           background: #f8f9fa; border: 1px solid #ddd;
+                           border-radius: 4px; font-weight: 600; }}
+.strategy-info summary:hover {{ background: #ecf0f1; }}
+.strategy-info[open] summary {{ background: #e8eef4; }}
 </style>
 </head>
 <body>
 <h1>{title}</h1>
+{strategy_info_html}
 <p>총 {count} 개 episode.</p>
 {aggregate_html}
 <table>
@@ -183,6 +199,7 @@ def write_episode_html(
     *,
     title: str | None = None,
     symbol_names: Mapping[str, str] | None = None,
+    strategy_info: StrategyInfo | None = None,
 ) -> None:
     """Episode 1 페이지 HTML 작성.
 
@@ -262,6 +279,7 @@ def write_episode_html(
 
     html = _EPISODE_HTML_TEMPLATE.format(
         title=escape(title),
+        strategy_info_html=_render_strategy_info_section(strategy_info),
         kpi_strip=kpi_strip,
         episode_meta_rows=episode_meta_rows,
         chart_b64=chart_b64,
@@ -280,6 +298,7 @@ def write_index_html(
     output_path: Path,
     *,
     title: str = "Backtest Drawdown Episodes",
+    strategy_info: StrategyInfo | None = None,
 ) -> None:
     """Index page — 모든 episode 링크 + aggregate 요약.
 
@@ -325,6 +344,7 @@ def write_index_html(
 
     html = _INDEX_HTML_TEMPLATE.format(
         title=escape(title),
+        strategy_info_html=_render_strategy_info_section(strategy_info),
         count=len(episodes),
         aggregate_html=aggregate_html,
         rows=rows,
@@ -617,6 +637,59 @@ def _to_date_str(value: Any) -> str:
 # ---------------------------------------------------------------------------
 # Index page aggregate (Phase 0.10.k)
 # ---------------------------------------------------------------------------
+
+def _render_strategy_info_section(info: StrategyInfo | None) -> str:
+    """전략 정보 section (Phase 0.10.y §15.5).
+
+    8 rows in fixed order — wrapped in `<details class="strategy-info" open>`
+    (Patch S1, mirrors per-symbol details pattern).
+
+    None → returns "" (backwards-compat: AC12).
+    """
+    if info is None:
+        return ""
+
+    n_assets = len(info.asset_codes)
+    asset_codes_str = ", ".join(info.asset_codes)
+    asset_summary = (
+        f"{escape(asset_codes_str)} "
+        f"({n_assets} 종목 동일 정책 (loader-enforced uniformity))"
+    )
+
+    rows = [
+        ("매수 전략", escape(info.buy_strategy_name)),
+        ("매수 파라미터", _format_param_kv(info.buy_parameters)),
+        ("매도 전략", escape(info.sell_strategy_name)),
+        ("매도 파라미터", _format_param_kv(info.sell_parameters)),
+        ("재진입 전략", escape(info.reentry_strategy_name)),
+        ("재진입 파라미터", _format_param_kv(info.reentry_parameters)),
+        ("적용 종목", asset_summary),
+        ("설정 파일", escape(info.config_source)),
+    ]
+    body = "\n".join(
+        f"<tr><th>{escape(label)}</th><td>{value}</td></tr>"
+        for label, value in rows
+    )
+    return (
+        '<details class="strategy-info" open>'
+        "<summary>전략 정보</summary>\n"
+        f"<table>\n{body}\n</table>\n"
+        "</details>"
+    )
+
+
+def _format_param_kv(params: Mapping[str, str]) -> str:
+    """Render dict[str, str] as `key=value, key=value` (already escaped values).
+
+    The values come from StrategyInfo factory which produces display-ready
+    strings (e.g. "5.00%", "₩5,000,000"). Escape both sides for HTML safety.
+    """
+    if not params:
+        return "<em>(none)</em>"
+    return ", ".join(
+        f"{escape(k)}={escape(v)}" for k, v in params.items()
+    )
+
 
 def _render_index_aggregate(episodes: Sequence[DrawdownEpisode]) -> str:
     """4-bullet aggregate row for index page."""
