@@ -761,6 +761,38 @@ B) <옵션 2와 trade-off>
   / SupportLevel + 개별 주식 / 손절 단독 검증 등)
 - 종료: 라운드 #19 (가칭) 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
 
+### Phase 0.10.z (완료, 2026-05-09 — 라운드 #20) — Slot Annotation Injection
+- 본질: 분석 phase 발견 버그 fix (chart 마커 모두 검정 = `_slot()` fallback 0).
+  Application layer 가 view-only annotations 에 도메인 typed `slot_number`
+  field 를 enrich. Clean Architecture 정합 — 도메인 변경 zero
+- 평가 기준: Acceptance Criteria 12 항목 (ADR 0006 §16.8) — 12/12 충족
+- 박제 인터페이스 변경 zero (`MarkerStyle` Protocol §4.2 + SevenSplit slot
+  palette §4.3.1 모두 보존). 신규 의존성 zero. 도메인 변경 zero
+- ralplan consensus 2 iter — Architect 의 C1→C2 switch (uniform `slot_number`
+  + 1-line adapter alignment) 채택, Critic 6 patches 후 APPROVE
+- 결정: ADR 0006 §16 (라운드 #20). 회고는 분석 phase 종료 시 결정
+- 핵심 결정 (ADR 0006 §16):
+  * §16.3 Application enriches `TradeView.annotations["slot_number"]` from
+    typed `BuyActionRecord.slot_number` / `SellActionRecord.slot_number` —
+    도메인 reasoning dict 변경 zero (view-side dict 만 mutate)
+  * §16.4 SevenSplitRenderer adapter 도메인 명명 align — `_slot()` 가
+    `slot_number` uniform read (BUY/SELL 모두). pre-Phase-0.5 fossil
+    `split_number` 키 제거 (half-done rename 마무리)
+  * §16.5 strict no-collision invariant — `assert "slot_number" not in
+    annotations` (silent setdefault 거부)
+  * §16.6 Renderer-agnostic application layer — 어떤 renderer 의 read key
+    convention 도 포착하지 않음 (E4 증명 test 포함)
+  * §16.7 Vestigial `_INT_KEYS = {split_number, slot_number}` cleanup
+    deferred Phase 0.11+
+- 변경: `src/application/reporting/trade_view.py` (+~30 LOC,
+  `_enrich_with_slot_number` helper) / `src/adapters/reporting/renderers/seven_split.py`
+  (~6 LOC: docstring + 1-line key change)
+- 신규 테스트: 6 (slot_number enrichment / collision-buy / collision-sell /
+  strategy-neutral / domain-reasoning-untouched). 기존 fixture 4 곳 mechanical
+  update (BUY annotations `split_number`→`slot_number`). 전체 1047/1047 PASS
+- Sub-step (ADR 0006 §16.9 박제): 0.10.z.a (single sub-step — 코드 + 테스트 +
+  박제 + commit) ✅
+
 ### Phase 0.10.y (완료, 2026-05-09 — 라운드 #19) — Chart Legend + Strategy Info
 - 본질: 차트 시각 가독성 보강 + 전략 투명성 (analytical reporting layer)
 - 평가 기준: Acceptance Criteria 12 항목 (ADR 0006 §15.10) — 12/12 충족
@@ -895,7 +927,7 @@ B) <옵션 2와 trade-off>
 > 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
 > 동안 (Phase 1 호환성) → Phase 0.10 동안 (Phase 1 호환성) → 본 §16
 > (Phase 1 호환성, Phase 0.10 종료 + 분석 phase + Phase 0.10.x 동안).
-> ADR 0006 §15 (라운드 #19 — Phase 0.10.y chart legend + strategy info) 박제
+> ADR 0006 §16 (라운드 #20 — Phase 0.10.z slot annotation injection) 박제
 > 후속 갱신 (2026-05-09).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
@@ -1047,6 +1079,27 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
   동시 차트 — Phase 0.11+ / Phase 1+ (ADR 0006 §15.12)
 - ❌ StrategyInfo 다국어 / nested-table parameters / yaml 분리 — Phase 0.11+
 - ❌ A11y palette toggle (color-blind) — Phase 1+
+
+**Phase 0.10.z 본질 (ADR 0006 §16 박제 완료, 라운드 #20, 2026-05-09)**:
+- 🔒 `src/application/reporting/trade_view.py` 의 `_enrich_with_slot_number`
+  helper — view-only annotations enrichment from typed `BuyActionRecord.slot_number`
+  / `SellActionRecord.slot_number` field. **Sub-step 0.10.z.a 에서만 작성**
+  (ADR 0006 §16.3)
+- 🔒 `src/adapters/reporting/renderers/seven_split.py` `_slot()` uniform
+  `slot_number` read (BUY/SELL 모두). 도메인 명명 align (pre-Phase-0.5 fossil
+  `split_number` 키 제거 — half-done rename 마무리). **sub-step 0.10.z.a 에서만
+  변경** (ADR 0006 §16.4)
+- 🔒 strict no-collision invariant `assert "slot_number" not in annotations`
+  in trade_view enrichment — silent setdefault 거부 (ADR 0006 §16.5)
+- ❌ 도메인 reasoning dict 키 추가 (`split_number` / `slot_number` 도메인
+  reasoning 에 emit) — CLAUDE.md §0.4 사용자 승인 필요. ADR §16 의 view-only
+  enrichment 가 deferred alternative
+- ❌ `MarkerStyle.side` 필드 추가 — Protocol §4.2 frozen
+- ❌ DefaultRenderer slot-aware 진화 — annotation-agnostic 유지 (현 `B`/`S`
+  마커 그대로)
+- ❌ `html_writer.py:575` `_INT_KEYS` 의 `split_number` 부분 cleanup — Phase
+  0.11+ deferred (ADR 0006 §16.7)
+- ❌ 멀티 strategy 동시 차트 (renderer-per-trade dispatch) — Phase 1+ ADR 0007
 - 🔒 신규 의존성 (matplotlib / mplfinance / pandas) — pyproject.toml
   `[project.optional-dependencies] reporting` extras (ADR 0006 §6.1).
   Phase 0.10 한정 의존성, 핵심 백테스트는 의존성 zero 유지
@@ -1126,4 +1179,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.y.a ~ 0.10.y.f 완료, ADR 0006 §15 박제 후속, Phase 0.10.y chart legend + strategy info 즉시 종결 — 라운드 #19, 분석 phase 그대로 유지)*
+*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.z.a 완료, ADR 0006 §16 박제 후속, Phase 0.10.z slot annotation injection 즉시 종결 — 라운드 #20, 분석 phase 그대로 유지)*

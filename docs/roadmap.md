@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-09 (sub-step 0.10.y.a ~ 0.10.y.f 완료 — Phase 0.10.y chart legend + strategy info 즉시 종결, 라운드 #19 ADR 0006 §15, 분석 phase 그대로 유지)
+> 마지막 업데이트: 2026-05-09 (sub-step 0.10.z.a 완료 — Phase 0.10.z slot annotation injection 즉시 종결, 라운드 #20 ADR 0006 §16, 분석 phase 그대로 유지)
 
 ## 현재 상태
 
@@ -20,8 +20,9 @@
 | Phase 0.10 | 완료 (2026-05-08, 라운드 #17 종료) — Backtest Reporting Enhancement, AC 5/5 충족 | ADR 0006 §1 ~ §13 |
 | Phase 0.10.x | 완료 (2026-05-09, 라운드 #18) — Episode HTML readability, AC 10/10 충족, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §14 |
 | Phase 0.10.y | 완료 (2026-05-09, 라운드 #19) — Chart legend + Strategy info, AC 12/12 충족, Protocol §4.2 + slot §4.3.1 보존, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §15 |
-| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x / 0.10.y 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #20 (가칭) |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #20 후속 | 진입 시 ADR 0007 |
+| Phase 0.10.z | 완료 (2026-05-09, 라운드 #20) — Slot annotation injection (chart 검정 마커 버그 fix), AC 12/12 충족, Protocol + slot palette 보존, 도메인 reasoning dict 변경 zero — Clean Architecture 정합 | ADR 0006 §16 |
+| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x / 0.10.y / 0.10.z 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #21 (가칭) |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #21 후속 | 진입 시 ADR 0007 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -270,15 +271,17 @@
 - 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes 리포트 + AC 5/5 검증 결과) 검토 후 다음 trajectory 결정
 - 코드 변경 zero (Phase 0.10 박제 보존). **라운드 #18 (2026-05-09)
   에서 Phase 0.10.x readability 채택 + 즉시 종결, 라운드 #19 (2026-05-09)
-  에서 Phase 0.10.y chart legend + strategy info 채택 + 즉시 종결 —
-  분석 phase 자체는 유지**
+  에서 Phase 0.10.y chart legend + strategy info 채택 + 즉시 종결, 라운드
+  #20 (2026-05-09) 에서 Phase 0.10.z slot annotation injection 채택 + 즉시
+  종결 — 분석 phase 자체는 유지**
 - 분석 대상 (예시):
   * Phase 0.9.2 episode 리포트 (HTML) 시각적 분석
   * Phase 0.7.3 vs 0.9.2 비교 (자산군 분산 효과)
   * Phase 1 ADR 0007 박제 항목 10 의 우선순위 재검토
-  * Phase 0.10.z 가능성 (asset scope / 다중 차트 / 멀티 strategy 등) 재검토
+  * Phase 0.10.aa 가능성 (vestigial cleanup / asset scope / 다중 차트 / 멀티
+    strategy 등) 재검토
   * 기타 trajectory (Phase 0.7.4 부동산 / SupportLevel + 개별 주식 / 손절 단독 검증 등)
-- 종료: 라운드 #20 박제 (사용자 분석 결과 + 다음 trajectory 결정)
+- 종료: 라운드 #21 박제 (사용자 분석 결과 + 다음 trajectory 결정)
 
 ## Phase 0.10.x (완료, 2026-05-09 — 라운드 #18): Episode HTML Readability
 
@@ -348,6 +351,52 @@
 - 0.10.y.e (4 episodes regen + 시각 sanity) ✅
 - 0.10.y.g (StrategyInfo + 3 test files) ✅
 - 0.10.y.f (ADR §15 박제 + CLAUDE.md / roadmap 갱신 + commit) ✅
+
+---
+
+## Phase 0.10.z (완료, 2026-05-09 — 라운드 #20): Slot Annotation Injection
+
+### 진입 + 즉시 종결 결정 라운드 #20 (완료, 2026-05-09) — ADR 0006 §16 박제
+- 사용자 명시 (트리거): "report에 그래프에서 검은색 화살표는 무슨의미야?" — 분석
+  phase 발견 버그
+- 사용자 명시 (옵션 + 제약): "옵션 C로 진행해줘, 이때 clean architecture가
+  유지 되도록 꼭 주의해줘"
+- ralplan consensus 2 iter (Architect AGREE-WITH-CHANGES C1→C2 switch + Critic
+  ITERATE 6 patches → APPROVE)
+- 채택: Option C2 — application layer enrichment (uniform `slot_number`) +
+  adapter naming alignment (1-line `seven_split.py` fix)
+- 거부: Option A (도메인 reasoning 변경 — 사용자 승인 필요), Option B (renderer
+  fallback to other key — 절반의 해결), C1 (renderer-key-aware injection —
+  Clean Architecture 위반), setdefault collision policy (silent regression)
+- 분석 phase 그대로 유지 — 라운드 #21 (가칭) 에서 Phase 1 vs 기타 trajectory 결정
+
+### 본질 (ADR 0006 §16.2 박제)
+- 인프라 보강 (chart marker bugfix + 명명 align). 분석 phase 발견 버그의
+  Clean Architecture-정합 fix
+- Acceptance Criteria 12 항목 — 12/12 충족
+- 박제 인터페이스 변경 zero (`StrategyRenderer` Protocol §4.2 + SevenSplit
+  slot palette §4.3.1 모두 보존)
+- 신규 의존성 zero / 도메인 변경 zero (`git diff src/domain/` empty —
+  Clean Architecture invariant)
+- 전체 테스트 1047/1047 PASS (신규 6 tests — slot_number enrichment +
+  collision-buy/sell + strategy-neutral + domain-untouched)
+
+### 핵심 결정 (ADR 0006 §16)
+- §16.3 Application enriches `TradeView.annotations["slot_number"]` from typed
+  `BuyActionRecord.slot_number` / `SellActionRecord.slot_number` field — 도메인
+  reasoning dict 변경 zero (view-side dict 만 mutate)
+- §16.4 SevenSplitRenderer 도메인 명명 align — `_slot()` 가 `slot_number`
+  uniform read (BUY/SELL 모두). pre-Phase-0.5 fossil `split_number` 키 제거
+  (half-done rename 마무리)
+- §16.5 strict no-collision invariant — `assert "slot_number" not in
+  annotations` (silent setdefault 거부)
+- §16.6 Renderer-agnostic application layer — 어떤 renderer 의 read key
+  convention 도 포착하지 않음 (E4 증명 test)
+- §16.7 Vestigial `_INT_KEYS = {split_number, slot_number}` cleanup deferred
+  Phase 0.11+
+
+### Sub-step 매핑 (ADR 0006 §16.9 박제, 1 sub-step)
+- 0.10.z.a (application enrichment + adapter align + tests + 박제 + commit) ✅
 
 ---
 
