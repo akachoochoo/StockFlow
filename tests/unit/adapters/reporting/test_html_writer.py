@@ -157,7 +157,7 @@ class TestWriteEpisodeHtml:
             _trade(
                 side="BUY",
                 timestamp=datetime(2024, 1, 5, 6, 0, 0, tzinfo=UTC),
-                annotations={"split_number": "2"},
+                annotations={"slot_number": "2"},
             ),
             _trade(
                 side="SELL",
@@ -171,9 +171,12 @@ class TestWriteEpisodeHtml:
         # AC3: code + name display
         assert "069500 KODEX 200" in html
         # AC8: annotations rendered as mini-table, NOT comma string
-        assert "split_number=" not in html  # legacy comma format gone
+        assert "slot_number=" not in html  # legacy comma format gone
         assert '<table class="annot-mini">' in html
-        assert "<th>split_number</th><td>2</td>" in html
+        # Phase 0.10.z (ADR §16): uniform slot_number for both sides.
+        # BUY annotation row from fixture
+        assert "<th>slot_number</th><td>2</td>" in html
+        # SELL annotation row from fixture
         assert "<th>slot_number</th><td>1</td>" in html
         # AC1: profit_pct formatted to 2 places, signed
         assert "<th>profit_pct</th><td>+10.00%</td>" in html

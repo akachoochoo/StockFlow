@@ -151,7 +151,10 @@ def _decision_buy(
             target_price=Decimal(price),
             idempotency_key=f"buy-{slot}-{timestamp.isoformat()}",
             order_id=f"ord-{slot}",
-            reasoning={"split_number": str(slot)},
+            # Phase 0.10.z (ADR §16): application layer enriches view
+            # annotations with uniform slot_number from typed field —
+            # reasoning need not pre-populate.
+            reasoning={},
         ),
         sell_actions=[],
         skip_reason=None,
@@ -178,7 +181,8 @@ def _decision_sell(
                 profit_pct=Decimal("10.0"),
                 idempotency_key=f"sell-{slot}-{timestamp.isoformat()}",
                 order_id=f"sord-{slot}",
-                reasoning={"slot_number": str(slot)},
+                # Phase 0.10.z (ADR §16): see comment on _decision_buy.
+                reasoning={},
             ),
         ],
         skip_reason=None,

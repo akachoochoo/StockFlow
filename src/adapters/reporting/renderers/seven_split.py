@@ -1,14 +1,21 @@
 """SevenSplitRenderer — PriceDropStrategy / SupportLevelStrategy 차수 표기.
 
 Phase 0.10 — ADR 0006 §4.3.1 박제. 세븐 스플릿 (B1~B7 / S1~S7) 의 차수별
-색상 + 라벨. PriceDropStrategy 와 SupportLevelStrategy 모두 동일 매핑
-(BuyActionRecord.split_number / SellActionRecord.slot_number 키 활용).
+색상 + 라벨. PriceDropStrategy 와 SupportLevelStrategy 모두 동일 매핑.
 
-Annotation key 매핑:
-    BUY  : ``split_number`` (BuyActionRecord.reasoning 내) — 1~7
-    SELL : ``slot_number``  (SellActionRecord.reasoning 내) — 1~7
+Annotation key (ADR 0006 §16 박제 후):
+    BUY / SELL : ``slot_number`` (uniform — application layer 가
+        ``trades_from_decisions`` 에서 ``BuyActionRecord.slot_number`` /
+        ``SellActionRecord.slot_number`` 타입 필드를 view-only annotations 로
+        enrich. 도메인 reasoning dict 변경 zero — Clean Architecture 정합)
 
-Reasoning dict 에 키 미존재 시 0 fallback (label = "B0" / "S0", 색상 검정).
+전사: ``split_number`` 는 Phase pre-0.5 시절 renderer-internal 명칭
+이었음. 도메인은 0.5 부터 ``slot_number`` 로 통일했고, 본 어댑터는
+Phase 0.10.z (라운드 #20, ADR 0006 §16) 에서 도메인 명명에 align —
+half-done rename 의 마무리.
+
+Reasoning dict 에 키 미존재 시 0 fallback (label = "B0" / "S0", 색상 검정)
+— application layer 가 enrichment 보장하므로 실제 발생 X.
 """
 from __future__ import annotations
 
@@ -90,9 +97,12 @@ class SevenSplitRenderer:
         ]
 
     def _slot(self, trade: TradeView) -> int:
-        key = "split_number" if trade.side == "BUY" else "slot_number"
+        # Uniform `slot_number` for both BUY and SELL (ADR 0006 §16 박제,
+        # 라운드 #20). Application layer (`trades_from_decisions`) enriches
+        # view annotations from typed BuyActionRecord/SellActionRecord
+        # `slot_number` fields — domain명명 정합.
         try:
-            return int(trade.annotations.get(key, 0))
+            return int(trade.annotations.get("slot_number", 0))
         except (TypeError, ValueError):
             return 0
 

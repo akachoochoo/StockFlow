@@ -136,11 +136,11 @@ class TestRenderEpisodeChartSmoke:
         trades = [
             _trade(
                 side="BUY", on_date=date(2024, 2, 1), price=92,
-                annotations={"split_number": "1"},
+                annotations={"slot_number": "1"},
             ),
             _trade(
                 side="BUY", on_date=date(2024, 2, 3), price=88,
-                annotations={"split_number": "2"},
+                annotations={"slot_number": "2"},
             ),
             _trade(
                 side="SELL", on_date=date(2024, 2, 12), price=100,
@@ -277,7 +277,7 @@ class TestLegendStrategyNeutral:
                 side="BUY",
                 on_date=date(2024, 2, slot),
                 price=92,
-                annotations={"split_number": str(slot)},
+                annotations={"slot_number": str(slot)},
             ))
         for slot in range(1, 8):
             trades.append(_trade(
@@ -299,7 +299,7 @@ class TestLegendStrategyNeutral:
         bars = _bars(n=100)  # > 60 → both MA20 + MA60 drawn
         trades = [
             _trade(side="BUY", on_date=date(2024, 2, 1), price=92,
-                   annotations={"split_number": "1"}),
+                   annotations={"slot_number": "1"}),
             _trade(side="SELL", on_date=date(2024, 2, 10), price=100,
                    annotations={"slot_number": "1"}),
         ]
@@ -326,11 +326,11 @@ class TestLegendStrategyNeutral:
         bars = _bars(n=100)
         trades = [
             _trade(side="BUY", on_date=date(2024, 2, 1), price=92,
-                   annotations={"split_number": "1"}),
+                   annotations={"slot_number": "1"}),
             _trade(side="BUY", on_date=date(2024, 2, 3), price=90,
-                   annotations={"split_number": "3"}),
+                   annotations={"slot_number": "3"}),
             _trade(side="BUY", on_date=date(2024, 2, 5), price=88,
-                   annotations={"split_number": "5"}),
+                   annotations={"slot_number": "5"}),
         ]
         texts, _ = _capture_legend_texts(
             bars=bars, trades=trades, renderer=SevenSplitRenderer(),

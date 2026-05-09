@@ -58,12 +58,12 @@ def _episode(
 class TestMarkerLabel:
     def test_buy_b1(self):
         r = SevenSplitRenderer()
-        t = _trade(side="BUY", annotations={"split_number": "1"})
+        t = _trade(side="BUY", annotations={"slot_number": "1"})
         assert r.marker_label(t) == "B1"
 
     def test_buy_b7(self):
         r = SevenSplitRenderer()
-        t = _trade(side="BUY", annotations={"split_number": "7"})
+        t = _trade(side="BUY", annotations={"slot_number": "7"})
         assert r.marker_label(t) == "B7"
 
     def test_sell_s3(self):
@@ -83,14 +83,14 @@ class TestMarkerLabel:
 
     def test_buy_invalid_annotation_fallback_b0(self):
         r = SevenSplitRenderer()
-        t = _trade(side="BUY", annotations={"split_number": "not_a_number"})
+        t = _trade(side="BUY", annotations={"slot_number": "not_a_number"})
         assert r.marker_label(t) == "B0"
 
 
 class TestMarkerStyle:
     def test_buy_uses_split_color(self):
         r = SevenSplitRenderer()
-        t = _trade(side="BUY", annotations={"split_number": "1"})
+        t = _trade(side="BUY", annotations={"slot_number": "1"})
         s = r.marker_style(t)
         assert s.color == "#1f77b4"  # split 1 = blue
         assert s.marker == "^"
@@ -147,15 +147,15 @@ class TestDiagnosticPanels:
         )
         trades = [
             _trade(timestamp_date=date(2024, 1, 1),  # before peak — excluded
-                   side="BUY", annotations={"split_number": "1"}),
+                   side="BUY", annotations={"slot_number": "1"}),
             _trade(timestamp_date=date(2024, 1, 6),  # in episode
-                   side="BUY", annotations={"split_number": "1"}),
+                   side="BUY", annotations={"slot_number": "1"}),
             _trade(timestamp_date=date(2024, 1, 7),  # in episode
-                   side="BUY", annotations={"split_number": "2"}),
+                   side="BUY", annotations={"slot_number": "2"}),
             _trade(timestamp_date=date(2024, 1, 8),  # in episode
                    side="SELL", annotations={"slot_number": "1"}),
             _trade(timestamp_date=date(2024, 1, 15),  # after recovery — excluded
-                   side="BUY", annotations={"split_number": "3"}),
+                   side="BUY", annotations={"slot_number": "3"}),
         ]
         panels = r.diagnostic_panels(trades, e)
         summary = dict(panels[0].rows)
@@ -176,11 +176,11 @@ class TestDiagnosticPanels:
         )
         trades = [
             _trade(timestamp_date=date(2024, 1, 1),  # before peak — excluded
-                   side="BUY", annotations={"split_number": "1"}),
+                   side="BUY", annotations={"slot_number": "1"}),
             _trade(timestamp_date=date(2024, 1, 6),  # in episode
-                   side="BUY", annotations={"split_number": "2"}),
+                   side="BUY", annotations={"slot_number": "2"}),
             _trade(timestamp_date=date(2024, 4, 10),  # post-peak (included for unrecovered)
-                   side="BUY", annotations={"split_number": "3"}),
+                   side="BUY", annotations={"slot_number": "3"}),
         ]
         panels = r.diagnostic_panels(trades, e)
         summary = dict(panels[0].rows)

@@ -49,6 +49,10 @@ def _buy_record(
     key: str = "buy-1",
     reasoning: dict[str, str] | None = None,
 ) -> BuyActionRecord:
+    """Phase 0.10.z (ADR 0006 §16): default reasoning is empty — application
+    layer enriches view annotations with ``slot_number`` from typed field.
+    Strategy reasoning must not pre-populate ``slot_number`` (strict invariant).
+    """
     return BuyActionRecord(
         slot_number=slot_number,
         split_level_after=split_level_after,
@@ -57,7 +61,7 @@ def _buy_record(
         target_price=Decimal(target_price),
         idempotency_key=key,
         order_id="ord-1",
-        reasoning=reasoning or {"split_number": str(slot_number)},
+        reasoning=reasoning if reasoning is not None else {},
     )
 
 
@@ -70,6 +74,7 @@ def _sell_record(
     key: str = "sell-1",
     reasoning: dict[str, str] | None = None,
 ) -> SellActionRecord:
+    """Phase 0.10.z (ADR 0006 §16): default reasoning is empty — see _buy_record."""
     return SellActionRecord(
         slot_number=slot_number,
         filled_quantity=Decimal(quantity),
@@ -77,7 +82,7 @@ def _sell_record(
         profit_pct=Decimal(profit_pct),
         idempotency_key=key,
         order_id="ord-2",
-        reasoning=reasoning or {"slot_number": str(slot_number)},
+        reasoning=reasoning if reasoning is not None else {},
     )
 
 
@@ -124,7 +129,9 @@ class TestTradesFromDecisions:
         assert t.price == Decimal("35000")
         assert t.quantity == Decimal("10")
         assert t.strategy_id == "price_drop"
-        assert t.annotations == {"split_number": "2"}
+        # Phase 0.10.z (ADR §16): annotations enriched with uniform
+        # slot_number from typed BuyActionRecord.slot_number field.
+        assert t.annotations == {"slot_number": "2"}
 
     def test_sell_only_decision(self):
         d = _decision(sell_actions=[_sell_record(slot_number=3)])
@@ -133,6 +140,7 @@ class TestTradesFromDecisions:
         t = trades[0]
         assert t.side == "SELL"
         assert t.price == Decimal("38500")
+        # Phase 0.10.z (ADR §16): uniform slot_number for both sides.
         assert t.annotations == {"slot_number": "3"}
 
     def test_sell_then_buy_in_one_decision_keeps_order(self):
@@ -165,12 +173,20 @@ class TestTradesFromDecisions:
 
     def test_annotations_copied_not_shared(self):
         """reasoning dict 변경이 view model 에 영향 없어야 함."""
-        reasoning = {"split_number": "2", "drop_pct": "7.0"}
-        d = _decision(buy_action=_buy_record(reasoning=reasoning))
+        # Phase 0.10.z (ADR §16): existing reasoning keys preserved (additive
+        # enrichment). New uniform `slot_number` added from record field.
+        reasoning = {"trigger_price": "32550", "drop_pct": "7.0"}
+        d = _decision(
+            buy_action=_buy_record(slot_number=2, reasoning=reasoning),
+        )
         trades = trades_from_decisions([d], "price_drop")
         # mutate source — view model 보존되어야
-        reasoning["split_number"] = "999"
-        assert trades[0].annotations == {"split_number": "2", "drop_pct": "7.0"}
+        reasoning["trigger_price"] = "999"
+        assert trades[0].annotations == {
+            "trigger_price": "32550",
+            "drop_pct": "7.0",
+            "slot_number": "2",  # AC7 — uniform key, additive enrichment
+        }
 
     def test_symbol_from_asset_code(self):
         for code in ("005930", "005380", "055550"):
@@ -197,3 +213,77 @@ class TestTradesFromDecisions:
         d = _decision(buy_action=_buy_record())
         trades = trades_from_decisions([d], "price_drop")
         assert isinstance(trades[0], TradeView)
+
+
+class TestSlotNumberEnrichment:
+    """Phase 0.10.z / ADR 0006 §16 — application layer enrichment of
+    ``TradeView.annotations`` with uniform ``slot_number`` from typed record
+    fields. Domain ``reasoning`` dict unchanged (Clean Architecture preserved).
+    """
+
+    def test_buy_annotations_carry_uniform_slot_number_key(self):
+        # AC7 — uniform `slot_number` for BUY (regardless of strategy)
+        d = _decision(buy_action=_buy_record(slot_number=5, reasoning={
+            "trigger_price": "32550",
+        }))
+        trades = trades_from_decisions([d], "price_drop")
+        assert "slot_number" in trades[0].annotations
+        assert trades[0].annotations["slot_number"] == "5"
+        # Original reasoning keys preserved (additive enrichment)
+        assert trades[0].annotations["trigger_price"] == "32550"
+
+    def test_sell_annotations_carry_uniform_slot_number_key(self):
+        # AC7 — uniform `slot_number` for SELL too
+        d = _decision(sell_actions=[_sell_record(slot_number=3, reasoning={
+            "entry_price": "35000", "profit_pct": "10.0",
+        })])
+        trades = trades_from_decisions([d], "price_drop")
+        assert trades[0].annotations["slot_number"] == "3"
+        assert trades[0].annotations["entry_price"] == "35000"
+
+    def test_collision_buy_raises_assertion(self):
+        # AC11 — strict no-collision invariant. If a strategy emits
+        # `slot_number` in its reasoning, enrichment must fail loudly.
+        import pytest
+        d = _decision(buy_action=_buy_record(
+            slot_number=2, reasoning={"slot_number": "999"},
+        ))
+        with pytest.raises(AssertionError, match="slot_number"):
+            trades_from_decisions([d], "price_drop")
+
+    def test_collision_sell_raises_assertion(self):
+        import pytest
+        d = _decision(sell_actions=[_sell_record(
+            slot_number=4, reasoning={"slot_number": "777"},
+        )])
+        with pytest.raises(AssertionError, match="slot_number"):
+            trades_from_decisions([d], "price_drop")
+
+    def test_strategy_neutral_uniform_key(self):
+        # AC12 — a hypothetical second renderer reading `slot_number` for
+        # BOTH sides works without any application-layer change. Proves
+        # application layer doesn't capture renderer key conventions.
+        d = _decision(
+            buy_action=_buy_record(slot_number=4),
+            sell_actions=[_sell_record(slot_number=2)],
+        )
+        trades = trades_from_decisions([d], "ma_cross_dummy")
+        # Same key for both sides — renderer-agnostic
+        for t in trades:
+            assert "slot_number" in t.annotations
+            assert int(t.annotations["slot_number"]) in (2, 4)
+        # No legacy `split_number` key — application layer doesn't know
+        # any renderer's read-key convention.
+        for t in trades:
+            assert "split_number" not in t.annotations
+
+    def test_domain_reasoning_dict_unchanged(self):
+        # Clean Architecture invariant — application layer must not mutate
+        # the domain record's reasoning dict.
+        domain_reasoning = {"trigger_price": "32550"}
+        record = _buy_record(slot_number=2, reasoning=domain_reasoning)
+        d = _decision(buy_action=record)
+        trades_from_decisions([d], "price_drop")
+        # Domain reasoning unchanged — only view-side dict was enriched
+        assert "slot_number" not in domain_reasoning
+        assert record.reasoning == {"trigger_price": "32550"}

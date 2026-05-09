@@ -79,6 +79,10 @@ def trades_from_decisions(
     for d in decisions:
         # ADR 0002 §5.4 — sells-then-buys 흐름 그대로 (sells 먼저, buy 나중)
         for sa in d.sell_actions:
+            sell_annotations = _enrich_with_slot_number(
+                dict(sa.reasoning), sa.slot_number,
+                asset_code=d.asset.code, side="SELL",
+            )
             out.append(
                 TradeView(
                     timestamp=d.timestamp,
@@ -87,10 +91,14 @@ def trades_from_decisions(
                     price=sa.filled_price,
                     quantity=sa.filled_quantity,
                     strategy_id=strategy_id,
-                    annotations=dict(sa.reasoning),
+                    annotations=sell_annotations,
                 )
             )
         if d.buy_action is not None:
+            buy_annotations = _enrich_with_slot_number(
+                dict(d.buy_action.reasoning), d.buy_action.slot_number,
+                asset_code=d.asset.code, side="BUY",
+            )
             out.append(
                 TradeView(
                     timestamp=d.timestamp,
@@ -99,7 +107,39 @@ def trades_from_decisions(
                     price=d.buy_action.filled_price,
                     quantity=d.buy_action.filled_quantity,
                     strategy_id=strategy_id,
-                    annotations=dict(d.buy_action.reasoning),
+                    annotations=buy_annotations,
                 )
             )
     return out
+
+
+def _enrich_with_slot_number(
+    annotations: dict[str, Any],
+    slot_number: int,
+    *,
+    asset_code: str,
+    side: SideT,
+) -> dict[str, Any]:
+    """Inject ``slot_number`` (uniform domain naming) into the view-time
+    annotations dict copied from a Buy/SellActionRecord's ``reasoning``.
+
+    Phase 0.10.z (ADR 0006 §16) — application layer enriches view-only
+    annotations with the typed ``slot_number`` field on the action record.
+    Domain reasoning dicts are never mutated; this helper writes only into
+    the freshly copied view-side dict.
+
+    Strict no-collision invariant (ADR 0006 §16.3): if the strategy's
+    reasoning dict already carries ``slot_number``, raise ``AssertionError``.
+    Today verified zero strategy emits this key (price_drop / support_level
+    use ``target_slot_number``; profit_target carries ``entry_price`` etc.).
+    Failing fast surfaces a future regression where a strategy starts emitting
+    a colliding key with conflicting semantics.
+    """
+    assert "slot_number" not in annotations, (
+        f"unexpected slot_number={annotations.get('slot_number')!r} in "
+        f"reasoning for {side} {asset_code} — strategy reasoning must not "
+        f"emit this key. Application layer enriches from typed "
+        f"slot_number record field (ADR 0006 §16.3)."
+    )
+    annotations["slot_number"] = str(slot_number)
+    return annotations
