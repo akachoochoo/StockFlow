@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-09 (sub-step 0.10.h ~ 0.10.k 완료 — Phase 0.10.x readability 즉시 종결, 라운드 #18 ADR 0006 §14, 분석 phase 그대로 유지)
+> 마지막 업데이트: 2026-05-09 (sub-step 0.10.y.a ~ 0.10.y.f 완료 — Phase 0.10.y chart legend + strategy info 즉시 종결, 라운드 #19 ADR 0006 §15, 분석 phase 그대로 유지)
 
 ## 현재 상태
 
@@ -19,8 +19,9 @@
 | **Phase 0.9.2** | **진행 중 (2026-05-07 진입 결정 라운드 #14 박제)** — 005930 + 005380 + 055550 + 097950 + 015760 (5 종, 업종 분산). 가설: 분산 효과 회복 → 시나리오 C → A/B 변경 가능 여부 검증 | ADR 0005 §8 (라운드 #14 — Phase 0.9.2 진입 결정) |
 | Phase 0.10 | 완료 (2026-05-08, 라운드 #17 종료) — Backtest Reporting Enhancement, AC 5/5 충족 | ADR 0006 §1 ~ §13 |
 | Phase 0.10.x | 완료 (2026-05-09, 라운드 #18) — Episode HTML readability, AC 10/10 충족, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §14 |
-| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #19 (가칭) |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #19 후속 | 진입 시 ADR 0007 |
+| Phase 0.10.y | 완료 (2026-05-09, 라운드 #19) — Chart legend + Strategy info, AC 12/12 충족, Protocol §4.2 + slot §4.3.1 보존, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §15 |
+| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x / 0.10.y 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #20 (가칭) |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #20 후속 | 진입 시 ADR 0007 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -267,15 +268,17 @@
 
 ### 분석 phase (진행 중, 2026-05-08 시작) — 사용자 분석 보류
 - 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes 리포트 + AC 5/5 검증 결과) 검토 후 다음 trajectory 결정
-- 코드 변경 zero (Phase 0.10 박제 보존). **단, 라운드 #18 (2026-05-09)
-  에서 Phase 0.10.x readability 채택 + 즉시 종결 — 분석 phase 자체는 유지**
+- 코드 변경 zero (Phase 0.10 박제 보존). **라운드 #18 (2026-05-09)
+  에서 Phase 0.10.x readability 채택 + 즉시 종결, 라운드 #19 (2026-05-09)
+  에서 Phase 0.10.y chart legend + strategy info 채택 + 즉시 종결 —
+  분석 phase 자체는 유지**
 - 분석 대상 (예시):
   * Phase 0.9.2 episode 리포트 (HTML) 시각적 분석
   * Phase 0.7.3 vs 0.9.2 비교 (자산군 분산 효과)
   * Phase 1 ADR 0007 박제 항목 10 의 우선순위 재검토
-  * Phase 0.10.y 가능성 (차트 가독성 / asset scope / 다중 차트 등) 재검토
+  * Phase 0.10.z 가능성 (asset scope / 다중 차트 / 멀티 strategy 등) 재검토
   * 기타 trajectory (Phase 0.7.4 부동산 / SupportLevel + 개별 주식 / 손절 단독 검증 등)
-- 종료: 라운드 #19 박제 (사용자 분석 결과 + 다음 trajectory 결정)
+- 종료: 라운드 #20 박제 (사용자 분석 결과 + 다음 trajectory 결정)
 
 ## Phase 0.10.x (완료, 2026-05-09 — 라운드 #18): Episode HTML Readability
 
@@ -307,6 +310,44 @@
 - 0.10.i (KPI strip + episode 메타 포매팅) ✅
 - 0.10.j (application-layer cycle pairing + 종목별 details) ✅
 - 0.10.k (index aggregate + ADR §14 박제 + commit) ✅
+
+---
+
+## Phase 0.10.y (완료, 2026-05-09 — 라운드 #19): Chart Legend + Strategy Info Display
+
+### 진입 + 즉시 종결 결정 라운드 #19 (완료, 2026-05-09) — ADR 0006 §15 박제
+- 사용자 명시 (3 trigger): "그래프에서 레전드가 없어서 확인이 어렵네" + "Buy/Sell 색깔로 구분" + "어떤 매매로직인지 report 에 포함"
+- ralplan consensus 2 round × 2 iter (각 round APPROVE)
+- Falsification gate (0.10.y.c) 사용자 응답 verbatim — γ' edge ring 거부 + legend 5 조정 명시 (상승/하락 삭제 / MA 전 구간 / 고점·저점·회복 유지 / 매수 빨강 / 매도 초록)
+- 채택: 5.A baseline (legend-only, palette unchanged) + user feedback override (legend 5 조정)
+- 거부: γ (palette swap), γ' (edge ring), α (open marker), β (two-shade), δ (slot-shape)
+- 분석 phase 그대로 유지 — 라운드 #20 (가칭) 에서 Phase 1 vs 기타 trajectory 결정
+
+### 본질 (ADR 0006 §15.2 박제)
+- 인프라 보강 (analytical reporting layer 차트 가독성 + 전략 투명성)
+- 가설 / 게이트 없음 — Phase 0.10 패턴 동일
+- Acceptance Criteria 12 항목 (ADR 0006 §15.10) — 12/12 충족
+- 박제 인터페이스 변경 zero (`StrategyRenderer` Protocol §4.2 + SevenSplit slot palette §4.3.1 모두 보존)
+- 신규 의존성 zero (`pyproject.toml` 변경 0 줄, AC10)
+- 도메인 변경 zero (`StrategyInfo` = application view model — `TradeView` 패턴 재사용, ADR 0006 §3.2 정합)
+- 전체 테스트 1041/1041 PASS (신규 31 tests — chart 강화 +11 + strategy_info +14 + html_writer +6)
+
+### 핵심 결정 (ADR 0006 §15)
+- §15.4 Chart legend 5 조정 — 사용자 명시 박제
+- §15.5 chart.py 데이터 기반 legend (`_summarize_labels` regex `r"^(.+?)(\d+)$"` + 5 decision rules) + `returnfig=True` migration + by_style key widen + Korean 폰트 fallback (`FontProperties` 명시 적용)
+- §15.6 StrategyInfo application view model + factory frozen contract surface (6 bundle attrs docstring + test_factory_reads_documented_field_set)
+- §15.7 Multi-strategy 감사 — A1 (legend "차수" hard-coding) + A2 (strategy 미표시) 처방, A3 (멀티 strategy 동시 차트) Phase 1+ ADR 0007 trigger
+- §15.8 §4.2 / §4.3.1 / §6 / §7 unchanged 명시 (face color = slot palette, swatch 색상은 representative 표시값)
+- §15.9 Alternatives 거부 — α/β/γ/γ'/δ + StrategyInfo 도메인/Protocol/opaque dict 모두 거부 박제
+
+### Sub-step 매핑 (ADR 0006 §15.11 박제)
+- 0.10.y.a (plan freeze + alternatives 기록) ✅
+- 0.10.y.b (chart legend, palette unchanged) ✅
+- 0.10.y.c (falsification gate, file-sentinel) ✅
+- 0.10.y.d (revised — 사용자 5 조정 적용) ✅
+- 0.10.y.e (4 episodes regen + 시각 sanity) ✅
+- 0.10.y.g (StrategyInfo + 3 test files) ✅
+- 0.10.y.f (ADR §15 박제 + CLAUDE.md / roadmap 갱신 + commit) ✅
 
 ---
 

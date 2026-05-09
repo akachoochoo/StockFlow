@@ -761,6 +761,47 @@ B) <옵션 2와 trade-off>
   / SupportLevel + 개별 주식 / 손절 단독 검증 등)
 - 종료: 라운드 #19 (가칭) 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
 
+### Phase 0.10.y (완료, 2026-05-09 — 라운드 #19) — Chart Legend + Strategy Info
+- 본질: 차트 시각 가독성 보강 + 전략 투명성 (analytical reporting layer)
+- 평가 기준: Acceptance Criteria 12 항목 (ADR 0006 §15.10) — 12/12 충족
+- 박제 인터페이스 변경 zero (`MarkerStyle` Protocol §4.2 / SevenSplit
+  slot palette §4.3.1 모두 보존). 신규 의존성 zero. 도메인 변경 zero
+- ralplan consensus 2 round × 2 iter (각 round 모두 APPROVE)
+- 결정: ADR 0006 §15 (라운드 #19). 회고는 분석 phase 종료 시 결정
+- 핵심 결정 (ADR 0006 §15):
+  * §15.4 Chart legend 5 조정 — 상승/하락 entry 삭제 / MA20/MA60 전 구간
+    표시 (full sorted_bars pre-window 계산) / 고점·저점·회복 vline 유지 /
+    매수 swatch 빨강 (`#d62728`) / 매도 swatch 초록 (`#2ca02c`).
+    γ' edge ring (plan §1.5 recommended) 은 falsification gate 에서
+    사용자 거부 — 5.A baseline + user feedback override 라인 ship
+  * §15.5 chart.py 데이터 기반 legend (`_summarize_labels` regex
+    `r"^(.+?)(\d+)$"` 박제 — 5 decision rules: range / comma list /
+    single / empty / mixed) + `returnfig=True` migration + by_style key
+    `(side, color, marker, size, label)` widen + Korean 폰트 fallback
+    via `FontProperties` 명시 적용
+  * §15.6 StrategyInfo application view model (`TradeView` 패턴 재사용,
+    NOT 도메인 entity, frozen dataclass) + factory frozen contract
+    surface 박제 (6 bundle attrs docstring + test_factory_reads_documented_field_set)
+  * §15.7 Multi-strategy 감사 박제 — A1 (legend "차수" hard-coding) +
+    A2 (strategy 미표시) 처방, A3 (멀티 strategy 동시 차트) Phase 1+
+    ADR 0007 trigger
+  * §15.8 §4.2 / §4.3.1 / §6 / §7 unchanged 명시 (face color = slot
+    palette, swatch 색상은 representative 표시값 — 분리 박제)
+  * §15.9 Alternatives 거부 — α/β/γ/γ'/δ + StrategyInfo 도메인/Protocol/
+    opaque dict 모두 거부 박제
+- 신규 모듈: `src/application/reporting/strategy_info.py`
+- 수정: `src/adapters/reporting/{chart.py, html_writer.py}`,
+  `src/application/reporting/report.py`, `scripts/generate_phase_0_9_2_report.py`
+- 신규 테스트: 31 (chart 강화 +11 + strategy_info +14 + html_writer
+  strategy_info section +6). 전체 1041/1041 PASS
+- Sub-step (ADR 0006 §15.11 박제): 0.10.y.a (plan freeze) ✅ →
+  0.10.y.b (chart legend, palette unchanged) ✅ →
+  0.10.y.c (falsification gate — 사용자 응답: legend 5 조정 요구) ✅ →
+  0.10.y.d (revised — 5 조정 적용) ✅ →
+  0.10.y.e (4 episodes regen) ✅ →
+  0.10.y.g (StrategyInfo + 3 test files) ✅ →
+  0.10.y.f (ADR §15 박제 + CLAUDE.md / roadmap 갱신 + commit) ✅
+
 ### Phase 0.10.x (완료, 2026-05-09 — 라운드 #18) — Episode HTML Readability
 - 본질: 인프라 후속 보강 (analytical reporting layer 가독성 강화).
   가설 / 게이트 없음 — Phase 0.10 패턴 동일
@@ -854,8 +895,8 @@ B) <옵션 2와 trade-off>
 > 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
 > 동안 (Phase 1 호환성) → Phase 0.10 동안 (Phase 1 호환성) → 본 §16
 > (Phase 1 호환성, Phase 0.10 종료 + 분석 phase + Phase 0.10.x 동안).
-> ADR 0006 §14 (라운드 #18 — Phase 0.10.x readability) 박제 후속 갱신
-> (2026-05-09).
+> ADR 0006 §15 (라운드 #19 — Phase 0.10.y chart legend + strategy info) 박제
+> 후속 갱신 (2026-05-09).
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
@@ -971,6 +1012,41 @@ Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
 - ❌ 종목 yaml 분리 (`config/symbol_names.yaml`) — Phase 0.11 후보
 - ❌ Realized P&L 외 위험조정 지표 (Sharpe / Calmar episode-내) — KPI
   5 개로 한정 (ADR 0006 §14.7)
+
+**Phase 0.10.y 본질 (ADR 0006 §15 박제 완료, 라운드 #19, 2026-05-09)**:
+- 🔒 `src/adapters/reporting/chart.py` 레전드 + MA 외부 계산 + Korean
+  폰트 fallback — **sub-step 0.10.y.b / 0.10.y.d 에서만 작성** (ADR
+  0006 §15.5)
+- 🔒 `src/application/reporting/strategy_info.py` (StrategyInfo frozen
+  dataclass + `from_strategy_bundle` factory) — **sub-step 0.10.y.g
+  에서만 작성** (ADR 0006 §15.6). 6 bundle attrs frozen contract surface
+  docstring 박제
+- 🔒 chart.py `_summarize_labels(labels)` regex `r"^(.+?)(\d+)$"` 5
+  decision rules — **sub-step 0.10.y.b 에서만 작성** (ADR 0006 §15.5)
+- 🔒 chart.py 레전드 5 조정 (상승/하락 삭제 / MA20·MA60 전 구간 / 고점·
+  저점·회복 유지 / 매수=빨강 / 매도=초록) — **sub-step 0.10.y.d 에서만
+  작성** (ADR 0006 §15.4 사용자 명시 박제)
+- 🔒 `html_writer.py` strategy_info section + DI kwarg + `<details
+  class="strategy-info" open>` wrapper — **sub-step 0.10.y.g 에서만
+  작성** (ADR 0006 §15.6)
+- 🔒 `scripts/generate_phase_0_9_2_report.py` strategy_info plumbing
+  via `from_strategy_bundle(first_bundle, args.config, asset_codes=enabled)`
+- ❌ `MarkerStyle.side` 필드 추가 — Protocol §4.2 frozen (ADR 0006
+  §15.8 / 0006 §4.2 박제)
+- ❌ SevenSplit / Default renderer palette 변경 — §4.3.1 박제 보존
+  (face color slot palette 그대로, swatch 색상만 representative 변경)
+- ❌ γ' edge ring (`markeredgecolor` per side) — falsification gate 에서
+  사용자 거부 (ADR 0006 §15.4)
+- ❌ Greens-7 / Reds-7 palette swap (γ option) — §4.3.1 직접 override
+  거부 (ADR 0006 §15.9)
+- ❌ asset_uniformity 필드 / per-asset rendering — Phase 1+ ADR 0007
+  trigger (ADR 0006 §15.6 Patch P1)
+- ❌ `TradeCycleView` 도메인 view 승격 / Renderer Protocol `cycle_columns`
+  / opaque `dict[str, Any]` payload — Phase 0.11+ / ADR 0007 검토
+- ❌ inline JS / jinja2 / plotly / asset-scope episode / 멀티 strategy
+  동시 차트 — Phase 0.11+ / Phase 1+ (ADR 0006 §15.12)
+- ❌ StrategyInfo 다국어 / nested-table parameters / yaml 분리 — Phase 0.11+
+- ❌ A11y palette toggle (color-blind) — Phase 1+
 - 🔒 신규 의존성 (matplotlib / mplfinance / pandas) — pyproject.toml
   `[project.optional-dependencies] reporting` extras (ADR 0006 §6.1).
   Phase 0.10 한정 의존성, 핵심 백테스트는 의존성 zero 유지
@@ -1050,4 +1126,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.h ~ 0.10.k 완료, ADR 0006 §14 박제 후속, Phase 0.10.x readability 즉시 종결 — 라운드 #18, 분석 phase 그대로 유지)*
+*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.y.a ~ 0.10.y.f 완료, ADR 0006 §15 박제 후속, Phase 0.10.y chart legend + strategy info 즉시 종결 — 라운드 #19, 분석 phase 그대로 유지)*
