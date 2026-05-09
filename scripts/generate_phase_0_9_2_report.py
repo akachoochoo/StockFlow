@@ -25,6 +25,7 @@ from pathlib import Path
 from src.adapters.reporting.renderer_registry import StrategyRendererRegistry
 from src.application.backtest_runner import BacktestRunner
 from src.application.reporting.report import generate_episode_report
+from src.application.reporting.strategy_info import from_strategy_bundle
 from src.cli.composition import asset_from_code
 from src.domain.models import OHLCV, Asset, Currency, Money
 from src.infrastructure.yaml_strategy_config_loader import load_strategy_config
@@ -151,6 +152,10 @@ def main() -> int:
     # Generate report
     bars_by_symbol = {code: bars_by_code[code] for code in enabled}
     registry = StrategyRendererRegistry()
+    # Phase 0.10.y §15.5 — surface strategy info in HTML output.
+    strategy_info = from_strategy_bundle(
+        first_bundle, args.config, asset_codes=enabled,
+    )
     report = generate_episode_report(
         backtest_result=result,
         strategy_id=first_bundle.buy_strategy_name,
@@ -161,6 +166,7 @@ def main() -> int:
         scope="portfolio",
         chart_symbol=args.chart_symbol,
         title=f"Phase 0.9.2 — {args.start}~{args.end}",
+        strategy_info=strategy_info,
     )
 
     print()
