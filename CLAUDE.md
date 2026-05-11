@@ -615,19 +615,19 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 14. Phase별 범위 (현재: 분석 phase — Phase 0.11 결정 대기)
+## 14. Phase별 범위 (현재: 분석 phase — Phase 0.11.a 완료, 다음 trajectory 결정 대기)
 
 > 완료 phase 의 sub-step / 결정 / 게이트 결과는 ADR (`docs/decisions/adr-NNNN-*.md`)
 > + 회고 (`docs/retrospectives/phase-N.N.md`) + `docs/roadmap.md` 가 정본.
 > 이 섹션은 현 상태 + 진행 중 phase + 다음 phase 만 유지. 완료 phase 상세는
 > 정본에서 인용하고 여기에 다시 옮겨 적지 말 것.
 
-### 현 상태 (2026-05-11)
+### 현 상태 (2026-05-12)
 
 - **분석 phase** (2026-05-08 시작) — Phase 0.10 결과 검토 후 다음 trajectory 결정.
-  코드 변경 zero (Phase 0.10 박제 보존). Phase 0.11 결정은 다음 session.
 - Phase 0.10 시리즈 (0.10 ~ 0.10.bb) 정식 종료 — 라운드 #22 (2026-05-11, ADR 0006 §18).
-- Phase 1 진입 결정 보류.
+- **Phase 0.11.a** (DGT Research-Namespace Overlay) 정식 종료 — 라운드 #23 (2026-05-12, ADR 0007 §3). G1+G3+G4 PASS, G2 INFORMATIONAL FAIL (anticipated, R1 mitigation). D10 = archive (default 채택). DGT registry 미합류.
+- Phase 1 진입 결정 보류. Phase 0.11.b vs Phase 1 진입 = 다음 session.
 
 ### 완료 phase 인덱스 (정본 = ADR / 회고)
 
@@ -647,6 +647,7 @@ B) <옵션 2와 trade-off>
 | 0.10.z | 05-09 | Slot annotation injection | AC 12/12 | 0006 §16 | analysis |
 | 0.10.aa | 05-09 | Per-symbol chart panels | AC 14/14 | 0006 §17 | analysis |
 | 0.10.bb | 05-11 | Reporting cleanup (_INT_KEYS / Sharpe-Calmar) | AC 21/21 | 0006 §18 | phase-0.10-analysis.md |
+| 0.11.a | 05-12 | DGT Research-Namespace Overlay (`src/research/` 5th ring + KoreanMarketCostModel + 일봉 prototype runner informational) | G1+G3+G4 PASS / G2 INFORMATIONAL FAIL (R1 — 일봉 ≠ 분봉) / D10 = archive / DGT registry 미합류 | 0007 §1~§3 | phase-0.11.a.md + phase-0.11.a-comparison.md |
 
 **핵심 학습** (Phase 0.7 ~ 0.9, ADR 0005 §9.6.2 박제):
 **자산군 분산 = H3 회복의 충분 조건** (3 회 반복 검증). 단일 자산군 (전부 주식
@@ -656,7 +657,7 @@ B) <옵션 2와 trade-off>
 ### Phase 1 (예정, 가칭) — KR 주식 실거래 (소액)
 
 - KIS API 어댑터 + 100~500만원 소액 + 차단기 비활성 + 1~2개월 운영
-- 결정: ADR 0007 (가칭, 진입 시 박제 — ADR 0005 §11.5 박제). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7 / ADR 0005 §10.6.3
+- 결정: **ADR 0008** (가칭, 진입 시 박제 — D6 default 재번호. 이전 가칭 ADR 0007 = Phase 0.11.a DGT 점유, ADR 0007 §1.3 D6 박제). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7 / ADR 0005 §10.6.3
 - 트리거 항목: §16.4 참조
 
 ### Phase 1 진입 전 작성 금지 (통합 목록)
@@ -678,7 +679,7 @@ B) <옵션 2와 trade-off>
 - SupportLevelStrategy + cooldown — Phase 0.9.x / Phase 1+ (ADR 0004 §7.3.2 거부 박제 인용 필수)
 - 멀티 종목 + SupportLevel 결합 — Phase 0.9.x 후속 (ADR 0004 §1.10)
 - Phase 0.7.4 (부동산 분산) — placeholder 보존 (ADR 0003 §18.12.4 / §19.3)
-- 그리드 트레이딩 — Phase 0.10+ placeholder (arxiv 2506.11921)
+- 그리드 트레이딩 — Phase 0.11.a 완료 (2026-05-12, ADR 0007 §3, D10 = archive). 분봉 DGT 재검토 = Phase 1 ADR 0008 진입 후 별도 결정 라운드.
 - 종목 선정 자동화 / 박영옥 가치주 자동 식별 — Phase 2+
 - 일중 데이터 (분봉 / 틱) — Phase 0 ~ 0.10 = 일봉 (pykrx) only
 - 보존 (변경 금지, 회귀 invariant): `PriceDropStrategy` / `SupportLevelStrategy` /
@@ -752,7 +753,9 @@ PriceDropStrategy) 비교 가정 유지. 사용자 확인 없이 호가 가변 /
 "친절한 추가 금지" 정신). 검토 필요한 영역에는 `# Phase 1 ADR 박제 후
 검토` 주석 추가.
 
-### 16.4 Phase 1 ADR 0007 (가칭) 트리거 항목
+### 16.4 Phase 1 ADR 0008 (가칭) 트리거 항목
+
+> D6 default 재번호: 이전 가칭 ADR 0007 = Phase 0.11.a DGT 점유. Phase 1 ADR = 0008 (ADR 0007 §1.3 D6 박제, 2026-05-11).
 
 Phase 1 ADR 박제 시 다뤄질 결정 (ADR 0003 §11.3 / ADR 0005 §10.6.3 인용):
 

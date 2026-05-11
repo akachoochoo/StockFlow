@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-11 (Phase 0.11.a 진입 결정 라운드 #23 박제 — DGT 도입 검토 sub-step, ADR 0007 draft commit, Phase 1 ADR = 0008 재번호 동시)
+> 마지막 업데이트: 2026-05-12 (Phase 0.11.a 정식 종료 — 라운드 #23, ADR 0007 §3, D10 = archive, DGT registry 미합류, 회고 `phase-0.11.a.md` + 비교 표 `phase-0.11.a-comparison.md` 박제)
 
 ## 현재 상태
 
@@ -24,7 +24,7 @@
 | Phase 0.10.aa | 완료 (2026-05-09, 라운드 #21) — Per-symbol chart panels (단일 차트에 5종목 marker outlier 문제 fix), AC 14/14 충족, Protocol + slot palette 보존, `write_episode_html` charts list 시그니처 (breaking) | ADR 0006 §17 |
 | Phase 0.10.bb | 완료 (2026-05-11, 라운드 #22) — Reporting cleanup bundle (탭 UI defer / `_INT_KEYS` cleanup / Sharpe-Calmar episode-내 risk metrics). AC 21/21 충족. None vs Decimal(0) misinformation 차단. Phase 0.10 정리 종료 | ADR 0006 §18 |
 | 분석 phase | 정리 종료 (2026-05-11) — Phase 0.11.a 진입 | — |
-| **Phase 0.11.a** | **진행 중 (2026-05-11 진입, sub-step 0.11.a.1 박제)** — DGT (arxiv 2506.11921) 도입 검토. `src/research/` 5th ring overlay + KoreanMarketCostModel + 일봉 prototype runner (informational). D1~D11 default 채택 | ADR 0007 §1 (draft, 라운드 #23) / 회고 TBD (`phase-0.11.a.md`, sub-step 0.11.a.5) |
+| **Phase 0.11.a** | 완료 (2026-05-12, 라운드 #23 종료) — DGT Research-Namespace Overlay. G1+G3+G4 PASS, G2 INFORMATIONAL FAIL (R1 — 일봉 ≠ 분봉). D10 = archive. DGT registry 미합류. CAGR 1.23% / MDD -19.55% / Sharpe 0.17 / Calmar 0.063 < Phase 0.7.3 baseline 4지표 | ADR 0007 §1~§3 / `phase-0.11.a.md` + `phase-0.11.a-comparison.md` |
 | Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = Phase 0.11.a 후속 또는 별도 trajectory | 진입 시 ADR 0008 (D6 default 재번호, 이전 가칭 ADR 0007) |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
