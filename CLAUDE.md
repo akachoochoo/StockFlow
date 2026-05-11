@@ -600,381 +600,78 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 14. Phase별 범위 (현재: Phase 0.9)
+## 14. Phase별 범위 (현재: 분석 phase — Phase 0.11 결정 대기)
 
-### Phase 0 (완료, 2026-05-02)
-회고: `docs/retrospectives/phase-0.md`. 결정: ADR 0001.
+> 완료 phase 의 sub-step / 결정 / 게이트 결과는 ADR (`docs/decisions/adr-NNNN-*.md`)
+> + 회고 (`docs/retrospectives/phase-N.N.md`) + `docs/roadmap.md` 가 정본.
+> 이 섹션은 현 상태 + 진행 중 phase + 다음 phase 만 유지. 완료 phase 상세는
+> 정본에서 인용하고 여기에 다시 옮겨 적지 말 것.
 
-### Phase 0.5 (완료, 2026-05-03)
-- 매도 (`ProfitTargetSell`) + 재진입 (`MovingAverageReentry` D-2 / `HybridTimeBasedReentry` F) 도입
-- 결정: ADR 0002. 회고: `docs/retrospectives/phase-0.5.md`. 결과: `docs/retrospectives/phase-0.5-results.md`
-- 5-year KOSPI 200 백테스트 결과: H1 ✅ / H2 ❌ / H3 ❌ / H4 ✅ — 게이트 #2 미충족
-- 종료 라운드: 옵션 A' (Phase 0.7 직진 — 멀티 종목으로 H2/H3 본질 검증) 채택. ADR 0002 §13 박제.
+### 현 상태 (2026-05-11)
 
-### Phase 0.7 범위 (시리즈 진행 중)
-- KR 거래소 상장 ETF 멀티 종목 (2종목 시작 → 3~5개 확장)
-- 자본 배분 정책 비교 (균등 → 역변동성 / 정변동성)
-- 종목 간 우선순위 = config 정의 순서 (단순)
-- 종목 간 자본 동적 이동 없음 (per-asset budget 고정)
-- 매도 정책 default = F (HybridTimeBasedReentry, cooldown=60). D-2 비교 baseline 보존.
-- Mock Broker, Mock MarketData 유지 — 위험 zero
-- 단계 분리: 0.7.1 (인프라 2종목) → 0.7.2 (배분 정책) → 0.7.3 (종목 다양화). 단계별 회고.
-- 결정: ADR 0003. 회고: `docs/retrospectives/phase-0.7.{N}.md` (단계별).
+- **분석 phase** (2026-05-08 시작) — Phase 0.10 결과 검토 후 다음 trajectory 결정.
+  코드 변경 zero (Phase 0.10 박제 보존). Phase 0.11 결정은 다음 session.
+- Phase 0.10 시리즈 (0.10 ~ 0.10.bb) 정식 종료 — 라운드 #22 (2026-05-11, ADR 0006 §18).
+- Phase 1 진입 결정 보류.
 
-#### Phase 0.7.1 (완료, 2026-05-04)
-- 멀티 종목 인프라 (069500 KODEX 200 + 214980 KODEX 단기채권 PLUS), 균등 배분, 정책 동일성 강제
-- 5-year KOSPI 200 + 채권 백테스트 결과: H1 ❌ / H2 ❌ / H3 ❌ — 게이트 0/3 FAIL
-- 라운드 #5 결정: 옵션 A (Phase 0.7 시리즈 완주 + Phase 0.8/0.9 직교 차원 추가). ADR 0003 §15.5.1 박제.
-- 회고: `docs/retrospectives/phase-0.7.1.md`. 결과: `docs/retrospectives/phase-0.7.1-results.md`.
+### 완료 phase 인덱스 (정본 = ADR / 회고)
 
-#### Phase 0.7.2 (완료, 2026-05-05) — 자본 배분 정책 비교
-- 종목 유지 (069500 + 214980) — 변수 통제 (배분 정책 1 차원만 변경)
-- 배분 정책 3 종 비교 결과: EQUAL = baseline 자기 동치 (회귀 invariant 검증 통과) / VOL = 정책 효과 측정 통과 (return 13.38% / MDD -22.50% — 자산군 분산 약화 부산물) / INV_VOL = Sharpe 4.53 단독 ≥ 2/3 미달
-- 라운드 #7 결정: 1=(a) Phase 0.7.3 진입 + 2=(iii) H3 임계 정의 명시화 + 3=(γ) 게이트 결과 분리 박제. ADR §17 박제.
-- 결정: ADR §16, §17. 회고: `docs/retrospectives/phase-0.7.2.md`. 결과: `docs/retrospectives/phase-0.7.2-results.md`.
+| Phase | 종료일 | 본질 | 결과 | ADR | 회고 |
+|-------|--------|------|------|-----|------|
+| 0     | 05-02 | MVP | — | 0001 | phase-0.md |
+| 0.5   | 05-03 | 매도 + 재진입 | H1/H4 ✅ H2/H3 ❌ | 0002 | phase-0.5.md |
+| 0.7.1 | 05-04 | ETF 멀티 (KOSPI+채권) | 게이트 0/3 | 0003 §15 | phase-0.7.1.md |
+| 0.7.2 | 05-05 | 배분 정책 비교 (EQ/VOL/INV_VOL) | 1/3 부분 | 0003 §16,§17 | phase-0.7.2.md |
+| 0.7.3 | 05-05 | 종목 다양화 (주식+골드) | **3/3 PASS** | 0003 §18,§19 | phase-0.7.3.md |
+| 0.8.1 | 05-06 | 매수 패러다임 (SupportLevel) | 2/3 (H3 ❌, MDD -21%) | 0004 | phase-0.8.1.md |
+| 0.9.1 | 05-07 | 개별 주식 인프라 (2 종) | 2/3 (H3 ❌) | 0005 §1~§7 | phase-0.9.1.md |
+| 0.9.2 | 05-08 | 분산 효과 (5 종 업종 분산) | 2/3 (H3 ❌, MDD -37%) | 0005 §8~§11 | phase-0.9.2.md |
+| 0.10  | 05-08 | Backtest Reporting (TradeView / Renderer / DrawdownEpisode) | AC 5/5 | 0006 §1~§13 | phase-0.10.md |
+| 0.10.x | 05-09 | Episode HTML 가독성 (포매터 / KPI / cycle pairing) | AC 10/10 | 0006 §14 | analysis |
+| 0.10.y | 05-09 | Chart legend + StrategyInfo | AC 12/12 | 0006 §15 | analysis |
+| 0.10.z | 05-09 | Slot annotation injection | AC 12/12 | 0006 §16 | analysis |
+| 0.10.aa | 05-09 | Per-symbol chart panels | AC 14/14 | 0006 §17 | analysis |
+| 0.10.bb | 05-11 | Reporting cleanup (_INT_KEYS / Sharpe-Calmar) | AC 21/21 | 0006 §18 | phase-0.10-analysis.md |
 
-#### Phase 0.7.3 (완료, 2026-05-05) — 종목 다양화
-- 종목 2 종: 069500 (KODEX 200) + 132030 (KODEX 골드선물(H)) — 채권 대체, 주식 + 골드 분산
-- 5-year 백테스트 결과: H1 ✅ 34.37 / H2 ✅ 13.23 / H3 ✅ 0.5255 — **게이트 3/3 PASS** (Phase 0.7 시리즈 첫 명확한 통과)
-- 라운드 #9 결정: Phase 0.7 시리즈 정식 종료 + Phase 0.7.4 (부동산) placeholder 보존 + §14.7 γ Phase 0.8+ 보류. ADR 0003 §19 박제.
-- 핵심 발견: 종목 조성 (채권 → 골드) 이 정책-자산 부정합 처방의 결정타.
-- 결정: ADR 0003 §18, §18.12, §19. 회고: `docs/retrospectives/phase-0.7.3.md`. 결과: `docs/retrospectives/phase-0.7.3-results.md`.
-
-### Phase 0.8 범위 (완료, 2026-05-06) — 매수 패러다임 비교 (단일 sub-step)
-- 매수 패러다임 차원 변경 (가치 → 기술적). `SupportLevelStrategy` 신규 + `SupportSlot` (B-1 옵션)
-- **박영옥 원전 정신 폐기 아님** — `PriceDropStrategy` 보존, 비교 검증 (yaml `buy_strategy` 분기)
-- 보조 지표: `src/domain/indicators/` helper 모듈 (도메인 내부 응집)
-- 비교 baseline = Phase 0.7.3 (069500 + 132030, EQUAL, PriceDropStrategy) — 변수 1 차원 (매수 전략만) 통제
-- 결정: ADR 0004. 회고: `docs/retrospectives/phase-0.8.{1,}.md`.
-
-#### Phase 0.8.1 (완료, 2026-05-06) — 매수 패러다임 1 차원
-- 종목 2 종 (069500 + 132030) + EQUAL + SupportLevelStrategy (slot 1~5)
-- 5-year 백테스트 결과: H1 ✅ 0.4188 / H2 ✅ 14.0586 / H3 ❌ 0.2679 — **게이트 2/3 PASS**
-- 핵심 발견: SupportLevelStrategy 의 자본 회전 활발화 (+0.09 turnover) + 절대 수익 미세 개선 (+0.83pp)
-  vs **MDD -8.27% → -21.28% (-13.01pp) 큰 폭 악화** + Sharpe / Calmar 동반 하락 (위험조정 수익 미달)
-- ADR §4.3.3 박제한 whipsaw 위험 가설 발현 — cooldown 무 + indicator-based 트리거 trade-off
-- Phase 0.7.2 VOL 정책 결과와 trade-off 패턴 일치 (return/turnover ↑ + MDD/Sharpe ↓)
-- 라운드 #11 결정: Phase 0.8 시리즈 종료 + Phase 0.9 직진 + cooldown 도입 거부 (본질적 한계 인정).
-  ADR 0004 §7 박제.
-- 결정: ADR 0004 §1, §2, §3, §4, §5, §6, §7. 회고: `docs/retrospectives/phase-0.8.1.md`.
-  결과: `docs/retrospectives/phase-0.8.1-results.md`. 시리즈 회고: `docs/retrospectives/phase-0.8.md`.
-
-#### Phase 0.8 시리즈 종료 결정 (완료, 2026-05-06) — 라운드 #11
-- ADR 0004 §7 박제 — Phase 0.8 시리즈 종료 + Phase 0.9 직진 + H3 본질적 한계 인정
-- "PriceDropStrategy + 분산이 본질" 데이터 근거 입증
-- SupportLevelStrategy / SupportSlot / indicators 모듈 보존 — Phase 0.9.x 후속 결합 검토 가능
-
-### Phase 0.8에서 명시적으로 제외 (완료 시점)
-- Phase 0.8.2 (단기 매매 +3~5%) — ADR §7.2 옵션 b 거부 (H3 FAIL 상태에서 MDD 더 악화 위험)
-- Phase 0.8.x (cooldown 도입 / whipsaw 완화) — ADR §7.3 처방 거부 (정체성 약화 + data snooping)
-- 멀티 종목 + SupportLevel 조합 — Phase 0.9.x 후속 (ADR 0004 §1.10)
-- Phase 0.7.4 (부동산 분산) — ADR 0003 §18.12.4 / §19.3 placeholder 보존
-- §14.7 γ (자산별 다른 정책) — ADR 0003 §19.4 / Phase 1+ 보류
-
-### Phase 0.9 범위 (진행 중, 2026-05-06 진입) — 개별 주식 검증
-
-진입 결정 라운드 #12 박제 완료 (2026-05-07) — **ADR 0005 §1**.
-
-- ETF → 개별 주식 (종목 성격 차원). 변수 통제: 종목 차원만 변경
-- 인프라 변경: Market enum (KOSPI / KOSDAQ) / listed_at / delisted_at /
-  호가 단위 가변 (`src/domain/tick_size.py` helper) / 거래 정지 / 액면분할 (수정 종가)
-- 거래세 / 수수료 모델링 = **Phase 1+ 보류** (ADR 0005 §1.13)
-- 매수 전략 default = **PriceDropStrategy** drop=5.0% strict (ADR 0005 §1.8)
-- 매도 / 재진입 default = ProfitTarget +10% / Hybrid cooldown=60 (Phase 0.7.3 그대로)
-- 손절 정책 **미도입** (Phase 0.9 본질 = 인프라 검증). Phase 1 ADR §1 본격 검토
-- 후행 편향 단순화 (현재 살아있는 종목, 낙관적 추정 — ADR 0005 §1.6.3)
-- SupportLevelStrategy 보존 — Phase 0.9.x 후속 결합 검토 가능
-- 비교 baseline = Phase 0.7.3 strict — H1=0.3270 / H2=13.23% / H3=0.5255
-- 게이트: ≥ Phase 0.7.3 baseline strict, 통과 ≥ 2/3
-- Mock Broker 유지 (Phase 1 KIS API 진입 시점은 Phase 0.9 종료 결정 라운드에서 결정)
-
-#### Phase 0.9.1 (진행 중, 2026-05-07) — 인프라 검증 (2 종)
-- 종목: 005930 삼성전자 + 005380 현대차 — Phase 0.7.3 와 동일 종목 수, 변수 통제 strict
-- Sub-step (ADR 0005 §1.12 + §3 합병 박제): 0.9.a (ADR 박제) ✅ → 0.9.b (CLAUDE.md
-  / roadmap 갱신) ✅ → 0.9.c (사전 검증) ✅ → 0.9.d (Asset 확장 + tick_size helper —
-  ADR 0005 §3 박제, 0.9.f 합병) ✅ → 0.9.e (다운로드 일반화) ✅ → ~~0.9.f (폐기,
-  0.9.d 합병)~~ → 0.9.g (다운로드 + CSV — ADR 0005 §4) ✅ → 0.9.h (BacktestRunner
-  + Phase 0.7.3 회귀 invariant — ADR 0005 §5, H1/H2/H3 PASS) ✅ → 0.9.i (Phase
-  0.9.1 백테스트 실행, 시나리오 C — H1/H2 ✅, H3 ❌ 게이트 2/3) ✅ → 0.9.j (결과
-  분석 + ADR §6, 분산 효과 약화 본질) ✅ → 0.9.k (회고 `phase-0.9.1.md`) ✅ →
-  0.9.l (게이트 판정 정식 박제 — ADR §7, 시나리오 C / 2/3 PASS) ✅ → 0.9.m (Phase
-  0.9.2 진입 결정 라운드 #14 — ADR §8 박제, Phase 0.9.2 진입 채택) ✅
-
-#### Phase 0.9.2 (진행 중, 2026-05-07 진입 결정) — 분산 효과 (5 종)
-- 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
-- 업종 분산: 반도체 / 자동차 / 금융 / 소비재 / 에너지
-- 변수 (vs 0.9.1): 종목 수 (2 → 5) + 업종 분산
-- 게이트: Phase 0.7.3 baseline strict (Phase 0.9.1 동일)
-- 가설 (ADR 0005 §6.6.3 / §8.2.2): 업종 다양화 → 분산 효과 회복 → 시나리오 C → A/B 변경 가능
-- Sub-step (ADR 0005 §8.5 박제): 0.9.2.a (ADR §8 박제 + CLAUDE.md/roadmap 갱신) ✅
-  → 0.9.2.b (yaml + 백테스트 실행, 시나리오 C 또 발현 — H1/H2 ✅ H3 ❌, MDD
-  -37.65% 더 악화) ✅ → 0.9.2.c (결과 분석 + ADR §9, 자산군 분산 일반화 박제) ✅
-  → 0.9.2.d (회고 `phase-0.9.2.md`) ✅ → 0.9.2.e (게이트 판정 — ADR §10, Phase
-  0.9 양쪽 진입 자격 충족) ✅ → 0.9.2.f (Phase 0.9 시리즈 종료 결정 라운드 #15
-  — ADR §11 박제, Phase 1 직진 거부 + Phase 0.10 진입) ✅
-
-### Phase 0.9 종료 결정 (완료, 2026-05-08, 라운드 #15) — ADR 0005 §11
-- Phase 0.9 시리즈 정식 종료 + Phase 1 직진 거부 + Phase 0.10 (Backtest Reporting Enhancement) 진입
-- 시리즈 회고: `docs/retrospectives/phase-0.9.md` (sub-step 0.10.a 동시)
-- ADR 0006 / 0007 명명 변경: 기존 "Phase 1 ADR 0006 (가칭)" → ADR 0007. ADR 0006 = Phase 0.10 신규
-- Phase 0.9 학습 종합: "자산군 분산 = H3 회복의 충분 조건" (3 회 반복 검증, ADR §9.6.2 일반화 박제)
-
-### Phase 0.10 (진행 중, 2026-05-08 진입) — Backtest Reporting Enhancement
-- 본질: 인프라 강화 (analytical reporting layer) — 가설 / 게이트 없음
-- 평가 기준: Acceptance Criteria 5 항목 (ADR 0006 §1.3)
-- 변경 차원: 백테스트 출력 리포팅 (drawdown episode + strategy-agnostic trade markers)
-- Mock 환경 유지 (Phase 1 미진입)
-- 기존 코드 영향: 변경 zero (신규 추가만)
-- 결정: ADR 0006 (라운드 #16). 회고: `docs/retrospectives/phase-0.10.md` (예정)
-- 핵심 결정 (ADR 0006):
-  * ADR-1 (§3): TradeView (application view model, 도메인 엔티티 추가 zero)
-  * ADR-2 (§4): StrategyRenderer Protocol + Registry (`src/ports/` + `src/adapters/reporting/renderers/`)
-  * ADR-3 (§5): DrawdownEpisodeDetector (application layer, strategy-agnostic)
-  * 차트 라이브러리: mplfinance (정적 PNG embed in HTML)
-  * HTML 출력: stdlib f-string (jinja2 미도입)
-  * 출력 위치: `reports/backtest/<config>_<window>/episode_<n>.html` (.gitignore)
-  * 임계치 default: -5% (yaml/CLI override 가능)
-  * Episode 정의: portfolio default + asset 옵션 + both
-- 신규 의존성: matplotlib / mplfinance / pandas (`[project.optional-dependencies] reporting`)
-- Sub-step (ADR 0006 §11 박제): 0.10.a (ADR 박제 + 시리즈 회고 + 명명 변경) ✅ → 0.10.b
-  (Step A — TradeView + DrawdownEpisode + detector) ✅ → 0.10.c (Step B — Renderer
-  Protocol + SevenSplit/Default + Registry) ✅ → 0.10.d (Step C — chart mplfinance +
-  HTML stdlib) ✅ → 0.10.e (Step D — Phase 0.9.2 E2E + AC3 검증, 4 episodes 진단) ✅
-  → 0.10.f (회고 `phase-0.10.md` + AC 5/5 박제 ADR §12) ✅ → 0.10.g (Phase 0.10 종료
-  결정 라운드 #17 — Phase 1 진입 보류 + 분석 phase 시작, ADR 0006 §13) ✅
-
-### Phase 0.10 종료 결정 (완료, 2026-05-08, 라운드 #17) — ADR 0006 §13
-- Phase 0.10 정식 종료 + Acceptance Criteria 5/5 충족 (ADR 0006 §12)
-- Phase 1 진입 결정 보류 (사용자 명시 — "결과를 좀 더 분석 해보고 결정")
-- 분석 phase 시작 — 코드 변경 zero, Phase 0.10 박제 보존
-- 다음 phase = 미결정 — 라운드 #18 (가칭, 사용자 분석 후) 에서 결정
-- Phase 1 ADR 0007 박제 = 라운드 #18 후속
-
-### 분석 phase (진행 중, 2026-05-08 시작) — 사용자 분석 보류
-- 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes / AC 5/5 / ADR 0006 §1~§13)
-  검토 후 다음 trajectory 결정
-- 코드 변경 zero (Phase 0.10 박제 보존) — **단, 라운드 #18 (2026-05-09)
-  에서 Phase 0.10.x trajectory 채택 후 본 가독성 sub-step 만 진행 +
-  즉시 종결 (분석 phase 자체는 유지)**
-- 분석 대상 (예시): Phase 0.7.3 vs 0.9.2 비교 / Phase 1 ADR 0007 박제 항목
-  우선순위 / Phase 0.10.x 가능성 / 기타 trajectory (Phase 0.7.4 부동산
-  / SupportLevel + 개별 주식 / 손절 단독 검증 등)
-- 종료: 라운드 #19 (가칭) 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
-
-### Phase 0.10.bb (완료, 2026-05-11 — 라운드 #22) — Reporting Cleanup Bundle
-- 본질: Phase 0.10 시리즈 reporting layer 정리. 3 item bundle 중 1 defer
-  (탭 UI) + 2 implement (_INT_KEYS cleanup / Sharpe-Calmar episode-내).
-  Phase 1 진입 전 마지막 정리 sub-phase
-- 평가 기준: Acceptance Criteria 21 항목 (ADR 0006 §18.E) — 21/21 충족
-- 박제 인터페이스 변경 zero (`StrategyRenderer` Protocol §4.2 + SevenSplit
-  slot palette §4.3.1 보존). 신규 의존성 zero. 도메인 변경 zero
-- ralplan consensus 2 iter — Architect E1-E5 (None vs Decimal(0) /
-  sort invariant / Q1 ceremony drop / 트리거 restate / Win rate scope) +
-  Critic 5 patches (CRITICAL None-vs-Decimal(0) precondition) 후 APPROVE
-- 결정: ADR 0006 §18 (라운드 #22). 통합 회고 `phase-0.10-analysis.md` 선행
-- 핵심 결정 (ADR 0006 §18):
-  * §18.A 탭 UI **defer** — `<details class="chart-symbol" open>` per-symbol
-    스택 유지. 트리거: 사용자 scroll-pain 불만 OR ≥10 종목 (rule-of-thumb,
-    not falsifiable). Code 변경 zero
-  * §18.B `_INT_KEYS` vestigial cleanup — `frozenset({"split_number",
-    "slot_number"})` → `frozenset({"slot_number"})`. §16.7 reverse rationale:
-    원 박제 가정 contradicted (Phase 0.10.z slot_number 통일) + reverse cost
-    < carry cost. Reverse meta-principle 박제 (Architect E1)
-  * §18.C Sharpe / Calmar episode-내 + Risk-Adjusted Metrics 섹션 —
-    `src/application/reporting/risk_metrics.py` 신규 view model (TradeView
-    pattern 정합). None vs Decimal(0) 명시 disambiguation (CRITICAL —
-    돈 misinformation bug 차단). Section omit > row-N/A. Sort invariant
-- 신규 모듈: `src/application/reporting/risk_metrics.py` +
-  `src/application/metrics.py::has_nonzero_return_variance` (public predicate)
-- 수정: `src/adapters/reporting/html_writer.py` (_INT_KEYS + risk-metrics
-  section + CSS) / `src/application/reporting/report.py` (risk_metrics 계산 +
-  thread)
-- 신규 테스트: 24 (risk_metrics 13 / has_nonzero_return_variance 6 /
-  html_writer risk section 4 / _INT_KEYS 1). 전체 1074/1074 PASS
-- 시각 검증: `report/episode_{1,2,3,4}.html` 4/4 모두 Risk-Adjusted Metrics
-  section 포함
-- Sub-step (ADR 0006 §18.D 박제): 0.10.bb.b (cleanup + §18.A fold) +
-  0.10.bb.c (risk metrics + integration). 2 sub-steps (기존 plan 의
-  standalone a 는 ceremonial 이라 drop, §18.A paragraph 만 b commit 에 fold)
-
-### Phase 0.10.aa (완료, 2026-05-09 — 라운드 #21) — Per-Symbol Chart Panels
-- 본질: episode HTML 의 단일 chart 가 5 종목 (가격대 25k~250k) 의 모든
-  trade marker 를 그려서 y-axis auto-scale 이 outlier 에 지배됨 + 캔들
-  납작화 발생. 종목별 chart panel stack 으로 해결
-- 평가 기준: Acceptance Criteria 14 항목 (ADR 0006 §17.10) — 14/14 충족
-- 박제 인터페이스 변경: `write_episode_html(charts: Sequence[tuple[str, bytes]])`
-  (breaking — `chart_png: bytes` 폐기). Protocol §4.2 / `MarkerStyle` /
-  SevenSplit slot palette §4.3.1 모두 보존
-- 신규 의존성 zero. 도메인 변경 zero
-- ralplan consensus 2 iter — Architect E1-E5 (sorted order / figure-leak AC /
-  no-op kwarg 삭제 / skip_empty_symbols / tab UI deferral) + Critic 8 patches
-  후 APPROVE
-- 결정: ADR 0006 §17 (라운드 #21). 회고는 분석 phase 종료 시 결정
-- 핵심 결정 (ADR 0006 §17):
-  * §17.3 A1 application-layer per-symbol orchestration — `report.py` 가
-    `for symbol in sorted(bars_by_asset.keys())` 루프. `chart.py` 단일-symbol
-    계약 보존 (adapter portfolio-aware 강요 회피, ADR §8 dependency 정합)
-  * §17.4 `skip_empty_symbols: bool = False` kwarg — default render-all
-    (cross-symbol context 보존), True 시 trade 없는 symbol 의 panel 제외
-  * §17.5 `<details class="chart-symbol" open>` per-symbol HTML 구조 — CSS
-    shared selector with `.symbol-group, .strategy-info` (per-symbol 정합)
-  * §17.6 `chart_symbol` 파라미터 explicit 제거 — silent-ignore "no-op
-    deprecated" 거부 (CLAUDE.md §13.3 정합). E3-A 채택
-  * §17.7 Pinned chart symbol order = `sorted(bars_by_asset.keys())` —
-    yaml load order / dict 구성에 결합되지 않은 deterministic layout
-  * §17.8 자동화된 figure-leak AC — `plt.get_fignums() == []` after
-    `generate_episode_report` (CI 게이트, smoke test 거부)
-  * §17.9 multi-panel mpf 거부 — N independent figures 단순성 우선
-- 변경: `src/application/reporting/report.py` (sorted loop +
-  `_filter_trades_by_symbol` helper + `skip_empty_symbols` kwarg +
-  `chart_symbol` 제거) / `src/adapters/reporting/html_writer.py`
-  (`charts: Sequence[tuple[str, bytes]]` 시그니처 + `_render_charts_section`
-  helper + `<details class="chart-symbol">` 템플릿 + CSS shared selector) /
-  `scripts/generate_phase_0_9_2_report.py` (--chart-symbol argparse 제거 +
-  kwarg 제거)
-- 신규 테스트: 4 (chart_panel_order_sorted / no_figure_leak / skip_empty_symbols
-  excludes / default renders all). 기존 1 test 제거 (test_unknown_chart_symbol_rejected).
-  전체 1050/1050 PASS
-- 시각 검증: `report/episode_1.html` 재생성 — 5 chart panels (5 종목, sorted
-  순서: 005380 / 005930 / 015760 / 055550 / 097950), `<img>` count = 5
-- Sub-step (ADR 0006 §17.11 박제): 0.10.aa.a (single sub-step — 코드 + 테스트 +
-  ADR 박제 + commit) ✅
-
-### Phase 0.10.z (완료, 2026-05-09 — 라운드 #20) — Slot Annotation Injection
-- 본질: 분석 phase 발견 버그 fix (chart 마커 모두 검정 = `_slot()` fallback 0).
-  Application layer 가 view-only annotations 에 도메인 typed `slot_number`
-  field 를 enrich. Clean Architecture 정합 — 도메인 변경 zero
-- 평가 기준: Acceptance Criteria 12 항목 (ADR 0006 §16.8) — 12/12 충족
-- 박제 인터페이스 변경 zero (`MarkerStyle` Protocol §4.2 + SevenSplit slot
-  palette §4.3.1 모두 보존). 신규 의존성 zero. 도메인 변경 zero
-- ralplan consensus 2 iter — Architect 의 C1→C2 switch (uniform `slot_number`
-  + 1-line adapter alignment) 채택, Critic 6 patches 후 APPROVE
-- 결정: ADR 0006 §16 (라운드 #20). 회고는 분석 phase 종료 시 결정
-- 핵심 결정 (ADR 0006 §16):
-  * §16.3 Application enriches `TradeView.annotations["slot_number"]` from
-    typed `BuyActionRecord.slot_number` / `SellActionRecord.slot_number` —
-    도메인 reasoning dict 변경 zero (view-side dict 만 mutate)
-  * §16.4 SevenSplitRenderer adapter 도메인 명명 align — `_slot()` 가
-    `slot_number` uniform read (BUY/SELL 모두). pre-Phase-0.5 fossil
-    `split_number` 키 제거 (half-done rename 마무리)
-  * §16.5 strict no-collision invariant — `assert "slot_number" not in
-    annotations` (silent setdefault 거부)
-  * §16.6 Renderer-agnostic application layer — 어떤 renderer 의 read key
-    convention 도 포착하지 않음 (E4 증명 test 포함)
-  * §16.7 Vestigial `_INT_KEYS = {split_number, slot_number}` cleanup
-    deferred Phase 0.11+
-- 변경: `src/application/reporting/trade_view.py` (+~30 LOC,
-  `_enrich_with_slot_number` helper) / `src/adapters/reporting/renderers/seven_split.py`
-  (~6 LOC: docstring + 1-line key change)
-- 신규 테스트: 6 (slot_number enrichment / collision-buy / collision-sell /
-  strategy-neutral / domain-reasoning-untouched). 기존 fixture 4 곳 mechanical
-  update (BUY annotations `split_number`→`slot_number`). 전체 1047/1047 PASS
-- Sub-step (ADR 0006 §16.9 박제): 0.10.z.a (single sub-step — 코드 + 테스트 +
-  박제 + commit) ✅
-
-### Phase 0.10.y (완료, 2026-05-09 — 라운드 #19) — Chart Legend + Strategy Info
-- 본질: 차트 시각 가독성 보강 + 전략 투명성 (analytical reporting layer)
-- 평가 기준: Acceptance Criteria 12 항목 (ADR 0006 §15.10) — 12/12 충족
-- 박제 인터페이스 변경 zero (`MarkerStyle` Protocol §4.2 / SevenSplit
-  slot palette §4.3.1 모두 보존). 신규 의존성 zero. 도메인 변경 zero
-- ralplan consensus 2 round × 2 iter (각 round 모두 APPROVE)
-- 결정: ADR 0006 §15 (라운드 #19). 회고는 분석 phase 종료 시 결정
-- 핵심 결정 (ADR 0006 §15):
-  * §15.4 Chart legend 5 조정 — 상승/하락 entry 삭제 / MA20/MA60 전 구간
-    표시 (full sorted_bars pre-window 계산) / 고점·저점·회복 vline 유지 /
-    매수 swatch 빨강 (`#d62728`) / 매도 swatch 초록 (`#2ca02c`).
-    γ' edge ring (plan §1.5 recommended) 은 falsification gate 에서
-    사용자 거부 — 5.A baseline + user feedback override 라인 ship
-  * §15.5 chart.py 데이터 기반 legend (`_summarize_labels` regex
-    `r"^(.+?)(\d+)$"` 박제 — 5 decision rules: range / comma list /
-    single / empty / mixed) + `returnfig=True` migration + by_style key
-    `(side, color, marker, size, label)` widen + Korean 폰트 fallback
-    via `FontProperties` 명시 적용
-  * §15.6 StrategyInfo application view model (`TradeView` 패턴 재사용,
-    NOT 도메인 entity, frozen dataclass) + factory frozen contract
-    surface 박제 (6 bundle attrs docstring + test_factory_reads_documented_field_set)
-  * §15.7 Multi-strategy 감사 박제 — A1 (legend "차수" hard-coding) +
-    A2 (strategy 미표시) 처방, A3 (멀티 strategy 동시 차트) Phase 1+
-    ADR 0007 trigger
-  * §15.8 §4.2 / §4.3.1 / §6 / §7 unchanged 명시 (face color = slot
-    palette, swatch 색상은 representative 표시값 — 분리 박제)
-  * §15.9 Alternatives 거부 — α/β/γ/γ'/δ + StrategyInfo 도메인/Protocol/
-    opaque dict 모두 거부 박제
-- 신규 모듈: `src/application/reporting/strategy_info.py`
-- 수정: `src/adapters/reporting/{chart.py, html_writer.py}`,
-  `src/application/reporting/report.py`, `scripts/generate_phase_0_9_2_report.py`
-- 신규 테스트: 31 (chart 강화 +11 + strategy_info +14 + html_writer
-  strategy_info section +6). 전체 1041/1041 PASS
-- Sub-step (ADR 0006 §15.11 박제): 0.10.y.a (plan freeze) ✅ →
-  0.10.y.b (chart legend, palette unchanged) ✅ →
-  0.10.y.c (falsification gate — 사용자 응답: legend 5 조정 요구) ✅ →
-  0.10.y.d (revised — 5 조정 적용) ✅ →
-  0.10.y.e (4 episodes regen) ✅ →
-  0.10.y.g (StrategyInfo + 3 test files) ✅ →
-  0.10.y.f (ADR §15 박제 + CLAUDE.md / roadmap 갱신 + commit) ✅
-
-### Phase 0.10.x (완료, 2026-05-09 — 라운드 #18) — Episode HTML Readability
-- 본질: 인프라 후속 보강 (analytical reporting layer 가독성 강화).
-  가설 / 게이트 없음 — Phase 0.10 패턴 동일
-- 평가 기준: Acceptance Criteria 10 항목 (ADR 0006 §14.10) — 10/10 충족
-- 박제 인터페이스 변경 zero (TradeView / Renderer Protocol /
-  DrawdownEpisode 동결). 신규 의존성 zero (`pyproject.toml` 변경 0 줄).
-  도메인 변경 zero
-- ralplan consensus 2 iter — Planner → Architect AGREE-WITH-CHANGES →
-  Critic ITERATE → Planner revise → Architect AGREE → Critic APPROVE
-- 결정: ADR 0006 §14 (라운드 #18). 회고 파일은 분석 phase 종료 시 결정
-- 핵심 결정 (ADR 0006 §14):
-  * §14.5 포매팅 정책 (Decimal places=2 / KRW ``₩`` prefix /
-    KST 일봉 ``"YYYY-MM-DD (요일)"`` / `Decimal.quantize` ROUND_HALF_UP
-    / float 미경유)
-  * §14.6 Cycle 페어링 정책 (list-order FIFO primary, annotation
-    `entry_price` diagnostic only, `realized_pnl (FIFO 표시)` 라벨링,
-    Phase 1 reconciliation 후속)
-  * §14.7 KPI strip 5 deterministic (Drawdown / Duration / Recovered /
-    Trades / Invested) — Realized 미포함
-  * §14.8 표시 vs 모델 분리 원칙 (CLAUDE.md §2.1 / §3.1 보강)
-  * §14.9 SYMBOL_NAMES 위치 (`src/adapters/reporting/symbol_names.py`,
-    DI 주입 가능, Phase 0.11 yaml 분리 보류)
-- 신규 모듈: `src/adapters/reporting/{formatters.py, symbol_names.py}` +
-  `src/application/reporting/cycle_pairing.py`. 수정: `html_writer.py`
-  + 두 renderer (Episode 요약 panel KRW prefix)
-- 신규 테스트: 56개 (formatters 33 + symbol_names 9 + cycle_pairing 14
-  — 7-case rule incl. list-order vs annotation 충돌). 전체 1010/1010 PASS
-- Sub-step (ADR 0006 §14.11 박제): 0.10.h (포매터 + 거래 행) ✅ →
-  0.10.i (KPI strip) ✅ → 0.10.j (cycle pairing application layer +
-  종목별 details) ✅ → 0.10.k (index aggregate + ADR §14 박제 + commit) ✅
-
-#### Phase 0.9.2 (예정, 0.9.1 결과 후 진입 결정) — 분산 효과 (5 종)
-- 종목: 005930 + 005380 + 055550 신한지주 + 097950 CJ제일제당 + 015760 한국전력
-- 변수 (vs 0.9.1): 종목 수 (2 → 5) + 분산 효과
-- 게이트 = 0.9.1 결과 후 결정 라운드 (0.9.m) 에서 박제
-
-- 결정: ADR 0005 §1 (라운드 #12 박제 완료). 후보 박제: ADR 0003 §15.3 / ADR 0004 §7.4.2.
-
-### Phase 0.9에서 명시적으로 제외 (ADR 0005 §1.13 박제)
-- 실제 KIS API 연결 — Phase 1 (진입 결정 시 ADR 0007 — ADR 0006 = Phase 0.10 Backtest Reporting 명명 후 변경)
-- 손절 로직 — Phase 1+ (H3 거짓 대응, ADR 0002 §12.4.2 + ADR 0005 §1.9)
-- 거래세 / 수수료 모델링 — Phase 1+ (ADR 0005 §1.13)
-- 텔레그램 알림 — Phase 1
-- AI 차단기 — Phase 2
-- US 주식 직접 거래소, BTC — Phase 3 / 4
-- 환율 처리 — Phase 3
-- 종목 간 자본 동적 이동 — Phase 1+ ADR
-- 채권 / 단기 예치 (idle cash 활용) — Phase 1+
-- 부분 매도 — Phase 1+ (KIS partial fill과 함께)
-- 매도 임계치 +15/+20 % 비교 — Phase 1+ (실거래 데이터 확보 후)
-- Hot reload — Phase 1+ 검토
-- score-based 종목 우선순위 — Phase 1+
-- 박영옥 가치주 스타일 자동 식별 — Phase 0.9.x 또는 Phase 1+
-- 종목 선정 자동화 — Phase 2+ AI 영역
-- 일중 데이터 (분봉 / 틱) — Phase 0.9 일봉만 (pykrx)
-- SupportLevelStrategy 코드 변경 — Phase 0.8 박제 보존 (ADR 0004 §7.4.2)
-- 멀티 종목 + SupportLevel 결합 — Phase 0.9.x 후속 결정 (ADR 0004 §1.10)
-- 그리드 트레이딩 — Phase 0.10+ placeholder (`docs/roadmap.md`, arxiv 2506.11921)
+**핵심 학습** (Phase 0.7 ~ 0.9, ADR 0005 §9.6.2 박제):
+**자산군 분산 = H3 회복의 충분 조건** (3 회 반복 검증). 단일 자산군 (전부 주식
+/ 전부 채권) 은 분산 효과 약화 → H3 FAIL 패턴. Phase 0.7.3 (주식+골드) =
+시리즈 첫 3/3 PASS. "PriceDropStrategy + 분산이 본질" 정신 박제.
 
 ### Phase 1 (예정, 가칭) — KR 주식 실거래 (소액)
+
 - KIS API 어댑터 + 100~500만원 소액 + 차단기 비활성 + 1~2개월 운영
-- 결정: ADR 0007 (가칭, 진입 시 박제 — 기존 ADR 0006 명명 변경, ADR 0005 §11.5 박제). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7 / ADR 0005 §10.6.3.
+- 결정: ADR 0007 (가칭, 진입 시 박제 — ADR 0005 §11.5 박제). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7 / ADR 0005 §10.6.3
+- 트리거 항목: §16.4 참조
+
+### Phase 1 진입 전 작성 금지 (통합 목록)
+
+- KIS API 어댑터 (BrokerPort / MarketDataPort 실 구현) — Phase 1
+- 손절 정책 (avg_price 기준 -X% 매도) — Phase 1 ADR §1 (ADR 0005 §1.9)
+- 텔레그램 알림 — Phase 1
+- AI 차단기 / RuleBasedSignal — Phase 2 (NullSignal 유지)
+- 거래세 / 수수료 모델링 (`OrderResult.tax` / `commission` 필드 추가) — Phase 1+ (ADR 0005 §1.13)
+- 환율 처리 — Phase 3
+- US 주식 직거래, BTC — Phase 3 / 4
+- 종목 간 자본 동적 이동 — Phase 1+ ADR (ADR 0003 §6.1)
+- 채권 / 단기 예치 (idle cash 활용) — Phase 1+
+- partial fill 처리 — Phase 1 (현재 차단 유지, ADR 0002 §3 정신)
+- 부분 매도 (slot 내 50%) — Phase 1+
+- 매도 임계치 +15 / +20 % 비교 backtest — Phase 1+ (ADR 0002 §12.4.1)
+- score-based 종목 우선순위 / Hot reload — Phase 1+
+- 종목별 다른 정책 (자산별 다른 정책) — Phase 1+ (ADR 0003 §19.4 / ADR 0004 §7.4.2 보류)
+- SupportLevelStrategy + cooldown — Phase 0.9.x / Phase 1+ (ADR 0004 §7.3.2 거부 박제 인용 필수)
+- 멀티 종목 + SupportLevel 결합 — Phase 0.9.x 후속 (ADR 0004 §1.10)
+- Phase 0.7.4 (부동산 분산) — placeholder 보존 (ADR 0003 §18.12.4 / §19.3)
+- 그리드 트레이딩 — Phase 0.10+ placeholder (arxiv 2506.11921)
+- 종목 선정 자동화 / 박영옥 가치주 자동 식별 — Phase 2+
+- 일중 데이터 (분봉 / 틱) — Phase 0 ~ 0.10 = 일봉 (pykrx) only
+- 보존 (변경 금지, 회귀 invariant): `PriceDropStrategy` / `SupportLevelStrategy` /
+  `SupportSlot` / `src/domain/indicators/` / Phase 0.10 reporting layer
+  (TradeView / DrawdownEpisode / Renderer Protocol / SevenSplit slot palette /
+  StrategyInfo / risk_metrics) — sub-step 박제 후 정본은 ADR 0004 §7.4.2 +
+  ADR 0006 §3~§18
+- "추후 Phase 1 확장 가능하게" 만든 unused parameter — CLAUDE.md §13.3
 
 이 범위를 벗어나는 코드 작성 시 사용자 확인 필수.
 
@@ -993,276 +690,56 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 16. Phase 1 호환성 의식 (Phase 0.10 종료 + 분석 phase 동안 적용)
+## 16. Phase 1 호환성 의식 (분석 phase + Phase 1 진입 전까지 적용)
 
-> **조건부 룰**. Phase 0.10 정식 종료 (라운드 #17, ADR 0006 §13 박제,
-> 2026-05-08) 후 사용자 분석 phase 동안 본 §16 적용. **라운드 #18
-> (2026-05-09, ADR 0006 §14 박제) 에서 Phase 0.10.x readability 채택 +
-> 즉시 종결** — 분석 phase 그대로 유지. Phase 1 진입 결정 보류 (라운드
-> #19 가칭, 분석 phase 종료 후) — 그동안 reporting layer 외 코드 변경
-> zero + Phase 1 호환성 의식 유지.
+> **조건부 룰**. Phase 0.10 시리즈 (0.10 ~ 0.10.bb) 정식 종료 (라운드 #22,
+> ADR 0006 §18 박제, 2026-05-11) 후 사용자 분석 phase 동안 본 §16 적용.
+> Phase 1 진입 결정 보류 — 그동안 reporting layer 외 코드 변경 zero +
+> Phase 1 호환성 의식 유지. Phase 0.11 결정은 다음 session.
 >
-> 선행: Phase 0.5 동안 (Phase 0.7 호환성) → Phase 0.7 동안 (Phase 1
-> 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
-> 동안 (Phase 1 호환성) → Phase 0.10 동안 (Phase 1 호환성) → 본 §16
-> (Phase 1 호환성, Phase 0.10 종료 + 분석 phase + Phase 0.10.x 동안).
-> ADR 0006 §18 (라운드 #22 — Phase 0.10.bb reporting cleanup bundle) 박제
-> 후속 갱신 (2026-05-11). 분석 phase 정리 종료 — Phase 0.11 결정은 다음 session.
+> 선행 phase 별 의식은 각 phase 의 ADR (0002 ~ 0006) 에 박제. 본 §16 은
+> Phase 1 진입까지의 _현재_ 의식만 유지.
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
-**Phase 1 의식 (기존 Phase 0.7 / 0.8 박제 정신 그대로)**:
 1. **종목별 reconciliation** — 종목별 독립 reconcile 메서드 골격 유지.
    한 종목 mismatch 발견 시 전체 정지 (ADR 0003 §8.6); Phase 1 에서
    자산별 격리 정지로 분기 가능한 구조.
-2. **종목별 잔고 분리 의식** — 단일 kill switch 가정 유지하되, 자산
-   격리 정지 분기 가능한 `AssetContext` 기반 데이터 흐름.
-3. **partial fill 차단 유지** — KIS 는 partial fill 발생 가능. ADR
-   0002 §3 (partial fill 차단) 정신 그대로. Phase 1 에서 partial fill
-   처리 ADR 신규 박제.
+2. **종목별 잔고 분리 의식** — 단일 kill switch 가정 유지하되, 자산 격리
+   정지 분기 가능한 `AssetContext` 기반 데이터 흐름.
+3. **partial fill 차단 유지** — KIS 는 partial fill 발생 가능. ADR 0002
+   §3 (partial fill 차단) 정신 그대로. Phase 1 에서 partial fill 처리
+   ADR 신규 박제.
 4. **sell strategy 단일 가정** — `ProfitTargetSell` 단일 sell strategy
    가정 유지. 손절 (StopLoss) 은 Phase 1 ADR 에서 sell strategy 추가
    형태로 도입.
-5. **OrderRequest / OrderResult 시그니처** — KIS API 응답에 partial
-   fill / 슬리피지 / 수수료 / 세금 필드 가능. Phase 0.9 에서 Mock 응답
-   그대로 (Phase 0.9 본질 = 개별 주식 인프라 시뮬레이션, KIS API 는
-   Phase 1) — 시그니처가 Phase 1 KIS 응답을 수용 가능하도록 의식.
+5. **OrderRequest / OrderResult 시그니처** — KIS API 응답에 partial fill
+   / 슬리피지 / 수수료 / 세금 필드 가능. Mock 응답 그대로 (Phase 1 KIS
+   API 진입 시점은 Phase 1 ADR) — 시그니처가 Phase 1 KIS 응답을 수용
+   가능하도록 의식.
 
-### 16.2 Phase 0.9 본질 (ADR 0005 §1 박제 결과)
+### 16.2 작성 금지
 
-Phase 0.9 의 본질적 변경은 **ADR 0005 §1 박제 완료 (라운드 #12,
-2026-05-07)**. sub-step 분리 적용 (§16.3) — 각 본질은 박제된 sub-step
-에서만 작성.
+§14 "Phase 1 진입 전 작성 금지 (통합 목록)" 참조. 완료 sub-step
+(Phase 0.7 ~ 0.10.bb) 의 🔒 작성 경계 / ❌ 거부 결정은 ADR 0003 ~ 0006
+박제가 정본 — 인용 시 해당 ADR 직접 참조:
 
-1. **호가 단위 가변** — `src/domain/tick_size.py` helper 모듈
-   (`calculate_krx_stock_tick_size(price) → Decimal`). `Asset.round_to_tick`
-   이 `asset_class` 분기 — KR_ETF 단일 tick_size 그대로, KR_STOCK 은
-   helper 호출. **sub-step 0.9.d (0.9.f 합병) 에서 작성** (ADR 0005 §1.7.3
-   + §3 박제 — 라운드 #13).
-2. **Asset 모델 확장** — `Market` enum 신규 (KOSPI / KOSDAQ),
-   `listed_at` (필수) + `delisted_at` (옵션, Phase 0.9 미사용)
-   추가. **sub-step 0.9.d 에서만 작성** (ADR 0005 §1.7.1 / §1.7.2).
-3. **거래 정지 / 액면분할** — 거래 정지 = `SkipReason.MARKET_DATA_UNAVAILABLE`
-   재사용 (백테스트 OHLCV 없음). 액면분할 = pykrx `adjusted=True` 수정 종가
-   (도메인 처리 zero). **sub-step 0.9.e / 0.9.g 에서만 작성** (ADR 0005
-   §1.7.4).
-4. **거래세 + 수수료 모델링** — **Phase 1+ 보류** (Phase 0.9 미도입).
-   `OrderResult.tax` / `OrderResult.commission` 필드 추가 금지 — Phase 1
-   ADR 에서 KIS 응답과 함께 박제 (ADR 0005 §1.13).
-5. **개별 주식 데이터 가용성** — 5-year 백테스트 가능 종목 (상장일 ≤ 2019)
-   + 거래 정지 / 액면분할 이력 + lookback 충분성. Phase 0.9.1 = 005930 +
-   005380 / Phase 0.9.2 = + 055550 + 097950 + 015760. **sub-step 0.9.c
-   에서만 사전 검증** (ADR 0005 §1.6.2).
+- Phase 0.7 박제 → ADR 0003 (§15 ~ §19)
+- Phase 0.8 박제 (SupportLevel 보존 + cooldown 거부) → ADR 0004 §7
+- Phase 0.9 박제 (개별 주식 인프라 + 자산군 분산 일반화) → ADR 0005
+- Phase 0.10 박제 (reporting layer + 가독성 + per-symbol + cleanup) → ADR 0006 §3 ~ §18
 
-### 16.3 금지 (Phase 0.9 동안 작성하면 안 되는 것)
-
-**Phase 1 그대로**:
-- ❌ KIS API 어댑터 코드 (BrokerPort / MarketDataPort 실 구현)
-- ❌ 손절 정책 코드 (avg_price 기준 -X% 일괄 매도)
-- ❌ 텔레그램 알림 코드
-- ❌ AI 차단기 / RuleBasedSignal 코드 (NullSignal 유지)
-- ❌ 환율 처리 코드 (KR 거래소 KRW 결제 전제)
-- ❌ 종목 간 자본 동적 이동 코드 (ADR 0003 §6.1)
-- ❌ 채권 / 단기 예치 (idle cash 활용) 코드
-- ❌ partial fill 처리 코드 (Phase 0.9 동안 차단 유지)
-- ❌ 부분 매도 (slot 내 50%) 코드
-- ❌ 매도 임계치 +15/+20 % 비교 backtest (Phase 1+, ADR 0002 §12.4.1)
-- ❌ score-based 종목 우선순위 코드
-- ❌ Hot reload 코드
-- ❌ "추후 Phase 1 확장 가능하게" 만든 unused parameter
-
-**Phase 0.9 본질 (ADR 0005 §1 박제 완료, sub-step 분리 적용 — §3 합병 박제 후속)**:
-- 🔒 호가 가변 코드 (`src/domain/tick_size.py`) — **sub-step 0.9.d (0.9.f 합병) 에서 작성** (ADR 0005 §1.7.3 + §3 박제 — 라운드 #13)
-- 🔒 Asset 모델 확장 (`Market` enum / `listed_at` / `delisted_at`) — **sub-step 0.9.d 에서만 작성** (ADR 0005 §1.7.1 / §1.7.2)
-- 🔒 데이터 다운로드 일반화 + 액면분할 (수정 종가) — **sub-step 0.9.e / 0.9.g 에서만 작성** (ADR 0005 §1.7.4)
-- 🔒 개별 주식 종목 추가 (asset_factory) — **sub-step 0.9.d 에서만 작성**. Phase 0.9.1 = 005930 + 005380, Phase 0.9.2 = + 055550 + 097950 + 015760 (ADR 0005 §1.6.2)
-- ❌ 거래세 / 수수료 OrderResult 필드 — Phase 1+ 보류 (ADR 0005 §1.13)
-- ❌ 거래 정지 처리 코드 (corp_action table 등) — ADR 0005 §1.7.4 박제 = `SkipReason.MARKET_DATA_UNAVAILABLE` 재사용. 별도 코드 추가 금지
-
-**Phase 0.8 보존 (변경 금지, ADR 0004 §7.4.2)**:
-- ❌ `SupportLevelStrategy` 코드 변경 — Phase 0.8 박제 보존
-- ❌ `SupportSlot` / `src/domain/indicators/` 모듈 변경 — 보존
-- ❌ ADR 0004 신규 §X 추가 (Phase 0.8 박제 후속이 아닌 경우) — Phase
-  0.9 결정은 ADR 0005 에 박제 / Phase 0.10 결정은 ADR 0006 에 박제
-- ❌ cooldown 도입 (SupportLevelStrategy + cooldown) — ADR 0004 §7.3.2
-  거부 박제 (data snooping 위험). Phase 0.9.x / Phase 1+ 어느 시점에
-  검토 시 §7.3.2 인용 후 결정
-
-**Phase 0.10 본질 (ADR 0006 박제 완료, sub-step 분리 적용)**:
-- 🔒 `src/application/reporting/` 모듈 (TradeView / DrawdownEpisode /
-  detector / report use case) — **sub-step 0.10.b ~ 0.10.e 에서만 작성**
-  (ADR 0006 §3 / §5 / §11)
-- 🔒 `src/ports/strategy_renderer.py` Protocol (StrategyRenderer +
-  MarkerStyle + Panel) — **sub-step 0.10.c 에서만 작성** (ADR 0006 §4.2)
-- 🔒 `src/adapters/reporting/` 모듈 (renderers / chart / html_writer /
-  registry) — **sub-step 0.10.c ~ 0.10.d 에서만 작성** (ADR 0006 §4 /
-  §6 / §7)
-
-**Phase 0.10.x 본질 (ADR 0006 §14 박제 완료, 라운드 #18, 2026-05-09)**:
-- 🔒 `src/adapters/reporting/formatters.py` (Decimal/통화/timestamp/
-  symbol 표시 helper) — **sub-step 0.10.h 에서만 작성** (ADR 0006 §14.5)
-- 🔒 `src/adapters/reporting/symbol_names.py` (SYMBOL_NAMES dict +
-  display_symbol DI) — **sub-step 0.10.h 에서만 작성** (ADR 0006 §14.9)
-- 🔒 `src/application/reporting/cycle_pairing.py` (pair_cycles +
-  match_realized_pnl + Cycle local-frozen) — **sub-step 0.10.j 에서만
-  작성** (ADR 0006 §14.6). list-order FIFO primary, annotation
-  diagnostic only
-- 🔒 `html_writer.py` 가독성 보강 (KPI strip / 종목별 details / cycle
-  table / annotation mini-table / index aggregate) — **sub-step
-  0.10.h~k 에서만 작성** (ADR 0006 §14.7 / §14.11)
-- 🔒 두 renderer (`default.py`, `seven_split.py`) Episode 요약 패널
-  formatter 사용 — **sub-step 0.10.h 에서만 변경** (KRW prefix /
-  format_pct 정합)
-- ❌ `TradeCycleView` 도메인 / application view-model 승격 — Phase
-  0.11 검토 (ADR 0006 §14.4 Option B 거부 박제)
-- ❌ Renderer Protocol `cycle_columns` 확장 — Phase 0.11 검토
-- ❌ jinja2 / plotly / pandas styler / inline JS — Phase 0.11+ (ADR
-  0006 §7.2 / §14.4 Option C 거부)
-- ❌ asset-scope / both-scope episode (`generate_episode_report(scope=...)`)
-  — ADR 0006 §5.5 박제 portfolio only 그대로
-- ❌ 종목 yaml 분리 (`config/symbol_names.yaml`) — Phase 0.11 후보
-- ❌ Realized P&L 외 위험조정 지표 (Sharpe / Calmar episode-내) — KPI
-  5 개로 한정 (ADR 0006 §14.7)
-
-**Phase 0.10.y 본질 (ADR 0006 §15 박제 완료, 라운드 #19, 2026-05-09)**:
-- 🔒 `src/adapters/reporting/chart.py` 레전드 + MA 외부 계산 + Korean
-  폰트 fallback — **sub-step 0.10.y.b / 0.10.y.d 에서만 작성** (ADR
-  0006 §15.5)
-- 🔒 `src/application/reporting/strategy_info.py` (StrategyInfo frozen
-  dataclass + `from_strategy_bundle` factory) — **sub-step 0.10.y.g
-  에서만 작성** (ADR 0006 §15.6). 6 bundle attrs frozen contract surface
-  docstring 박제
-- 🔒 chart.py `_summarize_labels(labels)` regex `r"^(.+?)(\d+)$"` 5
-  decision rules — **sub-step 0.10.y.b 에서만 작성** (ADR 0006 §15.5)
-- 🔒 chart.py 레전드 5 조정 (상승/하락 삭제 / MA20·MA60 전 구간 / 고점·
-  저점·회복 유지 / 매수=빨강 / 매도=초록) — **sub-step 0.10.y.d 에서만
-  작성** (ADR 0006 §15.4 사용자 명시 박제)
-- 🔒 `html_writer.py` strategy_info section + DI kwarg + `<details
-  class="strategy-info" open>` wrapper — **sub-step 0.10.y.g 에서만
-  작성** (ADR 0006 §15.6)
-- 🔒 `scripts/generate_phase_0_9_2_report.py` strategy_info plumbing
-  via `from_strategy_bundle(first_bundle, args.config, asset_codes=enabled)`
-- ❌ `MarkerStyle.side` 필드 추가 — Protocol §4.2 frozen (ADR 0006
-  §15.8 / 0006 §4.2 박제)
-- ❌ SevenSplit / Default renderer palette 변경 — §4.3.1 박제 보존
-  (face color slot palette 그대로, swatch 색상만 representative 변경)
-- ❌ γ' edge ring (`markeredgecolor` per side) — falsification gate 에서
-  사용자 거부 (ADR 0006 §15.4)
-- ❌ Greens-7 / Reds-7 palette swap (γ option) — §4.3.1 직접 override
-  거부 (ADR 0006 §15.9)
-- ❌ asset_uniformity 필드 / per-asset rendering — Phase 1+ ADR 0007
-  trigger (ADR 0006 §15.6 Patch P1)
-- ❌ `TradeCycleView` 도메인 view 승격 / Renderer Protocol `cycle_columns`
-  / opaque `dict[str, Any]` payload — Phase 0.11+ / ADR 0007 검토
-- ❌ inline JS / jinja2 / plotly / asset-scope episode / 멀티 strategy
-  동시 차트 — Phase 0.11+ / Phase 1+ (ADR 0006 §15.12)
-- ❌ StrategyInfo 다국어 / nested-table parameters / yaml 분리 — Phase 0.11+
-- ❌ A11y palette toggle (color-blind) — Phase 1+
-
-**Phase 0.10.z 본질 (ADR 0006 §16 박제 완료, 라운드 #20, 2026-05-09)**:
-- 🔒 `src/application/reporting/trade_view.py` 의 `_enrich_with_slot_number`
-  helper — view-only annotations enrichment from typed `BuyActionRecord.slot_number`
-  / `SellActionRecord.slot_number` field. **Sub-step 0.10.z.a 에서만 작성**
-  (ADR 0006 §16.3)
-- 🔒 `src/adapters/reporting/renderers/seven_split.py` `_slot()` uniform
-  `slot_number` read (BUY/SELL 모두). 도메인 명명 align (pre-Phase-0.5 fossil
-  `split_number` 키 제거 — half-done rename 마무리). **sub-step 0.10.z.a 에서만
-  변경** (ADR 0006 §16.4)
-- 🔒 strict no-collision invariant `assert "slot_number" not in annotations`
-  in trade_view enrichment — silent setdefault 거부 (ADR 0006 §16.5)
-- ❌ 도메인 reasoning dict 키 추가 (`split_number` / `slot_number` 도메인
-  reasoning 에 emit) — CLAUDE.md §0.4 사용자 승인 필요. ADR §16 의 view-only
-  enrichment 가 deferred alternative
-- ❌ `MarkerStyle.side` 필드 추가 — Protocol §4.2 frozen
-- ❌ DefaultRenderer slot-aware 진화 — annotation-agnostic 유지 (현 `B`/`S`
-  마커 그대로)
-- ❌ `html_writer.py:575` `_INT_KEYS` 의 `split_number` 부분 cleanup — Phase
-  0.11+ deferred (ADR 0006 §16.7)
-- ❌ 멀티 strategy 동시 차트 (renderer-per-trade dispatch) — Phase 1+ ADR 0007
-
-**Phase 0.10.aa 본질 (ADR 0006 §17 박제 완료, 라운드 #21, 2026-05-09)**:
-- 🔒 `src/application/reporting/report.py` `generate_episode_report` 내부
-  `for symbol in sorted(bars_by_asset.keys())` 루프 + `_filter_trades_by_symbol`
-  helper + `skip_empty_symbols: bool = False` kwarg — **sub-step 0.10.aa.a
-  에서만 작성** (ADR 0006 §17.3, §17.4, §17.7)
-- 🔒 `src/adapters/reporting/html_writer.py` `write_episode_html(charts:
-  Sequence[tuple[str, bytes]])` 시그니처 (breaking — `chart_png: bytes` 폐기)
-  + `_render_charts_section` helper + `<details class="chart-symbol" open>`
-  per-symbol 템플릿 + CSS shared selector `.symbol-group, .chart-symbol,
-  .strategy-info` — **sub-step 0.10.aa.a 에서만 작성** (ADR 0006 §17.5)
-- 🔒 자동화된 figure-leak AC — `plt.get_fignums() == []` after
-  `generate_episode_report` (CI 게이트). smoke test 거부 (ADR 0006 §17.8)
-- 🔒 `chart_symbol` 파라미터 explicit 제거 — silent-ignore "no-op deprecated"
-  거부 (E3-A, ADR §17.6). 복원 금지
-- ❌ 탭 UI (`<input type=radio>` + CSS `:checked`) — Phase 0.10.bb / Phase
-  0.11+ multi-asset KIS (≥10 symbols) 시 검토 (ADR 0006 §17.12)
-- ❌ `mpf.plot(panel_ratios=...)` multi-panel single figure — Q5b 거부
-  (per-panel y-axis 격리 부분적 + 독립 legend mpf API 제약)
-- ❌ Asset-scope episode (`scope="asset"` / `"both"`) — ADR §5.5 박제 그대로
-- 🔒 신규 의존성 (matplotlib / mplfinance / pandas) — pyproject.toml
-  `[project.optional-dependencies] reporting` extras (ADR 0006 §6.1).
-  Phase 0.10 한정 의존성, 핵심 백테스트는 의존성 zero 유지
-- 🔒 `reports/` 디렉토리 — `.gitignore` 추가, 로컬 artifact (ADR 0006 §7.1)
-- ❌ Domain 엔티티 추가 (`Trade` / `BacktestReport` 등) — `TradeView` 는
-  application view model only (ADR 0006 §3.2 — 사용자 spec ADR-1 거부 박제)
-- ❌ jinja2 / plotly 도입 — Phase 0.11+ 검토 (ADR 0006 §6 / §7.2)
-- ❌ 동적 plugin discovery (entry points 등) — Phase 0.11+ 검토 (ADR 0006 §10)
-- ❌ BacktestResult / BuyActionRecord / SellActionRecord 영구화 변경 —
-  Phase 0.10 = view model only (ADR 0006 §3.5 / §10)
-- ❌ BacktestRunner 인터페이스 변경 — Phase 0.10 신규 추가만 (ADR 0006 §9.2)
-- ❌ 실시간 모니터링 / 라이브 알람 / 전략 변경 — Phase 1+ (ADR 0006 §1.4
-  Non-Goals)
-
-**Phase 0.9 후속 (sub-step 미박제)**:
-- ❌ Phase 0.7.4 (부동산 분산) 코드 (ADR 0003 §18.12.4 / §19.3 placeholder
-  보존)
-- ❌ §14.7 γ (자산별 다른 정책) 코드 (ADR 0003 §19.4 보류)
-- ❌ 멀티 종목 + SupportLevel 결합 코드 (ADR 0004 §1.10 — Phase 0.9.x
-  후속 결정)
-- ❌ `PriceDropStrategy` 변경 코드 (회귀 invariant 보존)
-
-→ 모두 명시된 후속 Phase / sub-step 에서 사용자와 명시적 결정 후 작성.
-
-### 16.4 의심 시 가이드
+### 16.3 의심 시 가이드
 
 Mock 환경 + Phase 0.7.3 baseline (069500 + 132030, EQUAL,
-PriceDropStrategy) 비교 가정 유지. Phase 0.9 본질 (호가 가변 / 거래세
-등) 은 ADR 0005 박제 후 작성. `# Phase 1 에서 KIS API / 손절 시 검토`
-또는 `# ADR 0005 박제 후 호가 가변 처리` 주석 추가. 사용자 확인 없이
-호가 가변 / 거래세 / KIS API / 손절 / 텔레그램 인터페이스 짜기 금지
-(CLAUDE.md §13.3 "친절한 추가 금지" 정신).
+PriceDropStrategy) 비교 가정 유지. 사용자 확인 없이 호가 가변 / 거래세
+/ KIS API / 손절 / 텔레그램 인터페이스 짜기 금지 (CLAUDE.md §13.3
+"친절한 추가 금지" 정신). 검토 필요한 영역에는 `# Phase 1 ADR 박제 후
+검토` 주석 추가.
 
-### 16.5 Phase 0.9 ADR 0005 + Phase 0.10 ADR 0006 + Phase 1 ADR 0007 트리거 항목
+### 16.4 Phase 1 ADR 0007 (가칭) 트리거 항목
 
-#### Phase 0.9 ADR 0005 §1 박제 결과 (라운드 #12, 2026-05-07)
-
-ADR 0005 §1 박제 완료 — 다음 결정으로 박제됨:
-
-1. 종목 후보 = 005930 + 005380 (Phase 0.9.1, 인프라 검증) → +
-   055550 + 097950 + 015760 (Phase 0.9.2, 분산 효과). 다양 업종
-   (옵션 3) + 단계적 (옵션 d). ADR 0005 §1.6.1 / §1.6.2.
-2. 호가 단위 가변 = `src/domain/tick_size.py` helper 모듈
-   (`Asset.round_to_tick` asset_class 분기). ADR 0005 §1.7.3. **sub-step
-   = 0.9.d (0.9.f 합병)** — ADR 0005 §3 박제 (라운드 #13).
-3. 거래 정지 = `SkipReason.MARKET_DATA_UNAVAILABLE` 재사용 (백테스트
-   OHLCV 없음) / 액면분할 = pykrx `adjusted=True` 수정 종가 (도메인
-   처리 zero). ADR 0005 §1.7.4.
-4. 거래세 / 수수료 모델링 = **Phase 1+ 보류** (Phase 0.9 미도입,
-   `OrderResult.tax` / `commission` 필드 추가 금지). ADR 0005 §1.13.
-5. 백테스트 / 페이퍼 / 실거래 동일성 (CLAUDE.md §7.4) = sub-step 0.9.h
-   에서 Phase 0.7.3 회귀 invariant 재실행으로 검증.
-6. Phase 1 KIS API 진입 시점 = Phase 0.9 종료 결정 라운드에서 결정
-   (Mock 유지). ADR 0005 §1.13.
-7. SupportLevelStrategy + 개별 주식 결합 = Phase 0.9.x 후속 (보존,
-   ADR 0004 §7.4.2 / §1.10).
-8. 손절 정책 = **Phase 0.9 미도입** (변수 통제 strict). Phase 1 ADR §1
-   본격 검토 (ADR 0002 §12.4.2 H3 거짓 대응). ADR 0005 §1.9.
-9. 후행 편향 = 단순화 (현재 살아있는 종목, 낙관적 추정 명시). Phase 1+
-   정교화 보류. ADR 0005 §1.6.3 / §1.10.
-
-#### Phase 1 ADR 0007 (가칭) 트리거 항목 (ADR 0003 §11.3 / ADR 0005 §10.6.3 인용, 기존 ADR 0006 명명 변경 — ADR 0005 §11.5)
-
-Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
+Phase 1 ADR 박제 시 다뤄질 결정 (ADR 0003 §11.3 / ADR 0005 §10.6.3 인용):
 
 1. KIS API 어댑터 (BrokerPort / MarketDataPort 구현)
 2. 손절 정책 — H3 거짓 대응 (ADR 0002 §12.4.2)
@@ -1271,11 +748,11 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 5. partial fill 처리 ADR
 6. 모의투자 → 실거래 전환 게이트
 7. 매도 임계치 +15 / +20 % 비교 backtest (ADR 0002 §12.4.1 보류)
-8. 종목별 다른 정책 허용 여부 (ADR 0003 §7.3 후속, §19.4 보류)
-9. SupportLevelStrategy + cooldown 도입 검토 (ADR 0004 §7.3.2 인용 후
-   결정)
+8. 종목별 다른 정책 허용 여부 (ADR 0003 §7.3 / §19.4 보류)
+9. SupportLevelStrategy + cooldown 도입 검토 (ADR 0004 §7.3.2 거부 박제 인용 후 결정)
 
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-11 (§14 + §16 in-place 갱신 — sub-step 0.10.bb.b + 0.10.bb.c 완료, ADR 0006 §18 박제 후속, Phase 0.10.bb reporting cleanup 즉시 종결 — 라운드 #22, 분석 phase 정리 종료, Phase 0.11 결정은 다음 session)*
+*마지막 업데이트: 2026-05-11 (§14 + §16 압축 — 완료 phase 상세는 ADR / 회고에 위임, 현 상태 + Phase 1 forward-looking 만 유지)*
+
