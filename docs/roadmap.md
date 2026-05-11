@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-09 (sub-step 0.10.aa.a 완료 — Phase 0.10.aa per-symbol chart panels 즉시 종결, 라운드 #21 ADR 0006 §17, 분석 phase 그대로 유지)
+> 마지막 업데이트: 2026-05-11 (sub-step 0.10.bb.b + 0.10.bb.c 완료 — Phase 0.10.bb reporting cleanup 즉시 종결, 라운드 #22 ADR 0006 §18, 분석 phase 정리 종료, Phase 0.11 결정은 다음 session)
 
 ## 현재 상태
 
@@ -22,8 +22,10 @@
 | Phase 0.10.y | 완료 (2026-05-09, 라운드 #19) — Chart legend + Strategy info, AC 12/12 충족, Protocol §4.2 + slot §4.3.1 보존, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §15 |
 | Phase 0.10.z | 완료 (2026-05-09, 라운드 #20) — Slot annotation injection (chart 검정 마커 버그 fix), AC 12/12 충족, Protocol + slot palette 보존, 도메인 reasoning dict 변경 zero — Clean Architecture 정합 | ADR 0006 §16 |
 | Phase 0.10.aa | 완료 (2026-05-09, 라운드 #21) — Per-symbol chart panels (단일 차트에 5종목 marker outlier 문제 fix), AC 14/14 충족, Protocol + slot palette 보존, `write_episode_html` charts list 시그니처 (breaking) | ADR 0006 §17 |
-| 분석 phase | 진행 중 (2026-05-08 시작, 0.10.x / 0.10.y / 0.10.z / 0.10.aa 진행 후에도 유지) — 사용자 분석 보류 (Phase 0.10 결과 검토 후 다음 trajectory 결정) | 라운드 #22 (가칭) |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = 라운드 #22 후속 | 진입 시 ADR 0007 |
+| Phase 0.10.bb | 완료 (2026-05-11, 라운드 #22) — Reporting cleanup bundle (탭 UI defer / `_INT_KEYS` cleanup / Sharpe-Calmar episode-내 risk metrics). AC 21/21 충족. None vs Decimal(0) misinformation 차단. Phase 0.10 정리 종료 | ADR 0006 §18 |
+| 분석 phase | 정리 종료 (2026-05-11) — Phase 0.11 결정은 다음 session | (next session) |
+| Phase 0.11 | 사용자 다음 session 명시 후 결정 | TBD |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = Phase 0.11 후속 또는 별도 trajectory | 진입 시 ADR 0007 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -445,6 +447,48 @@
 
 ### Sub-step 매핑 (ADR 0006 §17.11 박제, 1 sub-step)
 - 0.10.aa.a (application orchestrator + adapter HTML template + script + tests + ADR 박제) ✅
+
+---
+
+## Phase 0.10.bb (완료, 2026-05-11 — 라운드 #22): Reporting Cleanup Bundle
+
+### 진입 + 즉시 종결 결정 라운드 #22 (완료, 2026-05-11) — ADR 0006 §18 박제
+- 사용자 명시 (트리거): "Phase 0.10.bb (탭 UI / vestigial cleanup /
+  Sharpe-Calmar episode-내) 에 대해서 자세히 상기좀 해줘"
+- 사용자 명시 (진입 + session 종료): "Phase 0.10.bb 까지 추가후, session
+  종료 하고 다음 Phase 0.11로 들어갈게 Pahse 0.11은 다음 session에서 알려줄게"
+- ralplan consensus 2 iter (Architect AGREE-WITH-CHANGES E1-E5 + Critic
+  ITERATE 5 patches → APPROVE)
+- 채택: B + C (cleanup + risk metrics) implement. A (탭 UI) defer
+- 거부: A now (premature), C1 hybrid `<details>` (§17.5 박제 위반)
+- **Phase 0.11 결정은 다음 session 으로** — 사용자 명시 박제 후 session 종료
+
+### 본질 (ADR 0006 §18.2 박제)
+- Phase 0.10 시리즈 reporting layer 정리 마무리. Phase 1 진입 전 마지막 sub-phase
+- Acceptance Criteria 21 항목 — 21/21 충족
+- 박제 인터페이스 변경 zero (Protocol §4.2 + slot palette §4.3.1 보존)
+- 신규 의존성 zero / 도메인 변경 zero
+- 전체 테스트 1074/1074 PASS (신규 24 tests)
+- 시각 검증: 4 episodes 모두 Risk-Adjusted Metrics section 포함
+
+### 핵심 결정 (ADR 0006 §18)
+- §18.A 탭 UI **defer** — 트리거: scroll-pain 불만 OR ≥10 종목 (rule-of-thumb)
+- §18.B `_INT_KEYS` vestigial cleanup — §16.7 reverse (원 박제 가정 contradicted
+  + reverse cost < carry cost). Meta-principle 박제 — 박제 reverse 시 양쪽
+  rationale 인용 필수
+- §18.C `risk_metrics.py` 신규 view model + Risk-Adjusted Metrics HTML 섹션:
+  * None vs Decimal(0) disambiguation (CRITICAL — 금융 misinformation 차단)
+  * Section omit > row-N/A (§14.7 "always-available facts" 정합)
+  * Sort invariant (input dict 순서 무관 deterministic)
+  * `has_nonzero_return_variance` public predicate 신규 (`metrics.py`)
+
+### Sub-step 매핑 (ADR 0006 §18.D 박제, 2 sub-steps)
+- 0.10.bb.b (_INT_KEYS cleanup + §18.A defer paragraph fold) ✅
+- 0.10.bb.c (risk_metrics.py + has_nonzero_return_variance + HTML section +
+  report.py thread + 24 신규 tests) ✅
+
+기존 plan 의 standalone 0.10.bb.a (ADR-only commit) drop — §18.A paragraph
+가 0.10.bb.b commit 에 fold (ceremonial commit 회피).
 
 ---
 

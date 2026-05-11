@@ -761,6 +761,42 @@ B) <옵션 2와 trade-off>
   / SupportLevel + 개별 주식 / 손절 단독 검증 등)
 - 종료: 라운드 #19 (가칭) 박제 (사용자 분석 결과 박제 + 다음 trajectory 결정)
 
+### Phase 0.10.bb (완료, 2026-05-11 — 라운드 #22) — Reporting Cleanup Bundle
+- 본질: Phase 0.10 시리즈 reporting layer 정리. 3 item bundle 중 1 defer
+  (탭 UI) + 2 implement (_INT_KEYS cleanup / Sharpe-Calmar episode-내).
+  Phase 1 진입 전 마지막 정리 sub-phase
+- 평가 기준: Acceptance Criteria 21 항목 (ADR 0006 §18.E) — 21/21 충족
+- 박제 인터페이스 변경 zero (`StrategyRenderer` Protocol §4.2 + SevenSplit
+  slot palette §4.3.1 보존). 신규 의존성 zero. 도메인 변경 zero
+- ralplan consensus 2 iter — Architect E1-E5 (None vs Decimal(0) /
+  sort invariant / Q1 ceremony drop / 트리거 restate / Win rate scope) +
+  Critic 5 patches (CRITICAL None-vs-Decimal(0) precondition) 후 APPROVE
+- 결정: ADR 0006 §18 (라운드 #22). 통합 회고 `phase-0.10-analysis.md` 선행
+- 핵심 결정 (ADR 0006 §18):
+  * §18.A 탭 UI **defer** — `<details class="chart-symbol" open>` per-symbol
+    스택 유지. 트리거: 사용자 scroll-pain 불만 OR ≥10 종목 (rule-of-thumb,
+    not falsifiable). Code 변경 zero
+  * §18.B `_INT_KEYS` vestigial cleanup — `frozenset({"split_number",
+    "slot_number"})` → `frozenset({"slot_number"})`. §16.7 reverse rationale:
+    원 박제 가정 contradicted (Phase 0.10.z slot_number 통일) + reverse cost
+    < carry cost. Reverse meta-principle 박제 (Architect E1)
+  * §18.C Sharpe / Calmar episode-내 + Risk-Adjusted Metrics 섹션 —
+    `src/application/reporting/risk_metrics.py` 신규 view model (TradeView
+    pattern 정합). None vs Decimal(0) 명시 disambiguation (CRITICAL —
+    돈 misinformation bug 차단). Section omit > row-N/A. Sort invariant
+- 신규 모듈: `src/application/reporting/risk_metrics.py` +
+  `src/application/metrics.py::has_nonzero_return_variance` (public predicate)
+- 수정: `src/adapters/reporting/html_writer.py` (_INT_KEYS + risk-metrics
+  section + CSS) / `src/application/reporting/report.py` (risk_metrics 계산 +
+  thread)
+- 신규 테스트: 24 (risk_metrics 13 / has_nonzero_return_variance 6 /
+  html_writer risk section 4 / _INT_KEYS 1). 전체 1074/1074 PASS
+- 시각 검증: `report/episode_{1,2,3,4}.html` 4/4 모두 Risk-Adjusted Metrics
+  section 포함
+- Sub-step (ADR 0006 §18.D 박제): 0.10.bb.b (cleanup + §18.A fold) +
+  0.10.bb.c (risk metrics + integration). 2 sub-steps (기존 plan 의
+  standalone a 는 ceremonial 이라 drop, §18.A paragraph 만 b commit 에 fold)
+
 ### Phase 0.10.aa (완료, 2026-05-09 — 라운드 #21) — Per-Symbol Chart Panels
 - 본질: episode HTML 의 단일 chart 가 5 종목 (가격대 25k~250k) 의 모든
   trade marker 를 그려서 y-axis auto-scale 이 outlier 에 지배됨 + 캔들
@@ -970,8 +1006,8 @@ B) <옵션 2와 trade-off>
 > 호환성) → Phase 0.8 동안 (Phase 0.9 / Phase 1 호환성) → Phase 0.9
 > 동안 (Phase 1 호환성) → Phase 0.10 동안 (Phase 1 호환성) → 본 §16
 > (Phase 1 호환성, Phase 0.10 종료 + 분석 phase + Phase 0.10.x 동안).
-> ADR 0006 §17 (라운드 #21 — Phase 0.10.aa per-symbol chart panels) 박제
-> 후속 갱신 (2026-05-09).
+> ADR 0006 §18 (라운드 #22 — Phase 0.10.bb reporting cleanup bundle) 박제
+> 후속 갱신 (2026-05-11). 분석 phase 정리 종료 — Phase 0.11 결정은 다음 session.
 
 ### 16.1 패턴 (의식 — 코드 추가는 금지)
 
@@ -1242,4 +1278,4 @@ Phase 0.9 종료 후 Phase 1 ADR 박제 시 다뤄질 결정:
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-09 (§14 + §16 in-place 갱신 — sub-step 0.10.aa.a 완료, ADR 0006 §17 박제 후속, Phase 0.10.aa per-symbol chart panels 즉시 종결 — 라운드 #21, 분석 phase 그대로 유지)*
+*마지막 업데이트: 2026-05-11 (§14 + §16 in-place 갱신 — sub-step 0.10.bb.b + 0.10.bb.c 완료, ADR 0006 §18 박제 후속, Phase 0.10.bb reporting cleanup 즉시 종결 — 라운드 #22, 분석 phase 정리 종료, Phase 0.11 결정은 다음 session)*
