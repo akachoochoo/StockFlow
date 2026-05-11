@@ -16,6 +16,21 @@ from src.domain.models import Asset, Money
 
 
 @dataclass(frozen=True)
+class _DGTSnapshot:
+    """End-of-bar portfolio snapshot — AC9 metrics computation 의 입력.
+
+    Per-bar (cash, holdings, close_price, total_value). Phase 0.10.bb
+    PortfolioSnapshot 와 격리 (D5 default — 5th ring 독립 model).
+    """
+
+    trade_date: date
+    cash: Decimal
+    holdings: Decimal
+    close_price: Decimal
+    total_value: Decimal
+
+
+@dataclass(frozen=True)
 class _DGTTrade:
     """Single mock fill — DGT prototype 의 trade 기록.
 
@@ -53,3 +68,4 @@ class _DGTBacktestResult:
     reference_price: Decimal
     grid_levels: list[Decimal]
     trades: list[_DGTTrade]
+    daily_snapshots: list[_DGTSnapshot]

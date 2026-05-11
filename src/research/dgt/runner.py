@@ -18,7 +18,7 @@ from decimal import ROUND_DOWN, Decimal
 from src.domain.models import Asset, Money, OHLCV
 from src.research.dgt.cost_model import _KoreanMarketCostModel
 from src.research.dgt.formulas import grid_levels_table1
-from src.research.dgt.results import _DGTBacktestResult, _DGTTrade
+from src.research.dgt.results import _DGTBacktestResult, _DGTSnapshot, _DGTTrade
 from src.research.dgt.state import _DGTGridState
 
 
@@ -93,6 +93,7 @@ class _DGTPrototypeRunner:
         )
 
         trades: list[_DGTTrade] = []
+        snapshots: list[_DGTSnapshot] = []
         prev_close = reference
         for bar in ohlcv:
             curr_close = bar.close
@@ -105,6 +106,15 @@ class _DGTPrototypeRunner:
                     trade = self._maybe_buy(state, asset, bar.trade_date, level)
                     if trade is not None:
                         trades.append(trade)
+            snapshots.append(
+                _DGTSnapshot(
+                    trade_date=bar.trade_date,
+                    cash=state.cash,
+                    holdings=state.holdings,
+                    close_price=curr_close,
+                    total_value=state.cash + state.holdings * curr_close,
+                )
+            )
             prev_close = curr_close
 
         final_close = ohlcv[-1].close
@@ -122,6 +132,7 @@ class _DGTPrototypeRunner:
             reference_price=reference,
             grid_levels=list(levels),
             trades=trades,
+            daily_snapshots=snapshots,
         )
 
     def _maybe_buy(
