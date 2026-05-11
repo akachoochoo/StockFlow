@@ -14,7 +14,13 @@ from decimal import Decimal
 
 import pytest
 
-from src.application.metrics import cagr, calmar_ratio, max_drawdown, sharpe_ratio
+from src.application.metrics import (
+    cagr,
+    calmar_ratio,
+    has_nonzero_return_variance,
+    max_drawdown,
+    sharpe_ratio,
+)
 from src.domain.constants import KST
 from src.domain.models import Currency, Money, PortfolioSnapshot
 
@@ -171,6 +177,42 @@ class TestSharpeRatio:
     def test_invalid_trading_days_per_year_raises(self):
         with pytest.raises(ValueError):
             sharpe_ratio([], trading_days_per_year=0)
+
+
+# ---------------------------------------------------------------------------
+# has_nonzero_return_variance (Phase 0.10.bb, ADR §18.C)
+# ---------------------------------------------------------------------------
+class TestHasNonzeroReturnVariance:
+    """Public predicate distinguishing 'metric unavailable' (False) from
+    'zero excess return' (True with sharpe_ratio returning Decimal(0))
+    semantically. Used by risk_metrics.py None vs Decimal(0) disambiguation.
+    """
+
+    def test_empty_returns_false(self):
+        assert has_nonzero_return_variance([]) is False
+
+    def test_single_snapshot_returns_false(self):
+        snaps = _series(date(2026, 1, 1), ["100"])
+        assert has_nonzero_return_variance(snaps) is False
+
+    def test_two_snapshots_returns_false(self):
+        # 2 snapshots = 1 return; need n>=2 returns for sample stdev.
+        snaps = _series(date(2026, 1, 1), ["100", "110"])
+        assert has_nonzero_return_variance(snaps) is False
+
+    def test_constant_returns_yield_false(self):
+        # All returns 10% → stdev = 0 → variance unavailable (false)
+        snaps = _series(date(2026, 1, 1), ["100", "110", "121", "133.1"])
+        assert has_nonzero_return_variance(snaps) is False
+
+    def test_constant_value_series_yields_false(self):
+        # All zero returns → stdev = 0 → false
+        snaps = _series(date(2026, 1, 1), ["100", "100", "100", "100"])
+        assert has_nonzero_return_variance(snaps) is False
+
+    def test_volatile_series_returns_true(self):
+        snaps = _series(date(2026, 1, 1), ["100", "110", "100", "110"])
+        assert has_nonzero_return_variance(snaps) is True
 
 
 # ---------------------------------------------------------------------------

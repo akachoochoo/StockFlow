@@ -499,6 +499,86 @@ class TestStrategyInfoSection:
         html = out.read_text(encoding="utf-8")
         assert html.count("전략 정보") == 0
 
+    def test_int_keys_cleanup_split_number_removed(self):
+        # Phase 0.10.bb (ADR §18.B) — vestigial `split_number` removed.
+        # AC-6/7/8 from plan §5.
+        from src.adapters.reporting.html_writer import _INT_KEYS
+        assert _INT_KEYS == frozenset({"slot_number"}), (
+            f"_INT_KEYS should contain only slot_number, got {_INT_KEYS}"
+        )
+        assert "split_number" not in _INT_KEYS
+
+    def test_risk_metrics_section_renders_when_provided(
+        self, tmp_path: Path,
+    ):
+        # Phase 0.10.bb (ADR §18.C) — Risk-Adjusted Metrics section
+        from src.application.reporting.risk_metrics import EpisodeRiskMetrics
+        rm = EpisodeRiskMetrics(
+            sharpe=Decimal("1.2345"),
+            calmar=Decimal("0.6789"),
+            recovery_efficiency=Decimal("1.5000"),
+        )
+        out = tmp_path / "ep.html"
+        write_episode_html(
+            _episode(), _TINY_CHARTS, [], [], out, risk_metrics=rm,
+        )
+        html = out.read_text(encoding="utf-8")
+        assert '<div class="risk-metrics">' in html
+        assert "<h3>Risk-Adjusted Metrics</h3>" in html
+        assert "Sharpe (episode 내)" in html
+        assert "1.2345" in html
+        assert "Calmar (episode 내)" in html
+        assert "0.6789" in html
+        assert "Recovery efficiency" in html
+
+    def test_risk_metrics_section_omits_when_none(self, tmp_path: Path):
+        # AC-C5 — section omit (NOT row-N/A) when risk_metrics is None
+        out = tmp_path / "ep.html"
+        write_episode_html(
+            _episode(), _TINY_CHARTS, [], [], out, risk_metrics=None,
+        )
+        html = out.read_text(encoding="utf-8")
+        assert "Risk-Adjusted Metrics" not in html
+        assert '<div class="risk-metrics">' not in html
+
+    def test_risk_metrics_section_omits_when_all_fields_none(
+        self, tmp_path: Path,
+    ):
+        # AC-C5 defensive — all-None fields (factory should've returned None
+        # but defensive guard preserves contract)
+        from src.application.reporting.risk_metrics import EpisodeRiskMetrics
+        rm = EpisodeRiskMetrics(
+            sharpe=None, calmar=None, recovery_efficiency=None,
+        )
+        out = tmp_path / "ep.html"
+        write_episode_html(
+            _episode(), _TINY_CHARTS, [], [], out, risk_metrics=rm,
+        )
+        html = out.read_text(encoding="utf-8")
+        assert "Risk-Adjusted Metrics" not in html
+
+    def test_risk_metrics_partial_fields_renders_only_non_none(
+        self, tmp_path: Path,
+    ):
+        # Sharpe present, calmar/recovery None — section renders 1 row
+        from src.application.reporting.risk_metrics import EpisodeRiskMetrics
+        rm = EpisodeRiskMetrics(
+            sharpe=Decimal("0.5000"),
+            calmar=None,
+            recovery_efficiency=None,
+        )
+        out = tmp_path / "ep.html"
+        write_episode_html(
+            _episode(), _TINY_CHARTS, [], [], out, risk_metrics=rm,
+        )
+        html = out.read_text(encoding="utf-8")
+        assert "Risk-Adjusted Metrics" in html
+        assert "Sharpe (episode 내)" in html
+        assert "0.5000" in html
+        # Other rows absent
+        assert "Calmar (episode 내)" not in html
+        assert "Recovery efficiency" not in html
+
     def test_strategy_info_html_escaped(self, tmp_path: Path):
         # XSS / HTML escape on yaml path
         from src.application.reporting.strategy_info import StrategyInfo

@@ -136,6 +136,31 @@ def max_drawdown(snapshots: list[PortfolioSnapshot]) -> Decimal:
     return worst * _HUNDRED
 
 
+def has_nonzero_return_variance(
+    snapshots: list[PortfolioSnapshot],
+    *,
+    risk_free_rate: Decimal = _ZERO,
+    trading_days_per_year: int = 252,
+) -> bool:
+    """Whether ``snapshots`` can yield a defined Sharpe (sample stdev > 0).
+
+    Phase 0.10.bb (ADR 0006 §18.C). Mirrors ``sharpe_ratio`` 의 degeneracy
+    guard (n<2 OR σ==0 → Decimal(0)) at the predicate layer so callers
+    can distinguish "metric unavailable" (return None) from "zero return"
+    (return Decimal(0)). 동일 σ 계산 (DRY).
+
+    Returns:
+        True iff the snapshots produce at least 2 daily returns with
+        positive sample stdev. Otherwise False.
+    """
+    returns = _daily_returns(_sorted_values(snapshots))
+    if len(returns) < 2:
+        return False
+    daily_rf = risk_free_rate / Decimal(trading_days_per_year)
+    excess = [r - daily_rf for r in returns]
+    return _sample_stdev(excess) > 0
+
+
 def sharpe_ratio(
     snapshots: list[PortfolioSnapshot],
     *,

@@ -20,6 +20,7 @@ from src.adapters.reporting.html_writer import (
 )
 from src.adapters.reporting.renderer_registry import StrategyRendererRegistry
 from src.application.reporting.episode import detect_drawdown_episodes
+from src.application.reporting.risk_metrics import compute_episode_risk_metrics
 from src.application.reporting.trade_view import trades_from_decisions
 
 if TYPE_CHECKING:
@@ -166,6 +167,11 @@ def generate_episode_report(
             charts.append((symbol, chart_png))
         # Diagnostic panels (renderer-specific) — episode-wide trades
         panels = list(renderer.diagnostic_panels(all_trades, episode))
+        # Risk-adjusted metrics (Phase 0.10.bb, ADR §18.C) — None when
+        # window <2 snapshots; section omitted from HTML.
+        risk_metrics = compute_episode_risk_metrics(
+            backtest_result.snapshots, episode,
+        )
         # Write HTML with per-symbol chart stack
         ep_path = output_dir / f"episode_{i}.html"
         write_episode_html(
@@ -175,6 +181,7 @@ def generate_episode_report(
             panels=panels,
             output_path=ep_path,
             strategy_info=strategy_info,
+            risk_metrics=risk_metrics,
         )
         episode_html_paths.append(ep_path)
 

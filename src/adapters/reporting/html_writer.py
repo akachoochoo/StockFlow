@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from src.application.reporting.episode import DrawdownEpisode
+    from src.application.reporting.risk_metrics import EpisodeRiskMetrics
     from src.application.reporting.strategy_info import StrategyInfo
     from src.application.reporting.trade_view import TradeView
     from src.ports.strategy_renderer import Panel
@@ -77,6 +78,15 @@ th {{ background: #f8f9fa; font-weight: 600; }}
                 text-transform: uppercase; letter-spacing: 0.5px; }}
 .kpi .value {{ font-size: 18px; font-weight: 600; color: #2c3e50;
                 margin-top: 4px; }}
+.risk-metrics {{ margin: 16px 0; padding: 12px 16px; background: #fafbfc;
+                  border: 1px solid #e1e6ec; border-radius: 6px; }}
+.risk-metrics h3 {{ margin: 0 0 8px 0; font-size: 14px; color: #34495e;
+                     border: none; padding: 0; }}
+.risk-metrics .metrics-row {{ display: flex; flex-wrap: wrap; gap: 16px; }}
+.risk-metrics .metric {{ flex: 1 1 160px; }}
+.risk-metrics .label {{ font-size: 12px; color: #7f8c8d; }}
+.risk-metrics .value {{ font-size: 16px; font-weight: 600; color: #2c3e50;
+                         margin-top: 2px; }}
 .symbol-group, .chart-symbol, .strategy-info {{ margin: 14px 0; }}
 .symbol-group summary,
 .chart-symbol summary,
@@ -113,6 +123,8 @@ th {{ background: #f8f9fa; font-weight: 600; }}
 {strategy_info_html}
 
 {kpi_strip}
+
+{risk_metrics_html}
 
 <h2>Episode 메타데이터</h2>
 <table>
@@ -200,6 +212,7 @@ def write_episode_html(
     title: str | None = None,
     symbol_names: Mapping[str, str] | None = None,
     strategy_info: StrategyInfo | None = None,
+    risk_metrics: EpisodeRiskMetrics | None = None,
 ) -> None:
     """Episode 1 페이지 HTML 작성.
 
@@ -286,6 +299,7 @@ def write_episode_html(
         title=escape(title),
         strategy_info_html=_render_strategy_info_section(strategy_info),
         kpi_strip=kpi_strip,
+        risk_metrics_html=_render_risk_adjusted_metrics(risk_metrics),
         episode_meta_rows=episode_meta_rows,
         charts_html=charts_html,
         panels_html=panels_html,
@@ -577,7 +591,12 @@ _PCT_KEYS: frozenset[str] = frozenset({"profit_pct", "profit_target_pct"})
 _QUANTITY_KEYS: frozenset[str] = frozenset({"target_quantity"})
 _MONEY_KEYS: frozenset[str] = frozenset({"actual_cost"})
 _DATE_KEYS: frozenset[str] = frozenset({"last_exit_date"})
-_INT_KEYS: frozenset[str] = frozenset({"split_number", "slot_number"})
+# Phase 0.10.bb (ADR 0006 §18.B): legacy `split_number` removed (pre-Phase
+# 0.5 renderer fossil, dead code after Phase 0.10.z uniform `slot_number`
+# annotation enrichment). §16.7 reverse rationale: future renderer that
+# emits `split_number` directly can re-add via factory or ad-hoc; carrying
+# vestigial key in shipped contract masks the intent.
+_INT_KEYS: frozenset[str] = frozenset({"slot_number"})
 
 
 def _render_annotation_table(annotations: Mapping[str, Any]) -> str:
@@ -670,6 +689,56 @@ def _render_charts_section(
             "</details>"
         )
     return "\n".join(parts)
+
+
+def _render_risk_adjusted_metrics(
+    metrics: EpisodeRiskMetrics | None,
+) -> str:
+    """Render Risk-Adjusted Metrics section (Phase 0.10.bb / ADR §18.C).
+
+    Section-level omit (NOT row-level N/A) per Phase 0.10.x §14.7 "silent
+    N/A 거부" 정신. None → returns ``""`` (NO ``Risk-Adjusted Metrics``
+    substring), 모든 field None → also returns ``""``.
+
+    Field-level None vs Decimal(0): factory ``risk_metrics.py`` 가 이미
+    None 으로 wrap (degenerate σ/MDD/recovery). 본 helper 는 None field
+    를 row 에서 omit.
+    """
+    if metrics is None:
+        return ""
+    # All-None field set → section omit (caller invariant — factory should
+    # have returned None, but defensive guard preserves AC-C5 contract).
+    if (
+        metrics.sharpe is None
+        and metrics.calmar is None
+        and metrics.recovery_efficiency is None
+    ):
+        return ""
+
+    rows: list[tuple[str, str]] = []
+    if metrics.sharpe is not None:
+        rows.append(("Sharpe (episode 내)", f"{metrics.sharpe:.4f}"))
+    if metrics.calmar is not None:
+        rows.append(("Calmar (episode 내)", f"{metrics.calmar:.4f}"))
+    if metrics.recovery_efficiency is not None:
+        rows.append((
+            "Recovery efficiency",
+            f"{metrics.recovery_efficiency:.4f}",
+        ))
+
+    metric_html = "\n".join(
+        f'<div class="metric"><div class="label">{escape(label)}</div>'
+        f'<div class="value">{escape(value)}</div></div>'
+        for label, value in rows
+    )
+    return (
+        '<div class="risk-metrics">\n'
+        '<h3>Risk-Adjusted Metrics</h3>\n'
+        '<div class="metrics-row">\n'
+        f"{metric_html}\n"
+        "</div>\n"
+        "</div>"
+    )
 
 
 def _render_strategy_info_section(info: StrategyInfo | None) -> str:
