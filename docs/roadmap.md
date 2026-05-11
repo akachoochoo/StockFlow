@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-11 (sub-step 0.10.bb.b + 0.10.bb.c 완료 — Phase 0.10.bb reporting cleanup 즉시 종결, 라운드 #22 ADR 0006 §18, 분석 phase 정리 종료, Phase 0.11 결정은 다음 session)
+> 마지막 업데이트: 2026-05-11 (Phase 0.11.a 진입 결정 라운드 #23 박제 — DGT 도입 검토 sub-step, ADR 0007 draft commit, Phase 1 ADR = 0008 재번호 동시)
 
 ## 현재 상태
 
@@ -23,9 +23,9 @@
 | Phase 0.10.z | 완료 (2026-05-09, 라운드 #20) — Slot annotation injection (chart 검정 마커 버그 fix), AC 12/12 충족, Protocol + slot palette 보존, 도메인 reasoning dict 변경 zero — Clean Architecture 정합 | ADR 0006 §16 |
 | Phase 0.10.aa | 완료 (2026-05-09, 라운드 #21) — Per-symbol chart panels (단일 차트에 5종목 marker outlier 문제 fix), AC 14/14 충족, Protocol + slot palette 보존, `write_episode_html` charts list 시그니처 (breaking) | ADR 0006 §17 |
 | Phase 0.10.bb | 완료 (2026-05-11, 라운드 #22) — Reporting cleanup bundle (탭 UI defer / `_INT_KEYS` cleanup / Sharpe-Calmar episode-내 risk metrics). AC 21/21 충족. None vs Decimal(0) misinformation 차단. Phase 0.10 정리 종료 | ADR 0006 §18 |
-| 분석 phase | 정리 종료 (2026-05-11) — Phase 0.11 결정은 다음 session | (next session) |
-| Phase 0.11 | 사용자 다음 session 명시 후 결정 | TBD |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = Phase 0.11 후속 또는 별도 trajectory | 진입 시 ADR 0007 |
+| 분석 phase | 정리 종료 (2026-05-11) — Phase 0.11.a 진입 | — |
+| **Phase 0.11.a** | **진행 중 (2026-05-11 진입, sub-step 0.11.a.1 박제)** — DGT (arxiv 2506.11921) 도입 검토. `src/research/` 5th ring overlay + KoreanMarketCostModel + 일봉 prototype runner (informational). D1~D11 default 채택 | ADR 0007 §1 (draft, 라운드 #23) / 회고 TBD (`phase-0.11.a.md`, sub-step 0.11.a.5) |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 결정 = Phase 0.11.a 후속 또는 별도 trajectory | 진입 시 ADR 0008 (D6 default 재번호, 이전 가칭 ADR 0007) |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
