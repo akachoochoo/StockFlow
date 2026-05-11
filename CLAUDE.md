@@ -24,6 +24,8 @@
 ### 1.1 Clean Architecture - Dependency Rule
 
 ```
+[Research overlay (5th ring, outermost)]
+        ↓ outer→inner read OK
 [Frameworks] → [Adapters] → [Use Cases] → [Domain]
 의존성은 항상 안쪽으로. 반대 방향 절대 금지.
 ```
@@ -33,12 +35,25 @@
 - `import requests`, `httpx`, 기타 HTTP 클라이언트
 - `import pandas`, `numpy` (모델 정의에는 불필요)
 - `from src.adapters.*`, `from src.infrastructure.*`
+- `from src.research.*` (research overlay 는 outermost — domain 이 import 하면 안 됨)
 - `datetime.now()`, `date.today()` (시점은 항상 파라미터로 주입)
 
 **`src/domain/`에서 허용된 것**:
 - Python 표준 라이브러리 (`dataclasses`, `decimal`, `enum`, `typing`, `datetime` 등)
 - `pydantic` (모델 검증용)
 - `from src.domain.*`, `from src.ports.*` (Protocol만)
+
+**`src/research/` (5th ring, outermost, Phase 0.11.a 신규 — ADR 0007 §1.6)**:
+
+Research overlay — 박제 / 실험 / Phase 1 진입 전 검증용 격리 네임스페이스.
+
+규칙:
+- `src/research/**` 는 inner ring (`src/{domain,ports,use_cases,application,adapters,cli,infrastructure}/**`) 을 **읽기 OK** (outer→inner read).
+- Inner ring 7개 (`adapters / application / cli / domain / infrastructure / ports / use_cases`) 에서 `from src.research.*` 또는 `import src.research.*` **FORBIDDEN**.
+- 강제: `bash scripts/check_namespace.sh` (D11 plain grep — dep 추가 zero).
+- `python -m src.research.<...>` CLI 진입은 ring boundary 위반 아님 (terminal 진입점).
+- Export 정책: `src/research/**/__init__.py` 는 underscore-prefix private only (`__all__ = []`).
+- Lifecycle: 각 research overlay 는 종료 sub-step 에서 lifecycle (archive / promote / abandon) 결정 박제.
 
 **위반 발견 시**: 해당 코드를 작성하지 말고 사용자에게 보고하세요. 어딘가에서 설계가 잘못된 신호입니다.
 
