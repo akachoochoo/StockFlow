@@ -1,0 +1,28 @@
+# 효성중공업 (298040) 단일 종목 — D-2 (MovingAverageReentry) variant.
+#
+# `strategies-298040.yaml` (F = hybrid cooldown=60) 와 변수 1 차원만 다름:
+# reentry 정책 (hybrid → moving_average window=20 sma).
+# 모든 다른 파라미터 동일 (controlled-experiment, ADR 0002 §1.3).
+#
+# D-2 spec 출처: `config/strategies-D.yaml` + ADR 0002 §4.1.1.
+
+version: "0.5"
+allocation_policy: EQUAL
+assets:
+  "298040":
+    name: "효성중공업"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 10000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "moving_average"
+    reentry_parameters:
+      window: 20
+      ma_type: "sma"

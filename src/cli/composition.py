@@ -529,9 +529,40 @@ def kepco() -> Asset:
     )
 
 
+def hyosung_heavy_industries() -> Asset:
+    """Phase 0.10.x ad-hoc 사용자 분석 — 298040 효성중공업 (산업재).
+
+    KOSPI 중대형주 (변압기 / 중전기). listed_at = 2018-07-13 (효성 인적분할
+    재상장, KRX 공식, pykrx 검증). 2020-2024 백테스트 가능.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from src.domain.models import (
+        Asset,
+        AssetClass,
+        Currency,
+        Exchange,
+        Market,
+    )
+
+    return Asset(
+        code="298040",
+        exchange=Exchange.KRX,
+        market=Market.KOSPI,
+        asset_class=AssetClass.KR_STOCK,
+        currency=Currency.KRW,
+        name="효성중공업",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        listed_at=date(2018, 7, 13),
+    )
+
+
 # Registry: code → factory. Phase 0.7.x: 3 ETF. Phase 0.9 (ADR 0005 §1.6.2
 # + §3 합병 박제): + 5 KR_STOCK 추가 (Phase 0.9.1 = 005930 + 005380,
 # Phase 0.9.2 = + 055550 + 097950 + 015760).
+# Phase 0.10.x ad-hoc 분석: + 298040 효성중공업 (사용자 단일 종목 백테스트).
 _ASSET_FACTORIES: dict[str, Callable[[], Asset]] = {
     "069500": kodex200,
     "214980": kodex_short_bond_plus,
@@ -541,6 +572,7 @@ _ASSET_FACTORIES: dict[str, Callable[[], Asset]] = {
     "055550": shinhan_financial,
     "097950": cj_cheiljedang,
     "015760": kepco,
+    "298040": hyosung_heavy_industries,
 }
 
 

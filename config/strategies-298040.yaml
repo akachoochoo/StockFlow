@@ -1,0 +1,25 @@
+# 효성중공업 (298040) 단일 종목 백테스트 — 사용자 ad-hoc 분석.
+#
+# 정책: Phase 0.9.2 baseline 그대로 (drop=5.0% / max_split=7 /
+# per_split=10M KRW / target=10.0% / hybrid cooldown=60). 단일 종목
+# 이므로 정책 동일성 강제 N/A.
+
+version: "0.5"
+allocation_policy: EQUAL
+assets:
+  "298040":
+    name: "효성중공업"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters:
+      drop_threshold_pct: 5.0
+      max_split_count: 7
+      per_split_amount: 10000000
+      max_split_per_day: 1
+    sell_strategy: "profit_target"
+    sell_parameters:
+      profit_target_pct: 10.0
+      max_sells_per_day: 7
+    reentry_strategy: "hybrid"
+    reentry_parameters:
+      cooldown_days: 60
