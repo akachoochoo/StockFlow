@@ -39,9 +39,28 @@ for ring in "${INNER_RINGS[@]}"; do
   fi
 done
 
+# Phase 0.11.b ADR 0008 §1.6 D9 — intra-research cross-import 차단.
+# src/research/dgt/** MUST NOT import from non-dgt src.research sub-namespaces
+# (예: src.research.visualization, src.research.dynamic_adjustment 등).
+# Allowed: intra-dgt (src.research.dgt.* → src.research.dgt.*).
+#
+# BSD grep (macOS) negative-lookahead 미지원 → 2-step grep (extract all
+# src.research imports, then exclude src.research.dgt matches).
+if [ -d "src/research/dgt" ]; then
+  matches=$(grep -rEn "^[[:space:]]*(from|import)[[:space:]]+src\.research\." src/research/dgt 2>/dev/null || true)
+  if [ -n "$matches" ]; then
+    intra_violations=$(echo "$matches" | grep -vE "src\.research\.dgt(\.|$|[[:space:]])" || true)
+    if [ -n "$intra_violations" ]; then
+      echo "$intra_violations"
+      echo "FAIL: src/research/dgt contains cross-import to non-dgt src.research sub-namespace"
+      violations=$((violations + 1))
+    fi
+  fi
+fi
+
 if [ "$violations" -gt 0 ]; then
   echo "FAIL: namespace discipline violated ($violations inner ring(s))"
   exit 1
 fi
 
-echo "OK: namespace discipline preserved (7-ring grep, src.research isolated)"
+echo "OK: namespace discipline preserved (7-ring grep + dgt intra-research isolation)"
