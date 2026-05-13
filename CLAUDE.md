@@ -664,7 +664,7 @@ B) <옵션 2와 trade-off>
 ### Phase 1 (예정, 가칭) — KR 주식 실거래 (소액)
 
 - KIS API 어댑터 + 100~500만원 소액 + 차단기 비활성 + 1~2개월 운영
-- 결정: **ADR 0008** (가칭, 진입 시 박제 — D6 default 재번호. 이전 가칭 ADR 0007 = Phase 0.11.a DGT 점유, ADR 0007 §1.3 D6 박제). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7 / ADR 0005 §10.6.3
+- 결정: **ADR 0012** (ralplan #28, commit `e066554` 박제 — 재번호 history: 이전 가칭 ADR 0007/0008 stale, ADR 0011 §1.9 + §3.5 R7 mitigation 정합). 후보 박제: ADR 0003 §11.3 / ADR 0004 §7 / ADR 0005 §10.6.3
 - 트리거 항목: §16.4 참조
 
 ### Phase 1 진입 전 작성 금지 (통합 목록)
@@ -686,7 +686,7 @@ B) <옵션 2와 trade-off>
 - SupportLevelStrategy + cooldown — Phase 0.9.x / Phase 1+ (ADR 0004 §7.3.2 거부 박제 인용 필수)
 - 멀티 종목 + SupportLevel 결합 — Phase 0.9.x 후속 (ADR 0004 §1.10)
 - Phase 0.7.4 (부동산 분산) — placeholder 보존 (ADR 0003 §18.12.4 / §19.3)
-- 그리드 트레이딩 — Phase 0.11.a 완료 (2026-05-12, ADR 0007 §3, D10 = archive). 분봉 DGT 재검토 = Phase 1 ADR 0008 진입 후 별도 결정 라운드.
+- 그리드 트레이딩 — Phase 0.11.a 완료 (2026-05-12, ADR 0007 §3, D10 = archive). 분봉 DGT 재검토 = Phase 1 ADR 0012 진입 후 별도 결정 라운드.
 - 종목 선정 자동화 / 박영옥 가치주 자동 식별 — Phase 2+
 - 일중 데이터 (분봉 / 틱) — Phase 0 ~ 0.10 = 일봉 (pykrx) only
 - 보존 (변경 금지, 회귀 invariant): `PriceDropStrategy` / `SupportLevelStrategy` /
@@ -760,9 +760,13 @@ PriceDropStrategy) 비교 가정 유지. 사용자 확인 없이 호가 가변 /
 "친절한 추가 금지" 정신). 검토 필요한 영역에는 `# Phase 1 ADR 박제 후
 검토` 주석 추가.
 
-### 16.4 Phase 1 ADR 0008 (가칭) 트리거 항목
+### 16.4 Phase 1 ADR 0012 트리거 항목
 
-> D6 default 재번호: 이전 가칭 ADR 0007 = Phase 0.11.a DGT 점유. Phase 1 ADR = 0008 (ADR 0007 §1.3 D6 박제, 2026-05-11).
+> 재번호 history: 이전 가칭 = ADR 0007 (Phase 0.11.a DGT 점유로 stale)
+> → ADR 0008 (Phase 0.11.b DGT tuning 점유로 stale) → **ADR 0012**
+> (ralplan #28, commit `e066554` 박제). 본 §16.4 재번호 정정 = Phase
+> 0.11.e.5 follow-up commit (A), ADR 0011 §1.9 + §3.5 R7 mitigation 정합
+> (2026-05-14).
 
 Phase 1 ADR 박제 시 다뤄질 결정 (ADR 0003 §11.3 / ADR 0005 §10.6.3 인용):
 
