@@ -14,6 +14,9 @@
 #     (ADR 0008 D9 intra-research grep rule).
 #
 # Sub-step 0.11.c.2 산출: Protocol + sidecar + enrichment helper +
-# namespace test (interface-only, rendering body 는 0.11.c.3 영역).
+# namespace test (interface-only).
+# Sub-step 0.11.c.3 산출: `_DGTVisualizationRenderer` (`_dgt_renderer.py`)
+# — DGT 전용 full-period chart (close + grid envelope + reference price +
+# trade markers) + `_OverlayPayload` 추출 (D6 공통 축).
 
 __all__: list[str] = []
