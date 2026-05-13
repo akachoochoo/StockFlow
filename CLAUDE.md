@@ -615,7 +615,7 @@ B) <옵션 2와 trade-off>
 
 ---
 
-## 14. Phase별 범위 (현재: Phase 0.11.c 완료, Phase 0.11.d 진입 결정 대기)
+## 14. Phase별 범위 (현재: Phase 0.11.d 완료, Phase 0.11.e/f 진입 결정 대기)
 
 > 완료 phase 의 sub-step / 결정 / 게이트 결과는 ADR (`docs/decisions/adr-NNNN-*.md`)
 > + 회고 (`docs/retrospectives/phase-N.N.md`) + `docs/roadmap.md` 가 정본.
@@ -627,8 +627,9 @@ B) <옵션 2와 trade-off>
 - Phase 0.10 시리즈 (0.10 ~ 0.10.bb) 정식 종료 — 라운드 #22 (2026-05-11, ADR 0006 §18).
 - **Phase 0.11.a** (DGT Research-Namespace Overlay) 정식 종료 — 라운드 #23 (2026-05-12, ADR 0007 §3). G1+G3+G4 PASS / G2 INFORMATIONAL FAIL (R1 일봉 ≠ 분봉). D10 = archive. DGT registry 미합류.
 - **Phase 0.11.b** (DGT Parameter Tuning & Sensitivity Analysis) 정식 종료 — 라운드 #24 (2026-05-13, ADR 0008 §3). G1+G3+G4 PASS / G2 INFORMATIONAL FAIL (D11 DSR 0/95 구조적 unattainable). D10 = archive 확정 (supersede 없음). DGT registry 미합류 유지.
-- **Phase 0.11.c** (Strategy-Specific Backtest Visualization Renderers) 정식 종료 — 라운드 #25 (2026-05-13, ADR 0009 §3). **게이트 4/4 PRIMARY PASS** (G1 Protocol + DGT renderer + comparison orchestration / G2 comparison mode 동작 / G3 ADR + 회고 + figure / G4 namespace + mypy + 재현성 + figure-leak). Lifecycle = permanent. 069500 5y comparison figure 박제 → Phase 1 ADR 0012 D11 분봉 DGT 정량 근거 보강.
-- Phase 0.11.d 진입 결정 보류. Phase 1 진척 = ADR 0012 D16 (ii) 9/16 (Phase 0.11.a/b/c 완료).
+- **Phase 0.11.c** (Strategy-Specific Backtest Visualization Renderers) 정식 종료 — 라운드 #25 (2026-05-13, ADR 0009 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = permanent. 069500 5y comparison figure 박제 → Phase 1 ADR 0012 D11 분봉 DGT 정량 근거 보강.
+- **Phase 0.11.d** (Asset-Specific Strategy Differentiation Diagnosis & Design) 정식 종료 — 라운드 #26 (2026-05-13, ADR 0010 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = deferred reference. 본질 = *분석 phase 의 분석 phase* — 코드 변경 zero / 신규 test zero / 박제 산출만 (~1711 docs lines). 핵심 발견: `per_asset_strategy_overrides` + `AssetContext` 기존 구현 발견 ("구조는 있지만 정책 게이트로 차단"). D11 AND-gate 4/4 충족 — 후속 결정 라운드 진입 자격 완성. CLAUDE.md §16.1 항목 #2 정정 권고 박제 (옵션 Z).
+- Phase 0.11.e/f 진입 결정 보류. Phase 1 진척 = ADR 0012 D16 (ii) 13/16 (Phase 0.11.a/b/c/d 완료).
 
 ### 완료 phase 인덱스 (정본 = ADR / 회고)
 
@@ -651,6 +652,7 @@ B) <옵션 2와 trade-off>
 | 0.11.a | 05-12 | DGT Research-Namespace Overlay (`src/research/` 5th ring + KoreanMarketCostModel + 일봉 prototype runner informational) | G1+G3+G4 PASS / G2 INFORMATIONAL FAIL (R1 — 일봉 ≠ 분봉) / D10 = archive / DGT registry 미합류 | 0007 §1~§3 | phase-0.11.a.md + phase-0.11.a-comparison.md |
 | 0.11.b | 05-13 | DGT Parameter Tuning & Sensitivity Analysis (WFO grid 95×5-fold + DSR Bailey-2014 + perturbation + PBO informational) | G1+G3+G4 PASS / G2 INFORMATIONAL FAIL (D11 AND-gate (b) DSR 0/95 구조적 unattainable) / D10 archive 확정 / Best n=11/k=3%/m=1 OOS Sharpe 2.27 → Phase 1 ADR 0012 분봉 DGT 근거 | 0008 §1~§3 | phase-0.11.b.md + sensitivity-heatmap.md + d11-trigger-judgment.md |
 | 0.11.c | 05-13 | Strategy-Specific Backtest Visualization Renderers (5th ring `src/research/visualization/` Protocol + DGT renderer + comparison orchestration + CLI + figure 박제) | **게이트 4/4 PRIMARY PASS** / Lifecycle = permanent / 069500 5y figure 박제 (B&H +2.1M / 7split +1.34M / DGT +617K KRW) | 0009 §1~§3 | phase-0.11.c.md + figures/phase-0.11.c/*.png |
+| 0.11.d | 05-13 | Asset-Specific Strategy Differentiation Diagnosis & Design (분석 phase 의 분석 phase — 코드 zero, 박제 only) | **게이트 4/4 PRIMARY PASS** / Lifecycle = deferred reference / D11 AND-gate 4/4 충족 (후속 라운드 진입 자격 완성) / "구조는 있지만 정책 게이트로 차단" 발견 (`per_asset_strategy_overrides` + `AssetContext` 기존 구현) | 0010 §1~§3 | phase-0.11.d.md + analysis/phase-0.11.d-{current-structure-diagnosis,coupling-model-candidates}.md |
 
 **핵심 학습** (Phase 0.7 ~ 0.9, ADR 0005 §9.6.2 박제):
 **자산군 분산 = H3 회복의 충분 조건** (3 회 반복 검증). 단일 자산군 (전부 주식
@@ -775,5 +777,5 @@ Phase 1 ADR 박제 시 다뤄질 결정 (ADR 0003 §11.3 / ADR 0005 §10.6.3 인
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-13 (Phase 0.11.b + 0.11.c 완료 박제 — §14 현 상태 + 인덱스 갱신, ADR 0008/0009 §1~§3 정본 인용)*
+*마지막 업데이트: 2026-05-13 (Phase 0.11.b + 0.11.c + 0.11.d 완료 박제 — §14 현 상태 + 인덱스 갱신, ADR 0008/0009/0010 §1~§3 정본 인용)*
 
