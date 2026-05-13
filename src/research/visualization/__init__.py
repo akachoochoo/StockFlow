@@ -18,5 +18,9 @@
 # Sub-step 0.11.c.3 산출: `_DGTVisualizationRenderer` (`_dgt_renderer.py`)
 # — DGT 전용 full-period chart (close + grid envelope + reference price +
 # trade markers) + `_OverlayPayload` 추출 (D6 공통 축).
+# Sub-step 0.11.c.4 산출: `_align.py` (BacktestResult ↔ _DGTBacktestResult
+# 공통 축 매핑) + `_dgt_factory.py` (artifacts/TradeView 변환) +
+# `_comparison.py` (overlay + grid 합성 PNG) + `cli.py` /
+# `__main__.py` (`python -m src.research.visualization compare ...`).
 
 __all__: list[str] = []

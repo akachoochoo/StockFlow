@@ -1,0 +1,20 @@
+{
+  "buy_and_hold": {
+    "final_drawdown": "-3396414.00000",
+    "final_pnl": "2108378.99550",
+    "n_points": "1231",
+    "strategy_id": "buy_and_hold"
+  },
+  "dgt": {
+    "final_drawdown": "-1193073.10975",
+    "final_pnl": "617147.24650",
+    "n_points": "1231",
+    "strategy_id": "dgt"
+  },
+  "price_drop_7split": {
+    "final_drawdown": "-651126",
+    "final_pnl": "1336690",
+    "n_points": "1231",
+    "strategy_id": "price_drop_7split"
+  }
+}
