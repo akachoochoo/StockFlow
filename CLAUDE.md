@@ -729,7 +729,13 @@ B) <옵션 2와 trade-off>
    한 종목 mismatch 발견 시 전체 정지 (ADR 0003 §8.6); Phase 1 에서
    자산별 격리 정지로 분기 가능한 구조.
 2. **종목별 잔고 분리 의식** — 단일 kill switch 가정 유지하되, 자산 격리
-   정지 분기 가능한 `AssetContext` 기반 데이터 흐름.
+   정지 분기 가능. `AssetContext` (`src/use_cases/asset_context.py:37-57`)
+   **기존 구현 활용 path** (ADR 0010 §3.7 발견 정합): `composition.py:230-243`
+   단일 strategy instance broadcast 해제 + `yaml_strategy_config_loader.py:157-201`
+   `_check_policy_uniformity` 완화. ADR 0010 §1.3 D3 (ii) AssetContext
+   후보 정합 (sub-step 0.11.d.3, commit `01b3867`). 정정 history: 2026-05-11
+   박제 시 "코드 추가 금지" 의식 → ADR 0010 §3.7 옵션 Z 권고 → 본 정정
+   (Phase 0.11.e.5 follow-up commit B, 2026-05-14).
 3. **partial fill 차단 유지** — KIS 는 partial fill 발생 가능. ADR 0002
    §3 (partial fill 차단) 정신 그대로. Phase 1 에서 partial fill 처리
    ADR 신규 박제.
