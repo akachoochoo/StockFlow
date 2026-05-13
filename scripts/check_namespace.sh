@@ -44,6 +44,15 @@ done
 # (예: src.research.visualization, src.research.dynamic_adjustment 등).
 # Allowed: intra-dgt (src.research.dgt.* → src.research.dgt.*).
 #
+# Phase 0.11.c ADR 0009 §1.6 D9 — intra-research 방향성 명시:
+# - 정방향 허용: src/research/visualization/* → src/research/dgt/*
+#   (visualization 이 DGT 결과 읽기 = outer→inner read 의 5th ring 내부 확장).
+#   별도 grep rule 추가 zero — 기존 dgt 차단 rule 의 negative 조건 자동 만족
+#   (visualization 디렉토리는 dgt 디렉토리 grep 범위에 포함되지 않음).
+# - 역방향 차단: src/research/dgt/* → src/research/visualization/*
+#   본 dgt 차단 rule (line 49~58) 로 enforce — visualization 은 non-dgt
+#   sub-namespace 이므로 자동 차단.
+#
 # BSD grep (macOS) negative-lookahead 미지원 → 2-step grep (extract all
 # src.research imports, then exclude src.research.dgt matches).
 if [ -d "src/research/dgt" ]; then
