@@ -67,9 +67,45 @@ if [ -d "src/research/dgt" ]; then
   fi
 fi
 
+# Phase 0.11.e ADR 0011 §1.3 D10 — intra-research cross-import 방향성:
+# - 정방향 허용: src/research/dynamic_adjustment/* → src/research/dgt/* +
+#   src/research/visualization/* + src/research/dynamic_adjustment/* (D11
+#   산출 호출 정합).
+# - 역방향 차단: dgt → dynamic_adjustment (기존 dgt rule 로 enforce 완료);
+#   visualization → dynamic_adjustment 차단 (본 신규 rule).
+#
+# visualization → dynamic_adjustment 차단 rule — visualization 이 dgt +
+# visualization 외 sub-namespace 를 import 하지 않음을 강제.
+if [ -d "src/research/visualization" ]; then
+  matches=$(grep -rEn "^[[:space:]]*(from|import)[[:space:]]+src\.research\." src/research/visualization 2>/dev/null || true)
+  if [ -n "$matches" ]; then
+    intra_violations=$(echo "$matches" | grep -vE "src\.research\.(dgt|visualization)(\.|$|[[:space:]])" || true)
+    if [ -n "$intra_violations" ]; then
+      echo "$intra_violations"
+      echo "FAIL: src/research/visualization contains cross-import to non-{dgt,visualization} src.research sub-namespace"
+      violations=$((violations + 1))
+    fi
+  fi
+fi
+
+# dynamic_adjustment 의 outgoing 차단 — 허용 = dgt + visualization +
+# dynamic_adjustment (intra-self). 그 외 sub-namespace (예: 미래 신규)
+# 자동 차단.
+if [ -d "src/research/dynamic_adjustment" ]; then
+  matches=$(grep -rEn "^[[:space:]]*(from|import)[[:space:]]+src\.research\." src/research/dynamic_adjustment 2>/dev/null || true)
+  if [ -n "$matches" ]; then
+    intra_violations=$(echo "$matches" | grep -vE "src\.research\.(dgt|visualization|dynamic_adjustment)(\.|$|[[:space:]])" || true)
+    if [ -n "$intra_violations" ]; then
+      echo "$intra_violations"
+      echo "FAIL: src/research/dynamic_adjustment contains cross-import to non-{dgt,visualization,dynamic_adjustment} src.research sub-namespace"
+      violations=$((violations + 1))
+    fi
+  fi
+fi
+
 if [ "$violations" -gt 0 ]; then
   echo "FAIL: namespace discipline violated ($violations inner ring(s))"
   exit 1
 fi
 
-echo "OK: namespace discipline preserved (7-ring grep + dgt intra-research isolation)"
+echo "OK: namespace discipline preserved (7-ring grep + dgt/visualization/dynamic_adjustment intra-research isolation)"
