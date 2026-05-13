@@ -1,6 +1,6 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-13 (Phase 0.11.b 정식 종료 — 라운드 #24 + sub-step .2~.5 5 commits, ADR 0008 §1+§2+§3 박제, D11 AND-gate FAIL → INFORMATIONAL 강등 + D10 archive 확정 (supersede 없음), DGT registry 미합류 유지, 회고 `phase-0.11.b.md` + sensitivity heatmap `docs/research/phase-0.11.b/sensitivity-heatmap.md` + D11 trigger 판정 `d11-trigger-judgment.md` 박제)
+> 마지막 업데이트: 2026-05-13 (Phase 0.11.c 정식 종료 — 라운드 #25 + sub-step .2~.5 5 commits, ADR 0009 §1+§2+§3 박제, 게이트 4/4 PRIMARY PASS, lifecycle = permanent, 회고 `phase-0.11.c.md` + figure 박제 `docs/retrospectives/figures/phase-0.11.c/*.png` (4 PNG + 1 JSON), 회귀 zero — 1307 tests 통과)
 
 ## 현재 상태
 
@@ -26,7 +26,8 @@
 | 분석 phase | 정리 종료 (2026-05-11) — Phase 0.11.a 진입 | — |
 | **Phase 0.11.a** | 완료 (2026-05-12, 라운드 #23 종료) — DGT Research-Namespace Overlay. G1+G3+G4 PASS, G2 INFORMATIONAL FAIL (R1 — 일봉 ≠ 분봉). D10 = archive. DGT registry 미합류. CAGR 1.23% / MDD -19.55% / Sharpe 0.17 / Calmar 0.063 < Phase 0.7.3 baseline 4지표 | ADR 0007 §1~§3 / `phase-0.11.a.md` + `phase-0.11.a-comparison.md` |
 | **Phase 0.11.b** | 완료 (2026-05-13, 라운드 #24 + sub-step .2~.5 5 commits) — DGT Parameter Tuning & Sensitivity Analysis. G1+G3+G4 PASS, **G2 INFORMATIONAL FAIL** (D11 AND-gate (b) DSR 0/95 구조적 unattainable — n_trials=95 × 작은 fold sample multiple-testing penalty). D10 = archive 확정 (시나리오 C graceful degradation, supersede 없음). DGT registry 미합류 유지. Best parameter (n=11, k=3%, m=1) OOS Sharpe 2.27 / DSR -1.33 → Phase 1 ADR 0012 분봉 DGT 정량 근거 박제. 자산군 분산 정신 4회째 재확인 (D7 4-way baseline). 신규 코드 ~2034 lines + 98 tests (1129→1227, regression zero) | ADR 0008 §1+§2+§3 / `phase-0.11.b.md` + `docs/research/phase-0.11.b/sensitivity-heatmap.md` + `d11-trigger-judgment.md` |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 시점 = ADR 0012 D16 (i)~(vi) 6 조건 모두 충족 후 (Phase 0.11.b/c/d/e sub-step .2~.5 실행 + 별도 2 commit + paper trading + NTP). 현 진척 = D16 (ii) 5/16 (0.11.b 완료) | ADR 0012 §1 (`e066554`, ralplan #28) — D1~D20 + G1~G4 + R1~R10 + §1.6 Operating Contract 7 invariant + §1.10 Pre-mortem 5 시나리오 |
+| **Phase 0.11.c** | 완료 (2026-05-13, 라운드 #25 + sub-step .2~.5 5 commits) — Strategy-Specific Backtest Visualization Renderers. **게이트 4/4 PRIMARY PASS** (G1 Protocol + DGT renderer + comparison orchestration / G2 comparison mode 동작 / G3 ADR + 회고 + figure / G4 namespace + mypy + 재현성 + figure-leak). Lifecycle = permanent. 신규 5th ring `src/research/visualization/` (Protocol + DGT renderer + comparison + CLI + adapter, ~1535 lines) + 84 tests (1227→1307, regression zero). 069500 5y comparison figure (B&H +2.1M / 7split +1.34M / DGT +617K KRW, MDD 7split best -651K) → 자산군 분산 정신 5회 재확인 + Phase 1 ADR 0012 D11 분봉 DGT 정량 근거 보강. Production rings 변경 zero + `pyproject.toml` 변경 zero (reporting extra 활용) | ADR 0009 §1+§2+§3 / `phase-0.11.c.md` + `docs/retrospectives/figures/phase-0.11.c/*.png` + `overlay_metrics.json` |
+| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 시점 = ADR 0012 D16 (i)~(vi) 6 조건 모두 충족 후 (Phase 0.11.b/c/d/e sub-step .2~.5 실행 + 별도 2 commit + paper trading + NTP). 현 진척 = D16 (ii) 9/16 (0.11.b + 0.11.c 완료) | ADR 0012 §1 (`e066554`, ralplan #28) — D1~D20 + G1~G4 + R1~R10 + §1.6 Operating Contract 7 invariant + §1.10 Pre-mortem 5 시나리오 |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |

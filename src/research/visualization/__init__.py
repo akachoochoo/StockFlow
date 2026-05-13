@@ -22,5 +22,8 @@
 # 공통 축 매핑) + `_dgt_factory.py` (artifacts/TradeView 변환) +
 # `_comparison.py` (overlay + grid 합성 PNG) + `cli.py` /
 # `__main__.py` (`python -m src.research.visualization compare ...`).
+# Sub-step 0.11.c.5 산출: 회고 (`docs/retrospectives/phase-0.11.c.md`) +
+# ADR 0009 §2 + §3 박제 (시리즈 종료) + figure 박제 정본 + roadmap /
+# CLAUDE.md §14 갱신. Lifecycle = permanent (ADR 0009 §1.7).
 
 __all__: list[str] = []
