@@ -90,6 +90,9 @@ logs/
 # Backtest outputs
 results/
 reports/
+report/
+report-*/
+report-paper/
 
 # ---------------------------------------------------------------------------
 # Claude Code / OMC — entire directory is volatile / machine-local state

@@ -622,7 +622,7 @@ B) <옵션 2와 trade-off>
 > 이 섹션은 현 상태 + 진행 중 phase + 다음 phase 만 유지. 완료 phase 상세는
 > 정본에서 인용하고 여기에 다시 옮겨 적지 말 것.
 
-### 현 상태 (2026-05-14)
+### 현 상태 (2026-05-15)
 
 - Phase 0.10 시리즈 (0.10 ~ 0.10.bb) 정식 종료 — 라운드 #22 (2026-05-11, ADR 0006 §18).
 - **Phase 0.11.a** (DGT Research-Namespace Overlay) 정식 종료 — 라운드 #23 (2026-05-12, ADR 0007 §3). G1+G3+G4 PASS / G2 INFORMATIONAL FAIL (R1 일봉 ≠ 분봉). D10 = archive. DGT registry 미합류.
@@ -630,7 +630,8 @@ B) <옵션 2와 trade-off>
 - **Phase 0.11.c** (Strategy-Specific Backtest Visualization Renderers) 정식 종료 — 라운드 #25 (2026-05-13, ADR 0009 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = permanent.
 - **Phase 0.11.d** (Asset-Specific Strategy Differentiation Diagnosis & Design) 정식 종료 — 라운드 #26 (2026-05-13, ADR 0010 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = deferred reference. 본질 = *분석 phase 의 분석 phase*. D11 AND-gate 4/4 충족 — 후속 결정 라운드 진입 자격 완성.
 - **Phase 0.11.e** (Dynamic Adjustment Proposal Engine L2/L3) 정식 종료 — 라운드 #27 (2026-05-14, ADR 0011 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = 5th ring 영구 유지 (D13). 신규 5th ring `src/research/dynamic_adjustment/` 10 파일 (~1403 LOC) + 141 tests (regression zero). §1.6 Design Contract 6 invariant **측정 가능 verification** + D14 structural constraints (12주 / ±30% / cooldown) + D15 governance 박제. **Phase 1 진입 ready 선언** — ADR 0012 D16 (ii) 5/6 충족 (잔여 = paper trading + NTP).
-- Phase 1 진입 결정 대기. 또는 Phase 0.11.f (D3/D4 후보 채택 결정 라운드) 진입 선택. 사용자 결정 대기.
+- **Phase 0.11.f** (DGT Paper-Faithful + Adaptive Hybrid + Multi-Asset Portfolio) 정식 종료 — 라운드 #28 (2026-05-15, ADR 0013 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = 5th ring 영구 (permanent-research-only). 4 runner (dynamic/adaptive/paper/paper_adaptive) + multi-asset portfolio B&H 벤치마크. 핵심 발견: **MDD 14-16% 일관성** (시장 regime/종목 수 무관) + Hyb-Daily 최적 DGT 구성 + 상승장 B&H 압도적 우위 (DGT 구조적 한계). 75 new tests (173 total DGT tests), inner ring 변경 zero.
+- Phase 1 진입 결정 대기.
 
 ### 완료 phase 인덱스 (정본 = ADR / 회고)
 
@@ -655,6 +656,7 @@ B) <옵션 2와 trade-off>
 | 0.11.c | 05-13 | Strategy-Specific Backtest Visualization Renderers (5th ring `src/research/visualization/` Protocol + DGT renderer + comparison orchestration + CLI + figure 박제) | **게이트 4/4 PRIMARY PASS** / Lifecycle = permanent / 069500 5y figure 박제 (B&H +2.1M / 7split +1.34M / DGT +617K KRW) | 0009 §1~§3 | phase-0.11.c.md + figures/phase-0.11.c/*.png |
 | 0.11.d | 05-13 | Asset-Specific Strategy Differentiation Diagnosis & Design (분석 phase 의 분석 phase — 코드 zero, 박제 only) | **게이트 4/4 PRIMARY PASS** / Lifecycle = deferred reference / D11 AND-gate 4/4 충족 (후속 라운드 진입 자격 완성) / "구조는 있지만 정책 게이트로 차단" 발견 (`per_asset_strategy_overrides` + `AssetContext` 기존 구현) | 0010 §1~§3 | phase-0.11.d.md + analysis/phase-0.11.d-{current-structure-diagnosis,coupling-model-candidates}.md |
 | 0.11.e | 05-14 | Dynamic Adjustment Proposal Engine L2/L3 (5th ring `src/research/dynamic_adjustment/` Proposal 4-state 머신 + ProposalHistory D14 + TriggerEvaluator + CLI + ADR template scaffolding) | **게이트 4/4 PRIMARY PASS** / Lifecycle = 5th ring 영구 (D13) / §1.6 Design Contract 6 invariant 측정 가능 verification + D14 structural constraints + D15 governance 박제 / **Phase 1 진입 ready 선언** (ADR 0012 D16 (ii) 5/6 충족) | 0011 §1~§3 | phase-0.11.e.md |
+| 0.11.f | 05-15 | DGT Paper-Faithful + Adaptive Hybrid + Multi-Asset Portfolio (4 runner + multi-asset B&H 벤치마크 + MDD 14-16% 일관성 발견 + Hyb-Daily 최적 DGT 구성 결론 + 상승장 B&H 구조적 우위 박제) | **게이트 4/4 PRIMARY PASS** / Lifecycle = 5th ring 영구 (permanent-research-only) / 75 new tests (173 total DGT) / inner ring 변경 zero / D1~D10 (3 accepts, 3 invalidations, 4 operational) | 0013 §1~§3 | phase-0.11.f.md |
 
 **핵심 학습** (Phase 0.7 ~ 0.9, ADR 0005 §9.6.2 박제):
 **자산군 분산 = H3 회복의 충분 조건** (3 회 반복 검증). 단일 자산군 (전부 주식
