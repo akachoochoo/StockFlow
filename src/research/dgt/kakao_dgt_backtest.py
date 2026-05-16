@@ -127,6 +127,13 @@ def _run_paper_adaptive(
     k_min: Decimal = Decimal("0.02"),
     k_max: Decimal = Decimal("0.10"),
     rebalance_mode: str = "on_breach",
+    volatility_measure: str = "atr",
+    slope_gate: bool = False,
+    slope_gate_period: int = 5,
+    slope_gate_threshold: Decimal = Decimal("0.05"),
+    volume_gate: bool = False,
+    volume_gate_period: int = 20,
+    volume_gate_multiplier: Decimal = Decimal("2.0"),
     use_trend: bool = False,
     trend_period: int = 20,
     trend_sensitivity: Decimal = Decimal("10"),
@@ -138,6 +145,13 @@ def _run_paper_adaptive(
             atr_period=14, multiplier=multiplier, k_min=k_min, k_max=k_max,
         ),
         rebalance_mode=rebalance_mode,
+        volatility_measure=volatility_measure,
+        slope_gate=slope_gate,
+        slope_gate_period=slope_gate_period,
+        slope_gate_threshold=slope_gate_threshold,
+        volume_gate=volume_gate,
+        volume_gate_period=volume_gate_period,
+        volume_gate_multiplier=volume_gate_multiplier,
         use_trend=use_trend,
         trend_period=trend_period,
         trend_sensitivity=trend_sensitivity,
@@ -314,8 +328,14 @@ def _render_comparison_chart(
     closes = [float(b.close) for b in bars]
 
     colors = {"Paper-3%": "#e74c3c", "Paper-1%": "#8e44ad",
-              "Hyb-Daily": "#27ae60", "B&H-30%": "#f39c12",
-              "B&H-100%": "#f39c12", "B&H-50/50": "#f39c12",
+              "Hyb-Daily": "#27ae60", "Hyb-ATR": "#27ae60", "Hyb-ADR": "#2980b9",
+              "ADR-Base": "#95a5a6", "ADR+Slope": "#e74c3c",
+              "ADR+Vol": "#8e44ad", "ADR+Both": "#2980b9",
+              "Base": "#95a5a6", "Vol-1.5x": "#e74c3c", "Vol-2.0x": "#27ae60",
+              "Vol-2.5x": "#8e44ad", "Vol-3.0x": "#2980b9",
+              "V-P5": "#e74c3c", "V-P10": "#27ae60", "V-P15": "#8e44ad",
+              "V-P20": "#2980b9", "V-P30": "#d35400",
+              "B&H-30%": "#f39c12", "B&H-100%": "#f39c12", "B&H-50/50": "#f39c12",
               "Paper": "#1abc9c", "Static": "#95a5a6"}
     n_strategies = len(results)
 
@@ -336,7 +356,8 @@ def _render_comparison_chart(
     def _mode_for(lbl: str) -> str:
         if lbl.startswith("B&H"):
             return "bh"
-        if lbl.startswith("Trend") or lbl.startswith("Hyb-D") or lbl == "Hyb-Daily":
+        if (lbl.startswith("Trend") or lbl.startswith("Hyb-D") or lbl.startswith("ADR")
+                or lbl in ("Hyb-Daily", "Hyb-ATR", "Hyb-ADR")):
             return "paper_adaptive_daily"
         if lbl.startswith("Hyb"):
             return "paper_adaptive"
@@ -835,9 +856,75 @@ def _render_per_stock_charts(
     return result_pngs
 
 
+def _compute_cumulative_realized_single(result: _DGTBacktestResult) -> dict[date, Decimal]:
+    """Compute cumulative realized P&L for a single-stock result (weighted avg cost)."""
+    avg_cost = Decimal("0")
+    total_holdings = Decimal("0")
+    cum_realized = Decimal("0")
+    realized_by_date: dict[date, Decimal] = {}
+
+    for trade in result.trades:
+        if trade.side == "BUY":
+            cost_per_share = trade.rounded_price
+            if total_holdings + trade.quantity > 0:
+                avg_cost = (
+                    (avg_cost * total_holdings + cost_per_share * trade.quantity)
+                    / (total_holdings + trade.quantity)
+                )
+            total_holdings += trade.quantity
+        elif trade.side == "SELL":
+            profit = (trade.rounded_price - avg_cost) * trade.quantity
+            fees = trade.tax + trade.commission
+            cum_realized += profit - fees
+            total_holdings -= trade.quantity
+        realized_by_date[trade.trade_date] = cum_realized
+    return realized_by_date
+
+
+def _compute_cumulative_realized(
+    result: _DGTBacktestResult,
+    per_stock: list[_DGTBacktestResult] | None = None,
+) -> dict[date, float]:
+    """Compute cumulative realized P&L, summing per-stock when available."""
+    if per_stock and len(per_stock) > 1:
+        # Compute per stock, then sum by date
+        all_by_date: dict[date, Decimal] = {}
+        for stock_result in per_stock:
+            stock_realized = _compute_cumulative_realized_single(stock_result)
+            for d, val in stock_realized.items():
+                all_by_date[d] = all_by_date.get(d, Decimal("0")) + val
+        # For dates with partial updates, forward-fill each stock independently
+        per_stock_last: list[Decimal] = [Decimal("0")] * len(per_stock)
+        snapshot_dates = [s.trade_date for s in result.daily_snapshots]
+        stock_by_date: list[dict[date, Decimal]] = [
+            _compute_cumulative_realized_single(sr) for sr in per_stock
+        ]
+        filled: dict[date, float] = {}
+        for d in snapshot_dates:
+            total = Decimal("0")
+            for i, sbd in enumerate(stock_by_date):
+                if d in sbd:
+                    per_stock_last[i] = sbd[d]
+                total += per_stock_last[i]
+            filled[d] = float(total)
+        return filled
+    else:
+        realized_by_date = _compute_cumulative_realized_single(result)
+        snapshot_dates = [s.trade_date for s in result.daily_snapshots]
+        filled: dict[date, float] = {}
+        last_val = 0.0
+        for d in snapshot_dates:
+            if d in realized_by_date:
+                last_val = float(realized_by_date[d])
+            filled[d] = last_val
+        return filled
+
+
 def _render_equity_only_chart(
     results: list[tuple[str, _DGTBacktestResult]],
     title: str,
+    show_realized: bool = False,
+    per_stock_map: dict[str, list[_DGTBacktestResult]] | None = None,
 ) -> bytes:
     """Equity curve overlay chart (no grid panels, for multi-asset)."""
     import matplotlib
@@ -847,9 +934,17 @@ def _render_equity_only_chart(
 
     colors_list = ["#e74c3c", "#8e44ad", "#27ae60", "#f39c12", "#2980b9"]
 
-    fig, ax = plt.subplots(1, 1, figsize=(14, 6))
+    n_panels = 2 if show_realized else 1
+    fig, axes = plt.subplots(
+        n_panels, 1, figsize=(14, 6 * n_panels),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1] * n_panels},
+    )
+    if n_panels == 1:
+        axes = [axes]
     fig.suptitle(title, fontsize=13, fontweight="bold")
 
+    ax = axes[0]
     initial = float(results[0][1].initial_capital.amount)
     ax.axhline(initial, color="#95a5a6", linewidth=0.8, linestyle="--",
                label=f"Initial ({initial:,.0f})", alpha=0.7)
@@ -867,7 +962,28 @@ def _render_equity_only_chart(
     ax.set_ylabel("Portfolio Value (KRW)", fontsize=10)
     ax.legend(loc="upper left", fontsize=9)
     ax.grid(True, alpha=0.3)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+
+    if show_realized:
+        ax_r = axes[1]
+        ax_r.axhline(0, color="#95a5a6", linewidth=0.8, linestyle="--", alpha=0.5)
+        for i, (label, result) in enumerate(results):
+            ps = per_stock_map.get(label) if per_stock_map else None
+            realized = _compute_cumulative_realized(result, per_stock=ps)
+            if not realized:
+                continue
+            r_dates = list(realized.keys())
+            r_vals = list(realized.values())
+            color = colors_list[i % len(colors_list)]
+            final_r = r_vals[-1] if r_vals else 0
+            ax_r.plot(r_dates, r_vals, color=color, linewidth=1.5,
+                      label=f"{label} (realized {final_r:+,.0f})")
+        ax_r.set_ylabel("Cumulative Realized P&L (KRW)", fontsize=10)
+        ax_r.set_title("Realized Profit (weighted avg cost)", fontsize=11,
+                       fontweight="bold", loc="left")
+        ax_r.legend(loc="upper left", fontsize=9)
+        ax_r.grid(True, alpha=0.3)
+
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
     fig.autofmt_xdate()
 
     plt.tight_layout()
@@ -911,12 +1027,14 @@ def main(argv: list[str] | None = None) -> int:
     is_multi = len(codes) > 1
     asset_names = " + ".join(f"{a.name}({a.code})" for a in assets)
 
-    adp_best = {"multiplier": Decimal("1.0"), "k_min": Decimal("0.005"), "k_max": Decimal("0.05"),
-                "rebalance_mode": "daily"}
+    _adp_base = {"multiplier": Decimal("1.0"), "k_min": Decimal("0.005"), "k_max": Decimal("0.05"),
+                 "rebalance_mode": "daily", "volatility_measure": "adr"}
+    def _vol(period: int = 20, mult: str = "2.0") -> dict[str, object]:
+        return {**_adp_base, "volume_gate": True, "volume_gate_period": period,
+                "volume_gate_multiplier": Decimal(mult)}
     run_specs: list[tuple[str, _DGTConfig, dict[str, object] | None]] = [
-        ("Paper-3%", _DGTConfig(config.grid_count, Decimal("3"), m_sym), None),
-        ("Paper-1%", _DGTConfig(config.grid_count, Decimal("1"), m_sym), None),
-        ("Hyb-Daily", base_cfg, {**adp_best}),
+        ("ADR-Base", base_cfg, {**_adp_base}),
+        ("ADR+Vol", base_cfg, _vol(10, "1.5")),
     ]
 
     n_variants = len(run_specs)
@@ -983,7 +1101,9 @@ def main(argv: list[str] | None = None) -> int:
     if is_multi:
         chart_title = (f"{asset_names}\nMulti-Asset DGT Comparison  |  "
                        f"n={config.grid_count}, equal split  |  {start} ~ {end}")
-        chart_png = _render_equity_only_chart(results, chart_title)
+        chart_png = _render_equity_only_chart(
+            results, chart_title, show_realized=True, per_stock_map=strategy_per_stock,
+        )
         # Per-stock detail charts
         print("  Rendering per-stock detail charts ...")
         per_stock_pngs = _render_per_stock_charts(

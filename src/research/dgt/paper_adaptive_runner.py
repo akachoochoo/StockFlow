@@ -22,7 +22,7 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Literal
 
 from src.domain.models import Asset, Money, OHLCV
-from src.research.dgt.adaptive_runner import _AdaptiveConfig, _compute_atr
+from src.research.dgt.adaptive_runner import _AdaptiveConfig, _compute_adr, _compute_atr
 from src.research.dgt.cost_model import _KoreanMarketCostModel
 from src.research.dgt.formulas import grid_levels_table1
 from src.research.dgt.results import _DGTBacktestResult, _DGTSnapshot, _DGTTrade
@@ -80,14 +80,72 @@ class _DGTPaperAdaptiveRunner:
     config: _DGTConfig
     adaptive: _AdaptiveConfig = _AdaptiveConfig()
     rebalance_mode: Literal["on_breach", "daily"] = "on_breach"
+    volatility_measure: Literal["atr", "adr"] = "atr"
+    # --- Trade gates ---
+    # B: Asymmetric Slope Gate — skip sell on surge, skip buy on plunge
+    slope_gate: bool = False
+    slope_gate_period: int = 5  # ROC lookback period (bars)
+    slope_gate_threshold: Decimal = Decimal("0.05")  # 5% ROC threshold
+    # D: Volume Gate — skip sell on volume spike + up, skip buy on spike + down
+    volume_gate: bool = False
+    volume_gate_period: int = 20  # volume SMA lookback
+    volume_gate_multiplier: Decimal = Decimal("2.0")  # spike = volume > N * SMA
+    # --- Legacy trend (D3 invalidated, kept for reference) ---
     use_trend: bool = False  # True = slope-based k adjustment
     trend_period: int = 20  # slope 계산 기간
     trend_sensitivity: Decimal = Decimal("10")  # slope 영향 배율
 
+    def _check_slope_gate(
+        self, bars: list[OHLCV], bar_idx: int,
+    ) -> tuple[bool, bool]:
+        """Returns (skip_buy, skip_sell) based on ROC over slope_gate_period.
+
+        Asymmetric: surge (ROC > threshold) → skip sell only,
+                    plunge (ROC < -threshold) → skip buy only.
+        """
+        if not self.slope_gate or bar_idx < self.slope_gate_period:
+            return False, False
+        prev_close = bars[bar_idx - self.slope_gate_period].close
+        curr_close = bars[bar_idx].close
+        if prev_close <= 0:
+            return False, False
+        roc = (curr_close - prev_close) / prev_close
+        skip_buy = roc < -self.slope_gate_threshold   # plunge → don't buy
+        skip_sell = roc > self.slope_gate_threshold    # surge → don't sell
+        return skip_buy, skip_sell
+
+    def _check_volume_gate(
+        self, bars: list[OHLCV], bar_idx: int,
+    ) -> tuple[bool, bool]:
+        """Returns (skip_buy, skip_sell) based on volume spike.
+
+        Volume spike + price up → skip sell (let it ride),
+        Volume spike + price down → skip buy (avoid falling knife).
+        """
+        if not self.volume_gate or bar_idx < self.volume_gate_period:
+            return False, False
+        start = bar_idx - self.volume_gate_period + 1
+        vol_sum = sum(bars[i].volume for i in range(start, bar_idx + 1))
+        vol_avg = vol_sum / Decimal(self.volume_gate_period)
+        curr_vol = bars[bar_idx].volume
+        if vol_avg <= 0 or curr_vol <= vol_avg * self.volume_gate_multiplier:
+            return False, False  # no spike
+        # Volume spike detected — check price direction
+        prev_close = bars[bar_idx - 1].close if bar_idx > 0 else bars[bar_idx].close
+        curr_close = bars[bar_idx].close
+        if curr_close > prev_close:
+            return False, True   # spike + up → skip sell
+        elif curr_close < prev_close:
+            return True, False   # spike + down → skip buy
+        return False, False
+
     def _adaptive_k(
         self, bars: list[OHLCV], bar_idx: int, close: Decimal,
     ) -> Decimal:
-        atr = _compute_atr(bars, self.adaptive.atr_period, bar_idx)
+        if self.volatility_measure == "adr":
+            atr = _compute_adr(bars, self.adaptive.atr_period, bar_idx)
+        else:
+            atr = _compute_atr(bars, self.adaptive.atr_period, bar_idx)
         if atr <= 0 or close <= 0:
             return self.config.k_ratio
         atr_pct = atr / close
@@ -147,17 +205,25 @@ class _DGTPaperAdaptiveRunner:
                 elif curr_close <= level < prev_close:
                     crossed_down.append((i, level))
 
+            # Trade gates
+            sb_slope, ss_slope = self._check_slope_gate(ohlcv, bar_idx)
+            sb_vol, ss_vol = self._check_volume_gate(ohlcv, bar_idx)
+            skip_buy = sb_slope or sb_vol
+            skip_sell = ss_slope or ss_vol
+
             # UP crosses ascending (natural order)
-            for _i, level in crossed_up:
-                trade = self._maybe_sell(state, asset, bar.trade_date, level)
-                if trade is not None:
-                    trades.append(trade)
+            if not skip_sell:
+                for _i, level in crossed_up:
+                    trade = self._maybe_sell(state, asset, bar.trade_date, level)
+                    if trade is not None:
+                        trades.append(trade)
 
             # DOWN crosses descending (natural order)
-            for _i, level in reversed(crossed_down):
-                trade = self._maybe_buy(state, asset, bar.trade_date, level)
-                if trade is not None:
-                    trades.append(trade)
+            if not skip_buy:
+                for _i, level in reversed(crossed_down):
+                    trade = self._maybe_buy(state, asset, bar.trade_date, level)
+                    if trade is not None:
+                        trades.append(trade)
 
             # Grid reset logic
             should_reset = False

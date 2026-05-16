@@ -75,6 +75,26 @@ def _compute_atr(bars: list[OHLCV], period: int, end_idx: int) -> Decimal:
     return tr_sum / Decimal(count) if count > 0 else Decimal("0")
 
 
+def _compute_adr(bars: list[OHLCV], period: int, end_idx: int) -> Decimal:
+    """ADR(period) at end_idx (inclusive). Decimal-only.
+
+    Average Daily Range = SMA of (high - low) over `period` bars.
+    Unlike ATR, does not account for overnight gaps.
+    Returns Decimal("0") if insufficient data.
+    """
+    start = max(0, end_idx - period + 1)
+    if start > end_idx:
+        return Decimal("0")
+
+    dr_sum = Decimal("0")
+    count = 0
+    for i in range(start, end_idx + 1):
+        dr_sum += bars[i].high - bars[i].low
+        count += 1
+
+    return dr_sum / Decimal(count) if count > 0 else Decimal("0")
+
+
 @dataclass(frozen=True)
 class _DGTAdaptiveRunner:
     """DGT runner with volatility-adaptive grid spacing (k).
