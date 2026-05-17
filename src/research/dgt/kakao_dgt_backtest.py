@@ -19,10 +19,20 @@ import argparse
 import base64
 import io
 import json
+import os
 from datetime import date
 from decimal import ROUND_DOWN, Decimal
 from html import escape
 from pathlib import Path
+from typing import Any
+
+from src.research.dgt._interactive_chart import (
+    _serialize_ohlcv,
+    _serialize_volume,
+    _serialize_markers,
+    _serialize_grid_levels,
+    build_interactive_chart_html,
+)
 
 from src.domain.models import (
     Asset,
@@ -312,20 +322,38 @@ def _result_summary(
 # Chart rendering (matplotlib)
 # ---------------------------------------------------------------------------
 
-def _render_comparison_chart(
+def _build_comparison_figure(
     results: list[tuple[str, _DGTBacktestResult]],
     bars: list[OHLCV],
     config: _DGTConfig,
     configs_per_result: list[_DGTConfig] | None = None,
-) -> bytes:
-    """Per-strategy price+grid+markers panels + equity overlay → PNG."""
+) -> tuple[Any, Any]:
+    """Build the comparison figure and return (fig, axes) WITHOUT savefig/close.
+
+    Caller is responsible for plt.close(fig) in a try/finally block (P4).
+    Layout: N strategy panels (candles + grid + markers) + 1 volume panel +
+    1 equity panel = N+2 axes total.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    from src.research.dgt._candles import _draw_candles, _draw_volume
 
-    dates = [b.trade_date for b in bars]
-    closes = [float(b.close) for b in bars]
+    # R10: bars and daily_snapshots must share the same date domain — both
+    # originate from the same OHLCV feed in all runners.  Fail loudly here
+    # rather than silently misalign candles vs grid envelope.
+    first_result = results[0][1]
+    snaps = first_result.daily_snapshots
+    assert (
+        len(bars) == len(snaps)
+        and bars[0].trade_date == snaps[0].trade_date
+        and bars[-1].trade_date == snaps[-1].trade_date
+    ), (
+        f"R10 violation: bars date domain {bars[0].trade_date}..{bars[-1].trade_date} "
+        f"({len(bars)}) != snapshots {snaps[0].trade_date}..{snaps[-1].trade_date} "
+        f"({len(snaps)}) — bug in runner"
+    )
 
     colors = {"Paper-3%": "#e74c3c", "Paper-1%": "#8e44ad",
               "Hyb-Daily": "#27ae60", "Hyb-ATR": "#27ae60", "Hyb-ADR": "#2980b9",
@@ -338,11 +366,18 @@ def _render_comparison_chart(
               "B&H-30%": "#f39c12", "B&H-100%": "#f39c12", "B&H-50/50": "#f39c12",
               "Paper": "#1abc9c", "Static": "#95a5a6"}
     n_strategies = len(results)
+    n_bars = len(bars)
 
+    # Bar-count-adaptive width: ~1250 daily bars → ~22.7 in; clamped [14, 40].
+    # Divisor 55 gives ~1 inch per ~55 bars — comfortably distinct candles at 5y scale.
+    fig_width = min(40.0, max(14.0, n_bars / 55.0))
+
+    # N price panels (ratio 3) + 1 volume panel (ratio 1) + 1 equity panel (ratio 2).
     fig, axes = plt.subplots(
-        n_strategies + 1, 1, figsize=(14, 4 * (n_strategies + 1)),
+        n_strategies + 2, 1,
+        figsize=(fig_width, 3.5 * n_strategies + 1.5 + 3.0),
         sharex=True,
-        gridspec_kw={"height_ratios": [1] * n_strategies + [1]},
+        gridspec_kw={"height_ratios": [3] * n_strategies + [1, 2]},
     )
     asset = results[0][1].asset
     fig.suptitle(
@@ -352,7 +387,9 @@ def _render_comparison_chart(
         fontsize=13, fontweight="bold",
     )
 
-    # --- Per-strategy panels: Price + grid levels + trade markers ---
+    dates = [b.trade_date for b in bars]
+
+    # --- Per-strategy panels: Candlesticks + grid levels + trade markers ---
     def _mode_for(lbl: str) -> str:
         if lbl.startswith("B&H"):
             return "bh"
@@ -378,8 +415,8 @@ def _render_comparison_chart(
         ax = axes[i]
         color = colors.get(label, "#555")
 
-        # Price line
-        ax.plot(dates, closes, color="#2c3e50", linewidth=0.8, alpha=0.6)
+        # Candlestick price chart (replaces ax.plot line chart).
+        _draw_candles(ax, bars)
 
         # Grid levels as Bollinger-band style envelope
         acfg = adaptive_cfgs.get(label)
@@ -412,6 +449,12 @@ def _render_comparison_chart(
         ax.legend(loc="upper right", fontsize=8)
         ax.grid(True, alpha=0.3)
 
+    # --- Shared volume panel (same underlying asset for all strategy panels) ---
+    ax_vol = axes[n_strategies]
+    _draw_volume(ax_vol, bars)
+    ax_vol.set_ylabel("Volume", fontsize=9)
+    ax_vol.grid(True, alpha=0.3)
+
     # --- Bottom panel: Equity curve overlay ---
     ax_eq = axes[-1]
     initial = float(results[0][1].initial_capital.amount)
@@ -435,10 +478,29 @@ def _render_comparison_chart(
     fig.autofmt_xdate()
 
     plt.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-    plt.close(fig)
-    return buf.getvalue()
+    return fig, axes
+
+
+def _render_comparison_chart(
+    results: list[tuple[str, _DGTBacktestResult]],
+    bars: list[OHLCV],
+    config: _DGTConfig,
+    configs_per_result: list[_DGTConfig] | None = None,
+) -> bytes:
+    """static 박제 path only — Phase 0.11.i / ADR 0016.
+
+    Per-strategy candlestick+grid+markers panels + volume panel + equity overlay → PNG.
+    Used by: (a) --static-charts rollback flag, (b) Step 6 figure 박제 regen.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, _axes = _build_comparison_figure(results, bars, config, configs_per_result)
+    try:
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+        return buf.getvalue()
+    finally:
+        plt.close(fig)
 
 
 def _draw_grid_levels(
@@ -530,6 +592,79 @@ def _fmt_pct(v: Decimal) -> str:
     return f"{v:.2f}%"
 
 
+def _build_interactive_comparison_html(
+    results: list[tuple[str, _DGTBacktestResult]],
+    bars: list[OHLCV],
+    title: str,
+) -> str:
+    """Build interactive lightweight-charts HTML for the main comparison chart.
+
+    Renders the first strategy's OHLCV + all strategies' trade markers.
+    Equity-curve overlay is not yet supported in the interactive chart (single
+    candlestick pane); a multi-pane equity overlay is a deferred follow-up.
+    """
+    date_set = {b.trade_date.strftime("%Y-%m-%d") for b in bars}
+    ohlcv = _serialize_ohlcv(bars)
+    volume = _serialize_volume(bars)
+
+    # Aggregate all trades across strategies for the marker overlay.
+    all_trades: list[_DGTTrade] = []
+    for _label, result in results:
+        all_trades.extend(result.trades)
+    all_trades.sort(key=lambda t: t.trade_date)
+    markers = _serialize_markers(all_trades, date_set)
+
+    # Grid levels from first DGT result (reference price + grid_levels list).
+    first_result = results[0][1]
+
+    class _GridArtifact:
+        grid_levels = first_result.grid_levels
+        reference_price = first_result.reference_price
+
+    grid_lines = _serialize_grid_levels(_GridArtifact())
+
+    return build_interactive_chart_html(
+        title=title,
+        ohlcv=ohlcv,
+        volume=volume,
+        markers=markers,
+        grid_levels=grid_lines,
+    )
+
+
+def _build_interactive_per_stock_html(
+    asset: "Asset",
+    bars: list[OHLCV],
+    results_for_stock: list[tuple[str, _DGTBacktestResult]],
+) -> str:
+    """Build interactive lightweight-charts HTML for a single per-stock chart."""
+    date_set = {b.trade_date.strftime("%Y-%m-%d") for b in bars}
+    ohlcv = _serialize_ohlcv(bars)
+    volume = _serialize_volume(bars)
+
+    all_trades: list[_DGTTrade] = []
+    for _label, result in results_for_stock:
+        all_trades.extend(result.trades)
+    all_trades.sort(key=lambda t: t.trade_date)
+    markers = _serialize_markers(all_trades, date_set)
+
+    first_result = results_for_stock[0][1]
+
+    class _GridArtifact:
+        grid_levels = first_result.grid_levels
+        reference_price = first_result.reference_price
+
+    grid_lines = _serialize_grid_levels(_GridArtifact())
+
+    return build_interactive_chart_html(
+        title=f"{escape(asset.name)} ({escape(asset.code)}) — Per-Strategy Detail",
+        ohlcv=ohlcv,
+        volume=volume,
+        markers=markers,
+        grid_levels=grid_lines,
+    )
+
+
 def _render_html_report(
     results: list[tuple[str, _DGTBacktestResult]],
     config: _DGTConfig,
@@ -537,10 +672,19 @@ def _render_html_report(
     output_path: Path,
     per_stock_charts: dict[str, bytes] | None = None,
     assets: list[Asset] | None = None,
+    bars_map: dict[str, list[OHLCV]] | None = None,
+    static_charts: bool = False,
 ) -> None:
+    """Render the HTML report.
+
+    Default (static_charts=False): interactive lightweight-charts embedded in-page.
+    Rollback (static_charts=True or _STATIC_CHARTS env var): base64 PNG <img> path
+    (Phase 0.11.h behaviour — for verification window only, removable per ADR 0016).
+    """
+    _use_static = static_charts or (os.environ.get("_STATIC_CHARTS", "") == "1")
+
     asset = results[0][1].asset
     capital = results[0][1].initial_capital
-    chart_b64 = base64.b64encode(chart_png).decode("ascii")
 
     # Title
     if assets and len(assets) > 1:
@@ -566,20 +710,67 @@ def _render_html_report(
             f"</tr>\n"
         )
 
-    # Per-stock chart sections
-    per_stock_html = ""
-    if per_stock_charts and assets:
-        for a in assets:
-            if a.code in per_stock_charts:
-                b64 = base64.b64encode(per_stock_charts[a.code]).decode("ascii")
-                per_stock_html += f"""
-<h2>{escape(a.name)} ({escape(a.code)}) — Per-Strategy Detail</h2>
-<div class="chart">
-<img src="data:image/png;base64,{b64}" alt="{escape(a.name)} detail">
-</div>
-"""
+    # Main comparison chart section — interactive or static rollback
+    if _use_static:
+        chart_b64 = base64.b64encode(chart_png).decode("ascii")
+        comparison_chart_html = (
+            f'<div class="chart">\n'
+            f'<img src="data:image/png;base64,{chart_b64}" alt="DGT Comparison Chart">\n'
+            f'</div>\n'
+        )
+    else:
+        # Interactive: pick the first single-stock bars if available, else skip chart.
+        _bars_for_chart: list[OHLCV] = []
+        if bars_map:
+            first_code = list(bars_map.keys())[0]
+            _bars_for_chart = bars_map[first_code]
+        if _bars_for_chart:
+            _chart_html = _build_interactive_comparison_html(
+                results, _bars_for_chart, f"DGT Comparison — {title_str}",
+            )
+            # build_interactive_chart_html returns a full standalone HTML page;
+            # embed it via <iframe srcdoc> so its own <html>/<head>/<style>/100vh
+            # layout works in an isolated document context (Phase 0.11.i fix).
+            comparison_chart_html = (
+                f'<div class="chart-interactive">\n'
+                f'<iframe srcdoc="{escape(_chart_html)}" style="border:0;"></iframe>\n'
+                f'</div>\n'
+            )
+        else:
+            comparison_chart_html = "<p><em>(no OHLCV bars — chart not available)</em></p>\n"
 
-    # Per-strategy trade logs
+    # Per-stock chart sections — interactive or static rollback
+    per_stock_html = ""
+    if assets and len(assets) > 1:
+        for a in assets:
+            per_stock_html += f"<h2>{escape(a.name)} ({escape(a.code)}) — Per-Strategy Detail</h2>\n"
+            if _use_static and per_stock_charts and a.code in per_stock_charts:
+                b64 = base64.b64encode(per_stock_charts[a.code]).decode("ascii")
+                per_stock_html += (
+                    f'<div class="chart">\n'
+                    f'<img src="data:image/png;base64,{b64}" alt="{escape(a.name)} detail">\n'
+                    f'</div>\n'
+                )
+            elif not _use_static and bars_map and a.code in bars_map:
+                # Build per-stock results list for this asset's stock index.
+                stock_idx = assets.index(a)
+                per_stock_results: list[tuple[str, _DGTBacktestResult]] = []
+                for label, _result in results:
+                    # strategy_per_stock is not passed here; use bars_map availability.
+                    # Interactive per-stock chart uses the merged result trades filtered
+                    # to this stock's asset code.
+                    per_stock_results.append((label, _result))
+                _ps_html = _build_interactive_per_stock_html(
+                    a, bars_map[a.code], per_stock_results,
+                )
+                # Full standalone page -> embed via <iframe srcdoc> (Phase 0.11.i fix).
+                per_stock_html += (
+                    f'<div class="chart-interactive">\n'
+                    f'<iframe srcdoc="{escape(_ps_html)}" style="border:0;"></iframe>\n'
+                    f'</div>\n'
+                )
+
+    # Per-strategy trade logs — kept as-is (static HTML, CLAUDE.md §13.3)
     trade_sections = ""
     for label, result in results:
         trade_rows = "\n".join(_trade_row(t) for t in result.trades)
@@ -618,6 +809,9 @@ th, td {{ padding: 8px 12px; border: 1px solid #ddd; text-align: right;
 th {{ background: #f8f9fa; font-weight: 600; text-align: center; }}
 td:first-child {{ text-align: left; }}
 .chart img {{ max-width: 100%; height: auto; border: 1px solid #ddd; }}
+.chart-interactive {{ width: 100%; height: 600px; margin: 10px 0;
+                      border: 1px solid #ddd; overflow: hidden; }}
+.chart-interactive iframe, .chart-interactive > * {{ width: 100%; height: 100%; }}
 .side-buy  {{ color: #27ae60; font-weight: 600; }}
 .side-sell {{ color: #c0392b; font-weight: 600; }}
 .params {{ background: #fafbfc; border: 1px solid #e1e6ec;
@@ -651,10 +845,7 @@ summary:hover {{ background: #ecf0f1; }}
 </table>
 
 <h2>Equity Curve Comparison</h2>
-<div class="chart">
-<img src="data:image/png;base64,{chart_b64}" alt="DGT Comparison Chart">
-</div>
-
+{comparison_chart_html}
 {per_stock_html}
 
 <h2>Trade Logs</h2>
@@ -710,6 +901,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir", type=Path, default=Path("report/kakao-dgt/"),
         help="Output directory",
+    )
+    parser.add_argument(
+        "--static-charts", action="store_true", default=False,
+        help=(
+            "Rollback flag: use static matplotlib PNG <img> charts instead of "
+            "interactive lightweight-charts (Phase 0.11.i verification window only — "
+            "removable per ADR 0016 follow-ups)."
+        ),
     )
     return parser
 
@@ -768,6 +967,115 @@ def _run_multi_asset_bh(
     return merged, per_stock_results
 
 
+def _build_per_stock_figure(
+    asset: "Asset",
+    bars: list[OHLCV],
+    stock_idx: int,
+    strategy_labels: list[str],
+    strategy_per_stock: dict[str, list[_DGTBacktestResult]],
+    config: _DGTConfig,
+    adaptive_cfg: "_AdaptiveConfig | None" = None,
+) -> tuple[Any, Any]:
+    """Build a single per-stock figure and return (fig, axes) WITHOUT savefig/close.
+
+    Caller is responsible for plt.close(fig) in a try/finally block (P4).
+    Layout: N strategy panels (candles + grid + markers) + 1 volume panel = N+1 axes.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from src.research.dgt._candles import _draw_candles, _draw_volume
+
+    # R10: bars and daily_snapshots must share the same date domain.
+    first_result = strategy_per_stock[strategy_labels[0]][stock_idx]
+    snaps = first_result.daily_snapshots
+    assert (
+        len(bars) == len(snaps)
+        and bars[0].trade_date == snaps[0].trade_date
+        and bars[-1].trade_date == snaps[-1].trade_date
+    ), (
+        f"R10 violation: bars date domain {bars[0].trade_date}..{bars[-1].trade_date} "
+        f"({len(bars)}) != snapshots {snaps[0].trade_date}..{snaps[-1].trade_date} "
+        f"({len(snaps)}) — bug in runner"
+    )
+
+    colors_list = {"Paper-3%": "#e74c3c", "Paper-1%": "#8e44ad",
+                   "Hyb-Daily": "#27ae60", "B&H-25%": "#f39c12"}
+    n_strats = len(strategy_labels)
+    n_bars = len(bars)
+
+    # Bar-count-adaptive width (same formula as _build_comparison_figure).
+    fig_width = min(40.0, max(14.0, n_bars / 55.0))
+
+    # n_strats+1 >= 2, subplots always returns array (no n_strats==1 guard needed).
+    fig, axes = plt.subplots(
+        n_strats + 1, 1,
+        figsize=(fig_width, 3.5 * n_strats + 1.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3] * n_strats + [1]},
+    )
+    fig.suptitle(f"{asset.name} ({asset.code})  —  Per-Strategy Detail",
+                 fontsize=13, fontweight="bold")
+
+    dates = [b.trade_date for b in bars]
+
+    for si, label in enumerate(strategy_labels):
+        ax = axes[si]
+        result = strategy_per_stock[label][stock_idx]
+        color = colors_list.get(label, "#555")
+
+        # Candlestick price chart (replaces ax.plot line chart).
+        _draw_candles(ax, bars)
+
+        # Grid levels (skip for B&H)
+        if not label.startswith("B&H"):
+            mode = "paper_adaptive_daily" if label == "Hyb-Daily" else "paper"
+            acfg = adaptive_cfg if label == "Hyb-Daily" else None
+            rc = config
+            if label == "Paper-3%":
+                rc = _DGTConfig(config.grid_count, Decimal("3"), config.grid_count // 2)
+            elif label == "Paper-1%":
+                rc = _DGTConfig(config.grid_count, Decimal("1"), config.grid_count // 2)
+            _draw_grid_levels(ax, result, dates, rc,
+                              mode=mode, ohlcv_bars=bars,
+                              adaptive_cfg=acfg, band_color=color)
+
+        # Trade markers
+        buy_dates = [t.trade_date for t in result.trades if t.side == "BUY"]
+        buy_prices = [float(t.rounded_price) for t in result.trades if t.side == "BUY"]
+        sell_dates = [t.trade_date for t in result.trades if t.side == "SELL"]
+        sell_prices = [float(t.rounded_price) for t in result.trades if t.side == "SELL"]
+
+        ax.scatter(buy_dates, buy_prices, marker="^", color="#27ae60",
+                   s=40, zorder=5, label=f"BUY ({len(buy_dates)})",
+                   edgecolors="white", linewidths=0.5)
+        ax.scatter(sell_dates, sell_prices, marker="v", color="#c0392b",
+                   s=40, zorder=5, label=f"SELL ({len(sell_dates)})",
+                   edgecolors="white", linewidths=0.5)
+
+        n_trades = len(result.trades)
+        initial_v = float(result.initial_capital.amount)
+        final_v = float(result.final_balance.amount)
+        pnl_pct = (final_v - initial_v) / initial_v * 100 if initial_v else 0
+        ax.set_title(f"{label}  —  {n_trades} trades, PnL {pnl_pct:+.1f}%",
+                     fontsize=10, fontweight="bold", color=color, loc="left")
+        ax.legend(loc="upper right", fontsize=7)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylabel("Price", fontsize=8)
+
+    # --- Shared volume panel (same stock for all strategy panels in this figure) ---
+    ax_vol = axes[-1]
+    _draw_volume(ax_vol, bars)
+    ax_vol.set_ylabel("Volume", fontsize=8)
+    ax_vol.grid(True, alpha=0.3)
+
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    fig.autofmt_xdate()
+    plt.tight_layout()
+    return fig, axes
+
+
 def _render_per_stock_charts(
     assets: list[Asset],
     bars_map: dict[str, list[OHLCV]],
@@ -775,83 +1083,28 @@ def _render_per_stock_charts(
     config: _DGTConfig,
     adaptive_cfg: _AdaptiveConfig | None = None,
 ) -> dict[str, bytes]:
-    """Render per-stock chart: price + grid (Hyb-Daily) + trade markers for all strategies."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
+    """static 박제 path only — Phase 0.11.i / ADR 0016.
 
-    colors_list = {"Paper-3%": "#e74c3c", "Paper-1%": "#8e44ad",
-                   "Hyb-Daily": "#27ae60", "B&H-25%": "#f39c12"}
+    Render per-stock candlestick+grid+markers+volume chart for all strategies → PNGs.
+    Used by: (a) --static-charts rollback flag, (b) Step 6 figure 박제 regen.
+    """
+    import matplotlib.pyplot as plt
+
     result_pngs: dict[str, bytes] = {}
+    strategy_labels = list(strategy_per_stock.keys())
 
     for stock_idx, asset in enumerate(assets):
         bars = bars_map[asset.code]
-        dates = [b.trade_date for b in bars]
-        closes = [float(b.close) for b in bars]
-
-        strategy_labels = list(strategy_per_stock.keys())
-        n_strats = len(strategy_labels)
-
-        fig, axes = plt.subplots(n_strats, 1, figsize=(14, 3.5 * n_strats),
-                                 sharex=True)
-        if n_strats == 1:
-            axes = [axes]
-        fig.suptitle(f"{asset.name} ({asset.code})  —  Per-Strategy Detail",
-                     fontsize=13, fontweight="bold")
-
-        for si, label in enumerate(strategy_labels):
-            ax = axes[si]
-            result = strategy_per_stock[label][stock_idx]
-            color = colors_list.get(label, "#555")
-
-            # Price line
-            ax.plot(dates, closes, color="#2c3e50", linewidth=0.8, alpha=0.6)
-
-            # Grid levels (skip for B&H)
-            if not label.startswith("B&H"):
-                mode = "paper_adaptive_daily" if label == "Hyb-Daily" else "paper"
-                acfg = adaptive_cfg if label == "Hyb-Daily" else None
-                rc = config
-                if label == "Paper-3%":
-                    rc = _DGTConfig(config.grid_count, Decimal("3"), config.grid_count // 2)
-                elif label == "Paper-1%":
-                    rc = _DGTConfig(config.grid_count, Decimal("1"), config.grid_count // 2)
-                _draw_grid_levels(ax, result, dates, rc,
-                                  mode=mode, ohlcv_bars=bars,
-                                  adaptive_cfg=acfg, band_color=color)
-
-            # Trade markers
-            buy_dates = [t.trade_date for t in result.trades if t.side == "BUY"]
-            buy_prices = [float(t.rounded_price) for t in result.trades if t.side == "BUY"]
-            sell_dates = [t.trade_date for t in result.trades if t.side == "SELL"]
-            sell_prices = [float(t.rounded_price) for t in result.trades if t.side == "SELL"]
-
-            ax.scatter(buy_dates, buy_prices, marker="^", color="#27ae60",
-                       s=40, zorder=5, label=f"BUY ({len(buy_dates)})",
-                       edgecolors="white", linewidths=0.5)
-            ax.scatter(sell_dates, sell_prices, marker="v", color="#c0392b",
-                       s=40, zorder=5, label=f"SELL ({len(sell_dates)})",
-                       edgecolors="white", linewidths=0.5)
-
-            n_trades = len(result.trades)
-            initial_v = float(result.initial_capital.amount)
-            final_v = float(result.final_balance.amount)
-            pnl_pct = (final_v - initial_v) / initial_v * 100 if initial_v else 0
-            ax.set_title(f"{label}  —  {n_trades} trades, PnL {pnl_pct:+.1f}%",
-                         fontsize=10, fontweight="bold", color=color, loc="left")
-            ax.legend(loc="upper right", fontsize=7)
-            ax.grid(True, alpha=0.3)
-            ax.set_ylabel("Price", fontsize=8)
-
-        axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
-        fig.autofmt_xdate()
-        plt.tight_layout()
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-        plt.close(fig)
-        result_pngs[asset.code] = buf.getvalue()
+        fig, _axes = _build_per_stock_figure(
+            asset, bars, stock_idx, strategy_labels,
+            strategy_per_stock, config, adaptive_cfg,
+        )
+        try:
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+            result_pngs[asset.code] = buf.getvalue()
+        finally:
+            plt.close(fig)
 
     return result_pngs
 
@@ -1096,16 +1349,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Charts
+    _static_charts: bool = args.static_charts or (os.environ.get("_STATIC_CHARTS", "") == "1")
     print("\nRendering charts ...")
     per_stock_pngs: dict[str, bytes] = {}
+    chart_png: bytes = b""
     if is_multi:
         chart_title = (f"{asset_names}\nMulti-Asset DGT Comparison  |  "
                        f"n={config.grid_count}, equal split  |  {start} ~ {end}")
         chart_png = _render_equity_only_chart(
             results, chart_title, show_realized=True, per_stock_map=strategy_per_stock,
         )
-        # Per-stock detail charts
-        print("  Rendering per-stock detail charts ...")
+        (output_dir / "comparison_chart.png").write_bytes(chart_png)
+        # Per-stock detail charts — always render static PNGs for 박제; used by
+        # rollback flag and figure 박제 regen (Step 6).
+        print("  Rendering per-stock detail charts (static 박제 path) ...")
         per_stock_pngs = _render_per_stock_charts(
             assets, bars_map, strategy_per_stock, config,
             adaptive_cfg=_AdaptiveConfig(
@@ -1118,12 +1375,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         chart_png = _render_comparison_chart(results, bars_map[codes[0]], config,
                                              configs_per_result=variant_configs)
-    (output_dir / "comparison_chart.png").write_bytes(chart_png)
+        (output_dir / "comparison_chart.png").write_bytes(chart_png)
 
     # HTML report
     print("Generating HTML report ...")
-    _render_html_report(results, config, chart_png, output_dir / "report.html",
-                        per_stock_charts=per_stock_pngs, assets=assets if is_multi else None)
+    _render_html_report(
+        results, config, chart_png, output_dir / "report.html",
+        per_stock_charts=per_stock_pngs,
+        assets=assets if is_multi else None,
+        bars_map=bars_map,
+        static_charts=_static_charts,
+    )
 
     # Print comparison table
     print(f"\n{'='*80}")

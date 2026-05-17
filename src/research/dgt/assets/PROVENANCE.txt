@@ -1,0 +1,62 @@
+lightweight-charts.standalone.production.js — Vendored Asset Provenance
+=======================================================================
+
+Version:            5.2.0
+Library:            lightweight-charts (TradingView)
+Upstream Source:    https://www.npmjs.com/package/lightweight-charts/v/5.2.0
+                    https://github.com/tradingview/lightweight-charts/releases/tag/v5.2.0
+npm Tarball URL:    https://registry.npmjs.org/lightweight-charts/-/lightweight-charts-5.2.0.tgz
+
+Provenance Verification (R11-provenance)
+-----------------------------------------
+The npm tarball was verified against the integrity hash published by the npm
+registry (registry.npmjs.org) for lightweight-charts@5.2.0 BEFORE recording
+the local SHA-256 below. This proves authenticity (matches the package the
+npm registry signed for this version), not merely download integrity.
+
+Upstream npm tarball integrity (SHA-512, base64, from registry.npmjs.org):
+  sha512-ey3Vas8UhV06ni+LT9TA1nEe4y8So4Mi6CL/oarNHFMyTktz/xy8e8+oh04Q//eO3t6etvFXgayz2fClyFQb5w==
+
+Upstream npm tarball SHA-1 (shasum, from registry.npmjs.org):
+  ef3f681794e9dad0ac131913259439ad596bcf92
+
+Upstream npm registry signature key ID:
+  SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U
+
+Verified: computed SHA-512 of downloaded tarball matches upstream integrity hash exactly.
+
+Local File Checksum
+-------------------
+File:     lightweight-charts.standalone.production.js
+SHA-256:  c0992580867c4912cc9385b3c2728315bcc1a76c7f1087dca908430fccdf31d7
+
+Retrieval Date:     2026-05-17
+
+Minimum Browser Baseline
+--------------------------
+lightweight-charts v5.x requires ES2020-capable browsers:
+  - Chrome 80+
+  - Firefox 78+
+  - Safari 14+
+  - Edge 80+
+
+Reports using this asset will NOT render correctly in older browsers.
+
+Path in Repo
+------------
+src/research/dgt/assets/lightweight-charts.standalone.production.js
+(5th-ring research overlay — src/research/dgt/ per Phase 0.11.i C1 namespace rule)
+
+Usage
+-----
+This file is embedded inline into self-contained report HTML files produced by
+src/research/dgt/_interactive_chart.py. It runs ONLY in a browser opening a
+report.html file — never in any Python process or trading system code path.
+Zero blast radius on the trading system (Phase 0.11.i ADR 0016 P2/DD1).
+
+Version Upgrade
+---------------
+To upgrade: download the new tarball, verify its npm integrity hash, extract
+the standalone production JS, update this file with the new version/checksums,
+and run the test suite (tests/research/dgt/test_interactive_chart.py includes
+an asset integrity test).

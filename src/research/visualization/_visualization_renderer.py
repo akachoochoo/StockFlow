@@ -15,7 +15,7 @@ Underscore-prefix private (ADR 0007 §1.6.3, `__all__ = []`).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, overload, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -87,13 +87,35 @@ class _VisualizationRenderer(Protocol):
 
     strategy_id: str
 
+    @overload
+    def render_full_period(
+        self,
+        bars: Sequence[OHLCV],
+        trades: Sequence[TradeView],
+        artifacts: _VisualizationArtifacts | None = ...,
+        *,
+        fmt: Literal["png"] = ...,
+    ) -> bytes: ...
+
+    @overload
+    def render_full_period(
+        self,
+        bars: Sequence[OHLCV],
+        trades: Sequence[TradeView],
+        artifacts: _VisualizationArtifacts | None = ...,
+        *,
+        fmt: Literal["html"],
+    ) -> str: ...
+
     def render_full_period(
         self,
         bars: Sequence[OHLCV],
         trades: Sequence[TradeView],
         artifacts: _VisualizationArtifacts | None = None,
-    ) -> bytes:
-        """Full-period chart PNG bytes 산출.
+        *,
+        fmt: Literal["png", "html"] = "png",
+    ) -> bytes | str:
+        """Full-period chart 산출.
 
         Args:
             bars: 전체 기간 OHLCV (정렬: trade_date 오름차순).
@@ -101,11 +123,21 @@ class _VisualizationRenderer(Protocol):
             artifacts: strategy-specific sidecar metadata (예:
                 `_DGTVisualizationArtifacts` — grid_history /
                 reference_price_curve). None 이면 generic chart.
+            fmt: 출력 포맷 (ADR 0016 §1.4 Option iii).
+                "png" (기본값) — PNG bytes (D5 정합, width=1600 height=900 dpi=100).
+                "html" — self-contained interactive lightweight-charts HTML str.
+                기존 호출자 (`cli.py:400`, 모든 기존 테스트) 는 fmt 미전달 →
+                bytes 반환, 동작 byte-identical.
 
         Returns:
-            PNG bytes (D5 정합 — width=1600, height=900, dpi=100 고정).
+            fmt="png" → bytes (PNG). fmt="html" → str (interactive HTML).
 
-        Body 는 0.11.c.3 영역 (matplotlib import + figure 생성).
+        Body 는 0.11.c.3 영역 (matplotlib import + figure 생성) 및
+        0.11.i 영역 (_interactive_chart 호출).
+
+        ADR 0016 §1.4 (iii) 편차 인정:
+            ADR 0009 :188 "Protocol 변경 zero" 정신 보존 — 기존 호출자 변경 zero.
+            letter 는 defaulted kwarg 추가로 narrowly 위반. traceability 박제.
         """
         ...
 

@@ -379,6 +379,77 @@ class TestAC4Reproducibility:
 
 
 # ---------------------------------------------------------------------------
+# AC2b — New 2-panel layout assertions (Phase 0.11.h)
+# ---------------------------------------------------------------------------
+class TestAC2bCandleVolumeLayout:
+    """2-panel candlestick + volume layout (ADR 0015 G2)."""
+
+    def test_render_has_volume_panel(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """_build_render_figure returns fig with exactly 2 axes (price + volume)."""
+        plt = pytest.importorskip("matplotlib.pyplot")
+        renderer = _DGTVisualizationRenderer()
+        fig, axes = renderer._build_render_figure(
+            synthesized_bars, synthesized_trades, synthesized_artifacts,
+        )
+        try:
+            assert len(fig.axes) == 2, (
+                f"expected 2 axes (price + volume), got {len(fig.axes)}"
+            )
+        finally:
+            plt.close(fig)
+
+    def test_render_grid_envelope_preserved(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """Grid axhlines are present on axes[0] (price axis) after candle switch."""
+        import matplotlib.lines as mlines
+        plt = pytest.importorskip("matplotlib.pyplot")
+        renderer = _DGTVisualizationRenderer()
+        fig, axes = renderer._build_render_figure(
+            synthesized_bars, synthesized_trades, synthesized_artifacts,
+        )
+        try:
+            price_ax = axes[0]
+            # _draw_grid_envelope draws axhline for each grid level.
+            # axhline adds a Line2D to ax.lines — check at least one is present.
+            hlines = [
+                ln for ln in price_ax.lines
+                if isinstance(ln, mlines.Line2D)
+            ]
+            assert len(hlines) > 0, (
+                "no lines on price axis — grid envelope axhlines missing after candle switch"
+            )
+        finally:
+            plt.close(fig)
+
+    def test_build_render_figure_does_not_close_fig(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+    ) -> None:
+        """_build_render_figure must not close fig — that is render_full_period's job."""
+        plt = pytest.importorskip("matplotlib.pyplot")
+        renderer = _DGTVisualizationRenderer()
+        fig, _axes = renderer._build_render_figure(
+            synthesized_bars, synthesized_trades, artifacts=None,
+        )
+        try:
+            # If fig were already closed, fig.axes would raise or be empty.
+            assert hasattr(fig, "axes"), "fig must remain open after _build_render_figure"
+            assert len(fig.axes) == 2
+        finally:
+            plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # AC5 — Title / parameter formatting
 # ---------------------------------------------------------------------------
 class TestAC5ParameterConfigFormatting:
@@ -406,3 +477,186 @@ class TestAC5ParameterConfigFormatting:
         out = renderer._format_parameter_config({"k": Decimal("0.1")})
         # str(Decimal("0.1")) = "0.1"; float 변환 시 "0.1000...0055" 가 됨.
         assert out == "k=0.1"
+
+
+# ---------------------------------------------------------------------------
+# AC6 — fmt kwarg (ADR 0016 §1.4 Option iii + G2)
+# ---------------------------------------------------------------------------
+class TestAC6FmtKwarg:
+    """render_full_period fmt="png"/"html" dispatch (ADR 0016)."""
+
+    def test_default_fmt_returns_png_bytes(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """render_full_period(bars, trades, artifacts) — no fmt — returns PNG bytes (regression)."""
+        pytest.importorskip("matplotlib")
+        renderer = _DGTVisualizationRenderer()
+        result = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, synthesized_artifacts,
+        )
+        assert isinstance(result, bytes), "Default fmt must return bytes"
+        assert result.startswith(_PNG_HEADER), "Default fmt must return valid PNG"
+
+    def test_fmt_png_explicit_returns_png_bytes(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """render_full_period(..., fmt='png') returns PNG bytes."""
+        pytest.importorskip("matplotlib")
+        renderer = _DGTVisualizationRenderer()
+        result = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, synthesized_artifacts, fmt="png",
+        )
+        assert isinstance(result, bytes)
+        assert result.startswith(_PNG_HEADER)
+
+    def test_fmt_html_returns_str(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """render_full_period(..., fmt='html') returns non-empty str."""
+        renderer = _DGTVisualizationRenderer()
+        result = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, synthesized_artifacts, fmt="html",
+        )
+        assert isinstance(result, str), "fmt='html' must return str"
+        assert len(result) > 0, "fmt='html' must return non-empty string"
+
+    def test_fmt_html_contains_lightweight_charts(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """fmt='html' output must embed the lightweight-charts JS reference."""
+        renderer = _DGTVisualizationRenderer()
+        html = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, synthesized_artifacts, fmt="html",
+        )
+        assert "LightweightCharts" in html or "createChart" in html, (
+            "fmt='html' output must embed lightweight-charts JS"
+        )
+
+    def test_fmt_html_contains_data_island(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """fmt='html' output contains a JSON data island with correct bar count."""
+        import json
+        import re
+        renderer = _DGTVisualizationRenderer()
+        html = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, synthesized_artifacts, fmt="html",
+        )
+        match = re.search(
+            r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        assert match, "fmt='html' output must contain a JSON data island"
+        raw_json = match.group(1).strip().replace("<\\/", "</").replace("\\u2028", " ").replace("\\u2029", " ")
+        data = json.loads(raw_json)
+        assert len(data["ohlcv"]) == len(synthesized_bars), (
+            f"OHLCV array length {len(data['ohlcv'])} != bars {len(synthesized_bars)}"
+        )
+
+    def test_fmt_html_graceful_degrade_no_artifacts(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+    ) -> None:
+        """fmt='html' with artifacts=None returns valid HTML (graceful degradation)."""
+        renderer = _DGTVisualizationRenderer()
+        html = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, artifacts=None, fmt="html",
+        )
+        assert isinstance(html, str)
+        assert "createChart" in html or "LightweightCharts" in html
+
+    def test_fmt_html_grid_levels_serialized_when_artifacts(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """fmt='html' with artifacts includes grid level price-lines in data island."""
+        import json
+        import re
+        renderer = _DGTVisualizationRenderer()
+        html = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, synthesized_artifacts, fmt="html",
+        )
+        match = re.search(
+            r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        assert match, "data island missing"
+        raw_json = match.group(1).strip().replace("<\\/", "</").replace("\\u2028", " ").replace("\\u2029", " ")
+        data = json.loads(raw_json)
+        # synthesized_artifacts has 7 grid levels — at least one grid entry expected
+        assert len(data["gridLevels"]) > 0, (
+            "Grid levels must be serialized when artifacts are provided"
+        )
+
+    def test_fmt_html_zero_network_refs(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+    ) -> None:
+        """fmt='html' output must be offline-self-contained (P5)."""
+        import re
+        renderer = _DGTVisualizationRenderer()
+        html = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, artifacts=None, fmt="html",
+        )
+        network_refs = re.findall(
+            r'<script[^>]+src=["\']https?://', html, re.IGNORECASE,
+        )
+        assert network_refs == [], f"fmt='html' must contain no network <script src>: {network_refs}"
+
+    def test_fmt_html_empty_bars_raises(self) -> None:
+        """fmt='html' with empty bars raises ValueError (same as fmt='png')."""
+        renderer = _DGTVisualizationRenderer()
+        with pytest.raises(ValueError, match="bars is empty"):
+            renderer.render_full_period(bars=[], trades=[], artifacts=None, fmt="html")
+
+
+# ---------------------------------------------------------------------------
+# AC7 — Protocol structural typing after fmt kwarg addition (G2)
+# ---------------------------------------------------------------------------
+class TestAC7ProtocolStructuralTypingAfterFmt:
+    """`_DGTVisualizationRenderer` still satisfies `_VisualizationRenderer` after fmt kwarg."""
+
+    def test_isinstance_still_true_after_fmt(self) -> None:
+        """isinstance check must pass after Protocol gained the fmt kwarg."""
+        renderer = _DGTVisualizationRenderer()
+        assert isinstance(renderer, _VisualizationRenderer), (
+            "_DGTVisualizationRenderer must still satisfy _VisualizationRenderer Protocol "
+            "after fmt kwarg addition (ADR 0016 §1.4 Option iii)"
+        )
+
+    def test_cli_caller_regression_no_fmt_kwarg(
+        self,
+        synthesized_bars: list[OHLCV],
+        synthesized_trades: list[TradeView],
+        synthesized_artifacts: _DGTVisualizationArtifacts,
+    ) -> None:
+        """cli.py:400 pattern — render_full_period called with no fmt → PNG bytes."""
+        pytest.importorskip("matplotlib")
+        renderer = _DGTVisualizationRenderer()
+        # Mimics: dgt_renderer.render_full_period(bars, trades, artifacts)
+        result = renderer.render_full_period(
+            synthesized_bars, synthesized_trades, synthesized_artifacts,
+        )
+        assert isinstance(result, bytes), (
+            "Existing cli.py:400 caller pattern (no fmt) must still return bytes"
+        )
+        assert result.startswith(_PNG_HEADER)

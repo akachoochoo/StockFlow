@@ -9,8 +9,8 @@ ADR 0009 §1.3 정합:
   structural typing 구현.
 - D3 pattern B — `_DGTVisualizationArtifacts` sidecar 입력 (`_artifacts.py`).
   `BacktestResult` / `_DGTBacktestResult` 스키마 침범 zero.
-- D4 (a) — matplotlib only (mplfinance 미사용 — DGT 는 캔들 미필요,
-  close line + envelope 합성 chart 본질).
+- D4 (a) — matplotlib manual candle rendering via `src.research.dgt._candles`
+  (mplfinance 미사용 — ADR 0015 Option A synthesis). 캔들 + 거래량 2-panel layout.
 - D5 — PNG bytes 반환 (width=1600, height=900, dpi=100 고정).
 - D8 정정 — DGT renderer 신규, B&H/7split 은 기존 `DefaultRenderer` /
   `SevenSplitRenderer` 활용 (재구현 zero).
@@ -28,8 +28,16 @@ from __future__ import annotations
 import io
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, overload
 
+from src.research.dgt._candles import _draw_candles, _draw_volume
+from src.research.dgt._interactive_chart import (
+    _serialize_grid_levels,
+    _serialize_markers,
+    _serialize_ohlcv,
+    _serialize_volume,
+    build_interactive_chart_html,
+)
 from src.research.visualization._artifacts import _DGTVisualizationArtifacts
 from src.research.visualization._visualization_renderer import (
     _OverlayPayload,
@@ -80,31 +88,21 @@ class _DGTVisualizationRenderer:
 
     strategy_id: ClassVar[str] = "dgt"
 
-    def render_full_period(
+    def _build_render_figure(
         self,
         bars: Sequence[OHLCV],
         trades: Sequence[TradeView],
         artifacts: _VisualizationArtifacts | None = None,
-    ) -> bytes:
-        """Full-period chart PNG bytes 산출 (ADR 0009 §1.3 D5).
+    ) -> tuple[Any, Any]:
+        """Build the 2-panel (price candles + volume) figure without saving or closing.
 
-        Layout:
-            - close price line (전체 기간 close 곡선)
-            - grid envelope band (artifacts.grid_history 첫 snapshot 의
-              levels horizontal lines + 시간 가변 시 fill_between band)
-            - reference price horizontal line (artifacts.reference_price_curve
-              단일 entry → axhline, 다중 → step plot)
-            - BUY/SELL scatter markers (`trade.price` 위치)
-
-        Args:
-            bars: 전체 기간 OHLCV (정렬 무관 — 본 함수 내 sort).
-            trades: 전체 기간 trades (TradeView). 본 chart 는 bar 의
-                trade_date 매칭만 사용 — episode window filtering 없음.
-            artifacts: DGT-specific sidecar. None 또는 non-DGT 타입이면
-                close line + trade markers 만 (graceful degradation).
+        Internal helper that returns ``(fig, axes)`` so tests can assert panel
+        count directly without triggering savefig/close.  The caller is responsible
+        for ``plt.close(fig)`` — see ``render_full_period`` for the public wrapper.
 
         Returns:
-            PNG bytes (width=1600, height=900, dpi=100 고정).
+            ``(fig, axes)`` where ``axes`` is a 2-element array:
+            ``axes[0]`` = price candle panel, ``axes[1]`` = volume panel.
 
         Raises:
             ValueError: bars 가 비어 있는 경우.
@@ -121,7 +119,6 @@ class _DGTVisualizationRenderer:
 
         sorted_bars = sorted(bars, key=lambda b: b.trade_date)
         dates: list[date] = [b.trade_date for b in sorted_bars]
-        closes: list[float] = [float(b.close) for b in sorted_bars]
         date_set = set(dates)
 
         available_fonts = {f.name for f in font_manager.fontManager.ttflist}
@@ -131,29 +128,114 @@ class _DGTVisualizationRenderer:
         )
         cjk_fontprop = FontProperties(family=cjk_font) if cjk_font else None
 
-        fig_w_in = _FIGURE_WIDTH_PX / _FIGURE_DPI
+        # Bar-count-adaptive width: ~1250 bars → ~22.7 in; clamped [16, 40].
+        # Lower bound 16 (vs 14 in kakao) to stay consistent with _FIGURE_WIDTH_PX=1600.
+        # Height stays fixed at _FIGURE_HEIGHT_PX / _FIGURE_DPI (geometry approximate
+        # due to bbox_inches="tight" — ADR 0015 R8).
+        n_bars = len(sorted_bars)
+        fig_w_in = min(40.0, max(float(_FIGURE_WIDTH_PX / _FIGURE_DPI), n_bars / 55.0))
         fig_h_in = _FIGURE_HEIGHT_PX / _FIGURE_DPI
-        fig, ax = plt.subplots(
-            figsize=(fig_w_in, fig_h_in), dpi=_FIGURE_DPI,
+        fig, axes = plt.subplots(
+            2, 1,
+            height_ratios=[3, 1],
+            figsize=(fig_w_in, fig_h_in),
+            dpi=_FIGURE_DPI,
+            sharex=True,
         )
+        ax = axes[0]  # price panel
+        ax_vol = axes[1]  # volume panel
+
+        # --- Price panel: candlestick + overlays ---
+        _draw_candles(ax, list(sorted_bars))
+
+        if isinstance(artifacts, _DGTVisualizationArtifacts):
+            self._draw_grid_envelope(ax, artifacts)
+            self._draw_reference_price(ax, artifacts)
+
+        self._draw_trade_markers(ax, trades, date_set)
+
+        self._apply_title(ax, dates[0], dates[-1], artifacts, cjk_fontprop)
+        ax.set_ylabel("price")
+        legend = ax.legend(loc="upper left", fontsize=8, framealpha=0.85)
+        if cjk_fontprop is not None and legend is not None:
+            for txt in legend.get_texts():
+                txt.set_fontproperties(cjk_fontprop)
+
+        # --- Volume panel ---
+        _draw_volume(ax_vol, list(sorted_bars))
+        ax_vol.set_ylabel("volume")
+        ax_vol.grid(True, alpha=0.3)
+
+        fig.autofmt_xdate()
+        return fig, axes
+
+    @overload
+    def render_full_period(
+        self,
+        bars: Sequence[OHLCV],
+        trades: Sequence[TradeView],
+        artifacts: _VisualizationArtifacts | None = ...,
+        *,
+        fmt: Literal["png"] = ...,
+    ) -> bytes: ...
+
+    @overload
+    def render_full_period(
+        self,
+        bars: Sequence[OHLCV],
+        trades: Sequence[TradeView],
+        artifacts: _VisualizationArtifacts | None = ...,
+        *,
+        fmt: Literal["html"],
+    ) -> str: ...
+
+    def render_full_period(
+        self,
+        bars: Sequence[OHLCV],
+        trades: Sequence[TradeView],
+        artifacts: _VisualizationArtifacts | None = None,
+        *,
+        fmt: Literal["png", "html"] = "png",
+    ) -> bytes | str:
+        """Full-period chart 산출 (ADR 0009 §1.3 D5 + ADR 0016 §1.4 Option iii).
+
+        fmt="png" (기본값, 기존 동작 byte-identical):
+            Layout (2-panel, ADR 0015 Option A synthesis):
+                - axes[0] — OHLC candlestick price panel (캔들 + grid envelope +
+                  reference price line + BUY/SELL trade markers)
+                - axes[1] — volume bar panel (거래량, color follows candle direction)
+            Returns PNG bytes (width=1600, height=900, dpi=100 고정).
+            Note: bbox_inches="tight" 로 인해 출력 px 는 근사치 (기존 동작 유지).
+
+        fmt="html":
+            Returns self-contained interactive lightweight-charts HTML str.
+            visualization→dgt import (forward direction — ADR 0008 D9 / ADR 0009 D9).
+            Graceful degradation: artifacts=None → chart without grid levels.
+
+        Args:
+            bars: 전체 기간 OHLCV (정렬 무관 — 본 함수 내 sort).
+            trades: 전체 기간 trades (TradeView).
+            artifacts: DGT-specific sidecar. None 또는 non-DGT 타입이면
+                캔들 + trade markers 만 (graceful degradation).
+            fmt: "png" (기본값) 또는 "html" (ADR 0016 Option iii).
+
+        Returns:
+            fmt="png" → bytes. fmt="html" → str.
+
+        Raises:
+            ValueError: bars 가 비어 있는 경우.
+        """
+        if fmt == "html":
+            return self._render_interactive(bars, trades, artifacts)
+
+        # fmt == "png" — existing matplotlib path (behavior byte-identical)
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, _axes = self._build_render_figure(bars, trades, artifacts)
         try:
-            ax.plot(dates, closes, color=_COLOR_CLOSE, linewidth=1.2, label="Close")  # type: ignore[arg-type]
-
-            if isinstance(artifacts, _DGTVisualizationArtifacts):
-                self._draw_grid_envelope(ax, artifacts)
-                self._draw_reference_price(ax, artifacts)
-
-            self._draw_trade_markers(ax, trades, date_set)
-
-            self._apply_title(ax, dates[0], dates[-1], artifacts, cjk_fontprop)
-            ax.set_xlabel("date")
-            ax.set_ylabel("price")
-            legend = ax.legend(loc="upper left", fontsize=8, framealpha=0.85)
-            if cjk_fontprop is not None and legend is not None:
-                for txt in legend.get_texts():
-                    txt.set_fontproperties(cjk_fontprop)
-
-            fig.autofmt_xdate()
             buf = io.BytesIO()
             fig.savefig(
                 buf, format="png", dpi=_FIGURE_DPI, bbox_inches="tight",
@@ -161,6 +243,80 @@ class _DGTVisualizationRenderer:
             return buf.getvalue()
         finally:
             plt.close(fig)
+
+    def _render_interactive(
+        self,
+        bars: Sequence[OHLCV],
+        trades: Sequence[TradeView],
+        artifacts: _VisualizationArtifacts | None = None,
+    ) -> str:
+        """Build self-contained interactive HTML (fmt="html" dispatch).
+
+        visualization→dgt forward import (build_interactive_chart_html) is the
+        ALLOWED direction per check_namespace.sh:58-68 (same as _candles import).
+        Graceful degradation: artifacts=None → no grid levels.
+        """
+        if not bars:
+            raise ValueError("bars is empty")
+
+        sorted_bars = sorted(bars, key=lambda b: b.trade_date)
+        date_set = {b.trade_date.strftime("%Y-%m-%d") for b in sorted_bars}
+
+        ohlcv = _serialize_ohlcv(sorted_bars)
+        volume = _serialize_volume(sorted_bars)
+
+        # Serialize trades — TradeView uses timestamp (datetime), _serialize_markers
+        # uses trade_date (date).  Adapt via a duck-typed wrapper.
+        class _TradeAdapter:
+            def __init__(self, tv: Any) -> None:
+                self._tv = tv
+
+            @property
+            def trade_date(self) -> Any:
+                return self._tv.timestamp.date()
+
+            @property
+            def side(self) -> str:
+                return str(self._tv.side)
+
+            @property
+            def grid_level_price(self) -> Any:
+                return self._tv.price
+
+        adapted_trades = [_TradeAdapter(t) for t in trades]
+        markers = _serialize_markers(adapted_trades, date_set)
+
+        # Grid levels from artifacts (duck-typed — no reverse import).
+        # _DGTVisualizationArtifacts has grid_history / reference_price_curve;
+        # we reconstruct a simple duck-type with grid_levels + reference_price.
+        grid_lines: list[dict[str, Any]] = []
+        if artifacts is not None and isinstance(artifacts, _DGTVisualizationArtifacts):
+            history = artifacts.grid_history
+            ref_curve = artifacts.reference_price_curve
+
+            class _ArtifactAdapter:
+                grid_levels = [lv for snap in history[:1] for lv in snap.levels] if history else []
+                reference_price = ref_curve[0][1] if ref_curve else None
+
+            grid_lines = _serialize_grid_levels(_ArtifactAdapter())
+
+        # Derive title from artifacts or generic fallback.
+        if artifacts is not None and isinstance(artifacts, _DGTVisualizationArtifacts):
+            first_date = sorted_bars[0].trade_date
+            last_date = sorted_bars[-1].trade_date
+            title = f"DGT — {artifacts.asset_code} ({first_date} → {last_date})"
+        else:
+            first_date = sorted_bars[0].trade_date
+            last_date = sorted_bars[-1].trade_date
+            title = f"DGT — ({first_date} → {last_date})"
+
+        return build_interactive_chart_html(
+            title=title,
+            ohlcv=ohlcv,
+            volume=volume,
+            markers=markers,
+            grid_levels=grid_lines,
+        )
 
     def extract_overlay_metric(
         self,
