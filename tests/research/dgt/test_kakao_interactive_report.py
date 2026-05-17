@@ -486,7 +486,11 @@ class TestBuildInteractiveComparisonHtml:
         # Unescape the <\\/ back to </
         raw_json = match.group(1).strip().replace("<\\/", "</").replace("\\u2028", " ").replace("\\u2029", " ")
         data = json.loads(raw_json)
-        # 2 trades total across both strategies
-        assert len(data["markers"]) == 2, (
-            f"Expected 2 markers (1 per strategy), got {len(data['markers'])}"
+        # markers grouped per strategy (Phase 0.11.i toggle): 2 groups, 1 each.
+        groups = data["markerGroups"]
+        assert len(groups) == 2, f"Expected 2 strategy marker groups, got {len(groups)}"
+        assert {g["label"] for g in groups} == {"S1", "S2"}, (
+            f"Expected groups labelled per strategy, got {[g['label'] for g in groups]}"
         )
+        total = sum(len(g["markers"]) for g in groups)
+        assert total == 2, f"Expected 2 markers total (1 per strategy), got {total}"

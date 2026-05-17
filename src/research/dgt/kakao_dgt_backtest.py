@@ -607,12 +607,13 @@ def _build_interactive_comparison_html(
     ohlcv = _serialize_ohlcv(bars)
     volume = _serialize_volume(bars)
 
-    # Aggregate all trades across strategies for the marker overlay.
-    all_trades: list[_DGTTrade] = []
-    for _label, result in results:
-        all_trades.extend(result.trades)
-    all_trades.sort(key=lambda t: t.trade_date)
-    markers = _serialize_markers(all_trades, date_set)
+    # Per-strategy marker groups — each strategy toggleable in the chart
+    # (Phase 0.11.i follow-up: marker overcrowding fix). No cross-strategy
+    # aggregation; the chart's toggle bar merges the visible groups.
+    marker_groups = [
+        {"label": label, "markers": _serialize_markers(result.trades, date_set)}
+        for label, result in results
+    ]
 
     # Grid levels from first DGT result (reference price + grid_levels list).
     first_result = results[0][1]
@@ -627,7 +628,7 @@ def _build_interactive_comparison_html(
         title=title,
         ohlcv=ohlcv,
         volume=volume,
-        markers=markers,
+        marker_groups=marker_groups,
         grid_levels=grid_lines,
     )
 
@@ -642,11 +643,11 @@ def _build_interactive_per_stock_html(
     ohlcv = _serialize_ohlcv(bars)
     volume = _serialize_volume(bars)
 
-    all_trades: list[_DGTTrade] = []
-    for _label, result in results_for_stock:
-        all_trades.extend(result.trades)
-    all_trades.sort(key=lambda t: t.trade_date)
-    markers = _serialize_markers(all_trades, date_set)
+    # Per-strategy marker groups — toggleable in the chart (Phase 0.11.i follow-up).
+    marker_groups = [
+        {"label": label, "markers": _serialize_markers(result.trades, date_set)}
+        for label, result in results_for_stock
+    ]
 
     first_result = results_for_stock[0][1]
 
@@ -660,7 +661,7 @@ def _build_interactive_per_stock_html(
         title=f"{escape(asset.name)} ({escape(asset.code)}) — Per-Strategy Detail",
         ohlcv=ohlcv,
         volume=volume,
-        markers=markers,
+        marker_groups=marker_groups,
         grid_levels=grid_lines,
     )
 

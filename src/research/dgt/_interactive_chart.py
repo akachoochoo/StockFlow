@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+from html import escape
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -219,7 +220,7 @@ def build_interactive_chart_html(
     title: str,
     ohlcv: list[dict[str, Any]],
     volume: list[dict[str, Any]],
-    markers: list[dict[str, Any]],
+    marker_groups: list[dict[str, Any]],
     grid_levels: list[dict[str, Any]],
     extra_panels: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -237,8 +238,10 @@ def build_interactive_chart_html(
         List of dicts from _serialize_ohlcv — candlestick data.
     volume:
         List of dicts from _serialize_volume — volume histogram data.
-    markers:
-        List of dicts from _serialize_markers — trade markers.
+    marker_groups:
+        List of {"label": str, "markers": [...]} dicts — per-strategy trade
+        marker groups. When >1 group, per-strategy toggle checkboxes render
+        above the chart; each toggle re-merges the visible marker set.
     grid_levels:
         List of dicts from _serialize_grid_levels — price lines.
     extra_panels:
@@ -249,9 +252,21 @@ def build_interactive_chart_html(
     data_island = _safe_json_embed({
         "ohlcv": ohlcv,
         "volume": volume,
-        "markers": markers,
+        "markerGroups": marker_groups,
         "gridLevels": grid_levels,
     })
+
+    # Per-strategy marker toggle bar — rendered only when >1 group
+    # (Phase 0.11.i follow-up: marker overcrowding fix).
+    if len(marker_groups) > 1:
+        _toggles = "".join(
+            f'<label><input type="checkbox" data-grp="{i}" checked /> '
+            f'{escape(str(g.get("label", f"group {i}")))}</label>'
+            for i, g in enumerate(marker_groups)
+        )
+        marker_toggle_html = f'<div id="marker-toggles">{_toggles}</div>'
+    else:
+        marker_toggle_html = ""
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -261,19 +276,28 @@ def build_interactive_chart_html(
   <title>{title}</title>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ background: #1a1a2e; color: #eee; font-family: sans-serif; }}
-    h1 {{ padding: 12px 16px; font-size: 14px; font-weight: 600;
+    html, body {{ height: 100%; }}
+    body {{ background: #1a1a2e; color: #eee; font-family: sans-serif;
+            display: flex; flex-direction: column; overflow: hidden; }}
+    h1 {{ flex: none; padding: 12px 16px; font-size: 14px; font-weight: 600;
           color: #a8b2d8; border-bottom: 1px solid #2d2d4e; }}
+    #marker-toggles {{ flex: none; display: flex; gap: 14px; flex-wrap: wrap;
+          padding: 6px 16px; font-size: 12px; color: #a8b2d8;
+          border-bottom: 1px solid #2d2d4e; }}
+    #marker-toggles label {{ cursor: pointer; user-select: none; }}
+    #marker-toggles input {{ vertical-align: middle; margin-right: 4px; }}
     #chart-container {{
-      display: flex; flex-direction: column;
-      width: 100%; height: calc(100vh - 48px);
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: column; width: 100%;
     }}
-    #price-chart  {{ flex: 3; width: 100%; }}
-    #volume-chart {{ flex: 1; width: 100%; border-top: 1px solid #2d2d4e; }}
+    #price-chart  {{ flex: 3; width: 100%; min-height: 0; }}
+    #volume-chart {{ flex: 1; width: 100%; min-height: 0;
+                     border-top: 1px solid #2d2d4e; }}
   </style>
 </head>
 <body>
   <h1>{title}</h1>
+  {marker_toggle_html}
   <div id="chart-container">
     <div id="price-chart"></div>
     <div id="volume-chart"></div>
@@ -339,10 +363,39 @@ def build_interactive_chart_html(
         }});
       }});
 
-      // Trade markers (v5: createSeriesMarkers — series.setMarkers removed)
-      if (rawData.markers && rawData.markers.length > 0) {{
-        LightweightCharts.createSeriesMarkers(candleSeries, rawData.markers);
+      // Trade markers — per-strategy groups with toggle (v5: createSeriesMarkers).
+      var markerGroups = rawData.markerGroups || [];
+      function _mergedMarkers() {{
+        var inputs = document.querySelectorAll(
+          '#marker-toggles input[type=checkbox]');
+        var merged = [];
+        if (inputs.length === 0) {{
+          markerGroups.forEach(function (g) {{
+            merged = merged.concat(g.markers || []);
+          }});
+        }} else {{
+          inputs.forEach(function (inp) {{
+            if (inp.checked) {{
+              var gi = parseInt(inp.getAttribute('data-grp'), 10);
+              if (markerGroups[gi]) {{
+                merged = merged.concat(markerGroups[gi].markers || []);
+              }}
+            }}
+          }});
+        }}
+        merged.sort(function (a, b) {{
+          return a.time < b.time ? -1 : (a.time > b.time ? 1 : 0);
+        }});
+        return merged;
       }}
+      var _markersPrimitive = LightweightCharts.createSeriesMarkers(
+        candleSeries, _mergedMarkers());
+      document.querySelectorAll('#marker-toggles input[type=checkbox]')
+        .forEach(function (inp) {{
+          inp.addEventListener('change', function () {{
+            _markersPrimitive.setMarkers(_mergedMarkers());
+          }});
+        }});
 
       // --- Volume chart (separate pane) ---
       var volumeEl = document.getElementById('volume-chart');

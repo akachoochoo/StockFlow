@@ -310,11 +310,12 @@ class _DGTVisualizationRenderer:
             last_date = sorted_bars[-1].trade_date
             title = f"DGT — ({first_date} → {last_date})"
 
+        # Single-strategy renderer → one marker group (no toggle bar renders).
         return build_interactive_chart_html(
             title=title,
             ohlcv=ohlcv,
             volume=volume,
-            markers=markers,
+            marker_groups=[{"label": "DGT", "markers": markers}],
             grid_levels=grid_lines,
         )
 

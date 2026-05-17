@@ -372,7 +372,7 @@ def _build_html(n_bars: int = 3, n_trades: int = 2) -> str:
         title="Test Chart — 069500",
         ohlcv=ohlcv,
         volume=volume,
-        markers=markers,
+        marker_groups=[{"label": "S1", "markers": markers}],
         grid_levels=grid_levels,
     )
 
@@ -412,7 +412,9 @@ class TestBuildInteractiveChartHtml:
         data = json.loads(raw)
         assert len(data["ohlcv"])   == 5
         assert len(data["volume"])  == 5
-        assert len(data["markers"]) == 3
+        # markers nested under per-strategy markerGroups (Phase 0.11.i toggle).
+        assert len(data["markerGroups"]) == 1
+        assert len(data["markerGroups"][0]["markers"]) == 3
 
     def test_zero_network_references(self) -> None:
         """Report HTML must contain zero http/https <script src> references (P5)."""
@@ -454,11 +456,43 @@ class TestBuildInteractiveChartHtml:
             title="Empty",
             ohlcv=[],
             volume=[],
-            markers=[],
+            marker_groups=[],
             grid_levels=[],
         )
         assert "createChart" in html
         assert isinstance(html, str)
+
+    def test_single_group_no_toggle_bar(self) -> None:
+        """One marker group → no per-strategy toggle bar rendered."""
+        html = _build_html()
+        assert 'id="marker-toggles"' not in html
+
+    def test_multi_group_renders_toggle_bar(self) -> None:
+        """>1 marker group → per-strategy toggle checkboxes render (Phase 0.11.i)."""
+        bars = _make_bars(5)
+        trades = _make_trades()
+        html = build_interactive_chart_html(
+            title="Multi",
+            ohlcv=_serialize_ohlcv(bars),
+            volume=_serialize_volume(bars),
+            marker_groups=[
+                {"label": "ADR-Base", "markers": _serialize_markers(trades)},
+                {"label": "ADR+Vol", "markers": _serialize_markers(trades)},
+            ],
+            grid_levels=[],
+        )
+        assert 'id="marker-toggles"' in html
+        assert 'data-grp="0"' in html
+        assert 'data-grp="1"' in html
+        assert "ADR-Base" in html and "ADR+Vol" in html
+        match = re.search(
+            r'<script type="application/json" id="chart-data">\s*(.*?)\s*</script>',
+            html, re.DOTALL,
+        )
+        assert match is not None
+        data = json.loads(match.group(1).replace("<\\/", "</"))
+        assert len(data["markerGroups"]) == 2
+        assert data["markerGroups"][0]["label"] == "ADR-Base"
 
 
 # ---------------------------------------------------------------------------
