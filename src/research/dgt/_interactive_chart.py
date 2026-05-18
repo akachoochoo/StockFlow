@@ -1,11 +1,15 @@
-# Phase 0.11.i — Interactive HTML chart builder for DGT backtest reports.
+# Phase 0.11.j — Interactive HTML chart builder for DGT backtest reports.
+# (Extended from Phase 0.11.i: time-varying grid LineSeries + per-strategy grid toggle.)
 #
 # Produces self-contained HTML using TradingView's lightweight-charts v5.2.0
 # (vendored at src/research/dgt/assets/lightweight-charts.standalone.production.js).
 #
-# Design principles (ADR 0016):
+# Design principles (ADR 0016 / ADR 0017):
 #   P2 — Contained external dependency (JS runs only in the browser, never in Python).
-#   P4 — Decimal→float conversion happens ONLY at the JSON-serialization boundary here.
+#   P3 — Decimal-discipline: Decimal→float conversion happens ONLY at the JSON-
+#         serialization boundary here (_serialize_grid_series, _serialize_ohlcv, etc.).
+#   P4 — v5 API mandate: LightweightCharts.LineSeries (never v4 addLineSeries).
+#         A v4/v5 mismatch caused the 0.11.i blank-chart bug (ADR 0016 §3.6).
 #   P5 — Self-contained offline HTML (no CDN / network references).
 #
 # Namespace constraint (ADR 0008 D9 / ADR 0009 D9 / check_namespace.sh:58-68):
@@ -19,6 +23,8 @@
 from __future__ import annotations
 
 import json
+from datetime import date
+from decimal import Decimal
 from html import escape
 from pathlib import Path
 from typing import Any, Sequence
@@ -188,6 +194,62 @@ def _serialize_grid_levels(artifacts: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _serialize_grid_series(
+    envelope: list[list[Decimal]],
+    bar_dates: list[date],
+    *,
+    color: str,
+) -> list[dict[str, Any]]:
+    """Serialize a time-varying DGT grid envelope to v5 LineSeries descriptors.
+
+    Each returned dict describes one grid level across all bars:
+      {"levelIndex": i, "isBound": bool, "data": [{"time": "YYYY-MM-DD", "value": float}]}
+
+    isBound is True for the outermost levels (index 0 and n, where n = len(levels)-1).
+    value = float(level) is the ONLY Decimal→float cast (P3 / CLAUDE.md §2.1).
+
+    Parameters
+    ----------
+    envelope:
+        Per-bar grid levels from _reconstruct_grid_envelope — list[list[Decimal]].
+        len(envelope) MUST equal len(bar_dates).
+    bar_dates:
+        Trade dates corresponding to each bar in the envelope (list[date]).
+    color:
+        CSS color string for this strategy's grid lines.
+    """
+    if not envelope:
+        return []
+
+    assert len(envelope) == len(bar_dates), (
+        f"_serialize_grid_series: len(envelope)={len(envelope)} != "
+        f"len(bar_dates)={len(bar_dates)}"
+    )
+
+    n_levels = len(envelope[0])
+    if n_levels == 0:
+        return []
+
+    # Build one time-series per grid level (n+1 levels total).
+    series: list[dict[str, Any]] = []
+    for level_idx in range(n_levels):
+        is_bound = level_idx == 0 or level_idx == n_levels - 1
+        data = [
+            {
+                "time": d.strftime("%Y-%m-%d"),
+                "value": float(bar_levels[level_idx]),  # Decimal→float boundary (P3)
+            }
+            for d, bar_levels in zip(bar_dates, envelope)
+        ]
+        series.append({
+            "levelIndex": level_idx,
+            "isBound": is_bound,
+            "data": data,
+        })
+
+    return series
+
+
 # ---------------------------------------------------------------------------
 # JSON safety
 # ---------------------------------------------------------------------------
@@ -222,6 +284,7 @@ def build_interactive_chart_html(
     volume: list[dict[str, Any]],
     marker_groups: list[dict[str, Any]],
     grid_levels: list[dict[str, Any]],
+    grid_groups: list[dict[str, Any]] | None = None,
     extra_panels: list[dict[str, Any]] | None = None,
 ) -> str:
     """Assemble a self-contained interactive HTML chart page.
@@ -243,17 +306,32 @@ def build_interactive_chart_html(
         marker groups. When >1 group, per-strategy toggle checkboxes render
         above the chart; each toggle re-merges the visible marker set.
     grid_levels:
-        List of dicts from _serialize_grid_levels — price lines.
+        List of dicts from _serialize_grid_levels — static price lines.
+        Used when grid_groups is empty/None (backward-compatible path for
+        _dgt_renderer.py which passes grid_levels only).
+    grid_groups:
+        New (Phase 0.11.j): list of {"label": str, "color": str,
+        "levels": list[dict]} dicts — per-strategy time-varying grid
+        line series from _serialize_grid_series. When non-empty, renders
+        v5 LineSeries grids (§9 note (a): grid_levels emitted as [] in the
+        data island to prevent both paths firing). When len > 1, a separate
+        #grid-toggles bar renders below #marker-toggles.
     extra_panels:
         Reserved for future equity-curve / additional panes (unused in v1).
     """
     js_lib = _load_lightweight_charts_js()
 
+    # §9 note (a): mutual exclusivity — when grid_groups is non-empty, emit
+    # gridLevels: [] so the JS createPriceLine path never fires.
+    _grid_groups = grid_groups or []
+    _grid_levels_island = [] if _grid_groups else (grid_levels or [])
+
     data_island = _safe_json_embed({
         "ohlcv": ohlcv,
         "volume": volume,
         "markerGroups": marker_groups,
-        "gridLevels": grid_levels,
+        "gridLevels": _grid_levels_island,
+        "gridGroups": _grid_groups,
     })
 
     # Per-strategy marker toggle bar — rendered only when >1 group
@@ -264,9 +342,20 @@ def build_interactive_chart_html(
             f'{escape(str(g.get("label", f"group {i}")))}</label>'
             for i, g in enumerate(marker_groups)
         )
-        marker_toggle_html = f'<div id="marker-toggles">{_toggles}</div>'
+        marker_toggle_html = f'<div class="toggle-bar" id="marker-toggles">{_toggles}</div>'
     else:
         marker_toggle_html = ""
+
+    # Per-strategy grid toggle bar (Step 4) — rendered only when >1 grid group.
+    if len(_grid_groups) > 1:
+        _grid_toggles = "".join(
+            f'<label><input type="checkbox" data-grid-grp="{i}" checked /> '
+            f'{escape(str(g.get("label", f"grid {i}")))}</label>'
+            for i, g in enumerate(_grid_groups)
+        )
+        grid_toggle_html = f'<div class="toggle-bar" id="grid-toggles">{_grid_toggles}</div>'
+    else:
+        grid_toggle_html = ""
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -281,11 +370,11 @@ def build_interactive_chart_html(
             display: flex; flex-direction: column; overflow: hidden; }}
     h1 {{ flex: none; padding: 12px 16px; font-size: 14px; font-weight: 600;
           color: #a8b2d8; border-bottom: 1px solid #2d2d4e; }}
-    #marker-toggles {{ flex: none; display: flex; gap: 14px; flex-wrap: wrap;
+    .toggle-bar {{ flex: none; display: flex; gap: 14px; flex-wrap: wrap;
           padding: 6px 16px; font-size: 12px; color: #a8b2d8;
           border-bottom: 1px solid #2d2d4e; }}
-    #marker-toggles label {{ cursor: pointer; user-select: none; }}
-    #marker-toggles input {{ vertical-align: middle; margin-right: 4px; }}
+    .toggle-bar label {{ cursor: pointer; user-select: none; }}
+    .toggle-bar input {{ vertical-align: middle; margin-right: 4px; }}
     #chart-container {{
       flex: 1; min-height: 0;
       display: flex; flex-direction: column; width: 100%;
@@ -298,6 +387,7 @@ def build_interactive_chart_html(
 <body>
   <h1>{title}</h1>
   {marker_toggle_html}
+  {grid_toggle_html}
   <div id="chart-container">
     <div id="price-chart"></div>
     <div id="volume-chart"></div>
@@ -351,17 +441,66 @@ def build_interactive_chart_html(
       }});
       candleSeries.setData(rawData.ohlcv);
 
-      // Grid price lines
-      rawData.gridLevels.forEach(function (gl) {{
-        candleSeries.createPriceLine({{
-          price:            gl.price,
-          color:            gl.color,
-          lineWidth:        gl.lineWidth,
-          lineStyle:        gl.lineStyle,
-          axisLabelVisible: gl.axisLabelVisible,
-          title:            gl.title,
+      // Grid rendering: two mutually exclusive paths (§9 note (a)).
+      // Path A — time-varying LineSeries (Phase 0.11.j, grid_groups non-empty).
+      //   v5 API mandate: LightweightCharts.LineSeries — NOT v4 addLineSeries.
+      //   A v4/v5 mismatch caused the 0.11.i blank-chart bug (ADR 0016 §3.6).
+      // Path B — static createPriceLine (legacy path, grid_groups empty/absent).
+      var gridGroups = rawData.gridGroups || [];
+      // _gridSeriesPerGroup[grpIdx] = array of LineSeries for that group.
+      var _gridSeriesPerGroup = [];
+      if (gridGroups.length > 0) {{
+        // Path A — time-varying v5 LineSeries (ADR 0017 Decision ii-A).
+        gridGroups.forEach(function (grp, grpIdx) {{
+          var grpSeries = [];
+          var grpColor = grp.color || '#bdc3c7';
+          var levels = grp.levels || [];
+          levels.forEach(function (lvl) {{
+            // Bound levels (outermost) get lineWidth:2; interior get lineWidth:1
+            // with lower opacity — matches _draw_grid_levels (1.0/0.6 vs 0.3/0.4).
+            var lw = lvl.isBound ? 2 : 1;
+            var color = lvl.isBound ? grpColor : grpColor + '99';  // 60% opacity hex
+            // v5 API: addSeries(LightweightCharts.LineSeries, ...) — ADR 0016 §3.6
+            var s = priceChart.addSeries(LightweightCharts.LineSeries, {{
+              color:                   color,
+              lineWidth:               lw,
+              lineStyle:               2,     // 2 = dashed
+              priceLineVisible:        false,
+              lastValueVisible:        false,
+              crosshairMarkerVisible:  false,
+            }});
+            s.setData(lvl.data);
+            grpSeries.push(s);
+          }});
+          _gridSeriesPerGroup.push(grpSeries);
         }});
-      }});
+      }} else {{
+        // Path B — static flat price lines (backward-compat: _dgt_renderer.py).
+        rawData.gridLevels.forEach(function (gl) {{
+          candleSeries.createPriceLine({{
+            price:            gl.price,
+            color:            gl.color,
+            lineWidth:        gl.lineWidth,
+            lineStyle:        gl.lineStyle,
+            axisLabelVisible: gl.axisLabelVisible,
+            title:            gl.title,
+          }});
+        }});
+      }}
+
+      // Per-strategy grid toggle (Step 4) — only active when #grid-toggles present.
+      document.querySelectorAll('#grid-toggles input[type=checkbox]')
+        .forEach(function (inp) {{
+          inp.addEventListener('change', function () {{
+            var gi = parseInt(inp.getAttribute('data-grid-grp'), 10);
+            var visible = inp.checked;
+            if (_gridSeriesPerGroup[gi]) {{
+              _gridSeriesPerGroup[gi].forEach(function (s) {{
+                s.applyOptions({{ visible: visible }});
+              }});
+            }}
+          }});
+        }});
 
       // Trade markers — per-strategy groups with toggle (v5: createSeriesMarkers).
       var markerGroups = rawData.markerGroups || [];

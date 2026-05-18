@@ -622,7 +622,7 @@ B) <옵션 2와 trade-off>
 > 이 섹션은 현 상태 + 진행 중 phase + 다음 phase 만 유지. 완료 phase 상세는
 > 정본에서 인용하고 여기에 다시 옮겨 적지 말 것.
 
-### 현 상태 (2026-05-17)
+### 현 상태 (2026-05-18)
 
 - Phase 0.10 시리즈 (0.10 ~ 0.10.bb) 정식 종료 — 라운드 #22 (2026-05-11, ADR 0006 §18).
 - **Phase 0.11.a** (DGT Research-Namespace Overlay) 정식 종료 — 라운드 #23 (2026-05-12, ADR 0007 §3). G1+G3+G4 PASS / G2 INFORMATIONAL FAIL (R1 일봉 ≠ 분봉). D10 = archive. DGT registry 미합류.
@@ -634,6 +634,7 @@ B) <옵션 2와 trade-off>
 - **Phase 0.11.g** (DGT Rebalancing Alpha — Core-Satellite + Asymmetric Grid) 정식 종료 — 라운드 #29 (2026-05-17, ADR 0014 §3). G1 PASS / **G2 FAIL** (H1 alpha ≤ 0, H2 monotonic). Lifecycle = 5th ring 영구 (permanent-research-only). Core-Satellite runner + Asymmetric Grid runner + 16-config sweep CLI. 핵심 발견: **리밸런싱 알파 없음** (bull -6~-12%, bear 근소 음수) + 비대칭 grid 하락장 MDD 23-25% (18% hard stop 초과) + Phase 1 권고: 정적 배분, DGT = MDD 방어 전용. 28 new tests (1551 total), inner ring 변경 zero.
 - **Phase 0.11.h** (DGT Backtest Report Chart Upgrade — Candlestick + Volume) 정식 종료 — (2026-05-17, ADR 0015 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = permanent. 신규 `src/research/dgt/_candles.py` (공유 `_draw_candles`/`_draw_volume` helper) + `kakao_dgt_backtest.py` + `_dgt_renderer.py` 캔들+거래량 2-panel 전환 + bar-count-adaptive width (`min(40,max(14,n/55))`). ADR 0009 D4 evolution (not supersede) — mplfinance 미사용, manual matplotlib, Option A synthesis. 24 new tests (1575 total), inner ring 변경 zero.
 - **Phase 0.11.i** (Interactive DGT Charts — lightweight-charts) 정식 종료 — (2026-05-17, ADR 0016 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = permanent (interactive) + archival-with-sunset (static matplotlib). vendored `lightweight-charts.standalone.production.js` (~50 KB, offline) + `_interactive_chart.py` HTML builder + `kakao_dgt_backtest.py` + `_dgt_renderer.py` interactive 전환 + `fmt` kwarg Protocol Option (iii). ADR 0006 §14.4 Option C + ADR 0009 D4(b) 역전 (research-scoped). plotly/narwhals uninstalled. 75 new tests (1650 total), inner ring 변경 zero.
+- **Phase 0.11.j** (DGT Interactive Chart Improvements — time-varying grid + toggles + Trade Logs) 정식 종료 — (2026-05-18, ADR 0017 §3). **게이트 4/4 PRIMARY PASS**. Lifecycle = 5th ring 영구. 신규 `src/research/dgt/_grid_reconstruction.py` (`_reconstruct_grid_envelope` — ATR/ADR branch, Decimal-only) + `_interactive_chart.py` + `kakao_dgt_backtest.py` 수정. ADR-measure correction (adaptive_cfgs gap 버그 fix) + ADR 0016 §12.4 #6 CLOSED. 64 new tests (1716 total), inner ring 변경 zero.
 - Phase 1 진입 결정 대기.
 
 ### 완료 phase 인덱스 (정본 = ADR / 회고)
@@ -663,6 +664,7 @@ B) <옵션 2와 trade-off>
 | 0.11.g | 05-17 | DGT Rebalancing Alpha (Core-Satellite B&H+DGT + Asymmetric Grid + 16-config sweep) | G1 PASS / **G2 FAIL** (H1 alpha ≤ 0, H2 monotonic, H3 MDD breach) / Lifecycle = 5th ring 영구 / 28 new tests (1551 total) / inner ring 변경 zero | 0014 §1~§3 | phase-0.11.g.md |
 | 0.11.h | 05-17 | DGT Backtest Report Chart Upgrade (캔들+거래량 — `_candles.py` 공유 helper + kakao_dgt_backtest.py + _dgt_renderer.py + adaptive width) | **게이트 4/4 PRIMARY PASS** / Lifecycle = permanent / 24 new tests (1575 total) / inner ring 변경 zero | 0015 §1+§3 | phase-0.11.h.md |
 | 0.11.i | 05-17 | Interactive DGT Charts (vendored lightweight-charts JS + `_interactive_chart.py` HTML builder + `fmt` kwarg + report.html interactive 전환 + ADR 0006/0009 역전 research-scoped) | **게이트 4/4 PRIMARY PASS** / Lifecycle = permanent (interactive) + archival-with-sunset (static) / 75 new tests (1650 total) / inner ring 변경 zero | 0016 §1+§3 | phase-0.11.i.md |
+| 0.11.j | 05-18 | DGT Interactive Chart Improvements (time-varying grid `_grid_reconstruction.py` + `#grid-toggles` per-strategy + Trade Logs cum columns + headless Playwright gate + ADR-measure correction) | **게이트 4/4 PRIMARY PASS** / Lifecycle = 5th ring 영구 / ADR 0016 §12.4 #6 CLOSED / 64 new tests (1716 total) / inner ring 변경 zero | 0017 §1+§3 | phase-0.11.j.md |
 
 **핵심 학습** (Phase 0.7 ~ 0.9, ADR 0005 §9.6.2 박제):
 **자산군 분산 = H3 회복의 충분 조건** (3 회 반복 검증). 단일 자산군 (전부 주식
@@ -797,5 +799,5 @@ Phase 1 ADR 박제 시 다뤄질 결정 (ADR 0003 §11.3 / ADR 0005 §10.6.3 인
 ---
 
 *이 파일은 살아있는 문서입니다. 운영 중 발견된 새 규칙은 추가하세요.*
-*마지막 업데이트: 2026-05-17 (Phase 0.11.i 완료 박제 — §14 현 상태 + 인덱스 갱신, ADR 0016 §1+§3 정본 인용. 게이트 4/4 PRIMARY PASS, lifecycle = permanent (interactive) + archival-with-sunset (static), 1650 tests 회귀 zero)*
+*마지막 업데이트: 2026-05-18 (Phase 0.11.j 완료 박제 — §14 현 상태 + 인덱스 갱신, ADR 0017 §1+§3 정본 인용. 게이트 4/4 PRIMARY PASS, lifecycle = 5th ring 영구, 1716 tests 회귀 zero)*
 

@@ -31,6 +31,7 @@ from src.research.dgt._interactive_chart import (
     _serialize_volume,
     _serialize_markers,
     _serialize_grid_levels,
+    _serialize_grid_series,
     build_interactive_chart_html,
 )
 
@@ -50,6 +51,7 @@ from src.research.dgt.dynamic_runner import _DGTDynamicRunner
 from src.research.dgt.paper_adaptive_runner import _DGTPaperAdaptiveRunner
 from src.research.dgt.paper_runner import _DGTPaperRunner
 from src.research.dgt.results import _DGTBacktestResult, _DGTSnapshot, _DGTTrade
+from src.research.dgt._grid_reconstruction import _reconstruct_grid_envelope
 from src.research.dgt.runner import _DGTConfig, _DGTPrototypeRunner
 
 
@@ -319,6 +321,51 @@ def _result_summary(
 
 
 # ---------------------------------------------------------------------------
+# Module-level helpers + grid config constants
+# (shared by matplotlib + interactive paths — P2 single source of truth)
+# ---------------------------------------------------------------------------
+
+
+def _mode_for(lbl: str) -> str:
+    """Map strategy label to runner mode string."""
+    if lbl.startswith("B&H"):
+        return "bh"
+    if (lbl.startswith("Trend") or lbl.startswith("Hyb-D") or lbl.startswith("ADR")
+            or lbl in ("Hyb-Daily", "Hyb-ATR", "Hyb-ADR")):
+        return "paper_adaptive_daily"
+    if lbl.startswith("Hyb"):
+        return "paper_adaptive"
+    if lbl.startswith("Paper"):
+        return "paper"
+    return {"Static": "static", "On-Breach": "on_breach",
+            "Daily": "daily", "Adaptive": "adaptive",
+            "Adp-Narrow": "adaptive"}.get(lbl, "static")
+
+_best_acfg = _AdaptiveConfig(
+    atr_period=14, multiplier=Decimal("1.0"),
+    k_min=Decimal("0.005"), k_max=Decimal("0.05"),
+)
+
+# Map from strategy label to _AdaptiveConfig (None = non-adaptive mode).
+# ADR-Base and ADR+Vol use the same adaptive config as Hyb-Daily — they
+# differ only in volatility_measure (see volatility_measures below).
+adaptive_cfgs: dict[str, _AdaptiveConfig | None] = {
+    "Hyb-Daily": _best_acfg,
+    "ADR-Base": _best_acfg,
+    "ADR+Vol": _best_acfg,
+}
+
+# Map from strategy label to volatility measure used in grid reconstruction.
+# ADR-0017-recorded: ADR-labelled strategies now correctly use _compute_adr
+# instead of _compute_atr (Step 1b intentional behaviour change).
+volatility_measures: dict[str, str] = {
+    "ADR-Base": "adr",
+    "ADR+Vol": "adr",
+    "Hyb-Daily": "atr",
+}
+
+
+# ---------------------------------------------------------------------------
 # Chart rendering (matplotlib)
 # ---------------------------------------------------------------------------
 
@@ -390,27 +437,7 @@ def _build_comparison_figure(
     dates = [b.trade_date for b in bars]
 
     # --- Per-strategy panels: Candlesticks + grid levels + trade markers ---
-    def _mode_for(lbl: str) -> str:
-        if lbl.startswith("B&H"):
-            return "bh"
-        if (lbl.startswith("Trend") or lbl.startswith("Hyb-D") or lbl.startswith("ADR")
-                or lbl in ("Hyb-Daily", "Hyb-ATR", "Hyb-ADR")):
-            return "paper_adaptive_daily"
-        if lbl.startswith("Hyb"):
-            return "paper_adaptive"
-        if lbl.startswith("Paper"):
-            return "paper"
-        return {"Static": "static", "On-Breach": "on_breach",
-                "Daily": "daily", "Adaptive": "adaptive",
-                "Adp-Narrow": "adaptive"}.get(lbl, "static")
-
-    _best_acfg = _AdaptiveConfig(
-        atr_period=14, multiplier=Decimal("1.0"),
-        k_min=Decimal("0.005"), k_max=Decimal("0.05"),
-    )
-    adaptive_cfgs: dict[str, _AdaptiveConfig | None] = {
-        "Hyb-Daily": _best_acfg,
-    }
+    # _mode_for is a module-level function (shared with interactive builders, P2).
     for i, (label, result) in enumerate(results):
         ax = axes[i]
         color = colors.get(label, "#555")
@@ -418,13 +445,17 @@ def _build_comparison_figure(
         # Candlestick price chart (replaces ax.plot line chart).
         _draw_candles(ax, bars)
 
-        # Grid levels as Bollinger-band style envelope
+        # Grid levels as Bollinger-band style envelope.
+        # adaptive_cfgs / volatility_measures are module-level constants so
+        # both the matplotlib and interactive paths use the same config (P2).
         acfg = adaptive_cfgs.get(label)
+        vol_measure = volatility_measures.get(label, "atr")
         rc = configs_per_result[i] if configs_per_result else config
         _draw_grid_levels(ax, result, dates, rc,
                           mode=_mode_for(label),
                           ohlcv_bars=bars, adaptive_cfg=acfg,
-                          band_color=color)
+                          band_color=color,
+                          volatility_measure=vol_measure)
 
         # Trade markers
         buy_dates = [t.trade_date for t in result.trades if t.side == "BUY"]
@@ -512,57 +543,34 @@ def _draw_grid_levels(
     ohlcv_bars: list[OHLCV] | None = None,
     adaptive_cfg: _AdaptiveConfig | None = None,
     band_color: str = "#bdc3c7",
+    volatility_measure: str = "atr",
 ) -> None:
     """Draw grid levels as Bollinger-band style envelope.
 
-    Per-bar grid bounds (min/max) are reconstructed by replaying the
-    rebalancing logic, then drawn as filled band + boundary lines.
+    Delegates reconstruction to _reconstruct_grid_envelope (single source of
+    truth — P2, ADR 0017 Decision i-A). Per-bar grid bounds (min/max) are
+    replayed from daily_snapshots, then drawn as filled band + boundary lines.
     Intermediate grid levels are drawn as thin lines within the band.
-    ohlcv_bars + adaptive_cfg required for adaptive mode (ATR computation).
-    """
-    from src.research.dgt.formulas import grid_levels_table1
 
-    snapshots = result.daily_snapshots
-    if not snapshots or mode == "bh":
+    volatility_measure: 'atr' (legacy default) or 'adr'. Passed through to
+    _reconstruct_grid_envelope. Step 1b: ADR strategies now pass "adr" via
+    the volatility_measures module constant (ADR-0017-recorded correction).
+    """
+    envelope = _reconstruct_grid_envelope(
+        result=result,
+        config=config,
+        mode=mode,
+        ohlcv_bars=ohlcv_bars,
+        adaptive_cfg=adaptive_cfg,
+        volatility_measure=volatility_measure,
+    )
+    if not envelope:
         return
 
-    # Reconstruct per-bar grid state
-    ref = snapshots[0].close_price
-    k = config.k_ratio
-    # Paper mode: m = n//2 (symmetric), others: config.levels_above
-    m = config.grid_count // 2 if mode in ("paper", "paper_adaptive") else config.levels_above
-    levels = grid_levels_table1(
-        n=config.grid_count, reference_price=ref,
-        k=k, levels_above=m,
-    )
+    # Decimal→float only at the matplotlib boundary (P3)
+    per_bar_levels = [[float(lv) for lv in bar] for bar in envelope]
 
-    per_bar_levels: list[list[float]] = []
-    for bar_idx, snap in enumerate(snapshots):
-        close = snap.close_price
-        should_rebalance = False
-        if mode in ("on_breach", "paper", "paper_adaptive"):
-            should_rebalance = close < levels[0] or close > levels[-1]
-        elif mode in ("daily", "adaptive", "paper_adaptive_daily"):
-            should_rebalance = True
-
-        if should_rebalance:
-            ref = close
-            if mode in ("paper", "paper_adaptive", "paper_adaptive_daily"):
-                m = config.grid_count // 2  # re-symmetrize on reset
-            if mode in ("adaptive", "paper_adaptive", "paper_adaptive_daily") and ohlcv_bars and adaptive_cfg:
-                from src.research.dgt.adaptive_runner import _compute_atr
-                atr = _compute_atr(ohlcv_bars, adaptive_cfg.atr_period, bar_idx)
-                if atr > 0 and close > 0:
-                    atr_pct = atr / close
-                    k = max(adaptive_cfg.k_min, min(adaptive_cfg.k_max,
-                            atr_pct * adaptive_cfg.multiplier))
-            levels = grid_levels_table1(
-                n=config.grid_count, reference_price=ref,
-                k=k, levels_above=m,
-            )
-        per_bar_levels.append([float(lv) for lv in levels])
-
-    bar_dates = [s.trade_date for s in snapshots]
+    bar_dates = [s.trade_date for s in result.daily_snapshots]
     band_min = [lvls[0] for lvls in per_bar_levels]
     band_max = [lvls[-1] for lvls in per_bar_levels]
 
@@ -596,49 +604,102 @@ def _build_interactive_comparison_html(
     results: list[tuple[str, _DGTBacktestResult]],
     bars: list[OHLCV],
     title: str,
+    config: _DGTConfig | None = None,
+    configs_per_result: list[_DGTConfig] | None = None,
 ) -> str:
     """Build interactive lightweight-charts HTML for the main comparison chart.
 
-    Renders the first strategy's OHLCV + all strategies' trade markers.
-    Equity-curve overlay is not yet supported in the interactive chart (single
-    candlestick pane); a multi-pane equity overlay is a deferred follow-up.
+    Renders the first strategy's OHLCV + all strategies' trade markers +
+    time-varying grid LineSeries per grid strategy (Phase 0.11.j, ADR 0017).
+    Equity-curve overlay is not yet supported (single candlestick pane; deferred).
+
+    config / configs_per_result: used for grid reconstruction.  If omitted
+    (e.g. legacy call sites) the grid_groups path is skipped and the fallback
+    static grid_levels path is used instead.
     """
     date_set = {b.trade_date.strftime("%Y-%m-%d") for b in bars}
     ohlcv = _serialize_ohlcv(bars)
     volume = _serialize_volume(bars)
 
     # Per-strategy marker groups — each strategy toggleable in the chart
-    # (Phase 0.11.i follow-up: marker overcrowding fix). No cross-strategy
-    # aggregation; the chart's toggle bar merges the visible groups.
+    # (Phase 0.11.i follow-up: marker overcrowding fix).
     marker_groups = [
         {"label": label, "markers": _serialize_markers(result.trades, date_set)}
         for label, result in results
     ]
 
-    # Grid levels from first DGT result (reference price + grid_levels list).
-    first_result = results[0][1]
+    # Time-varying grid groups (Phase 0.11.j, ADR 0017 Decision i-A).
+    # Uses the module-level adaptive_cfgs + volatility_measures constants
+    # (single source of truth shared with the matplotlib path, P2).
+    # B&H strategies produce empty envelopes → skipped (no grid group).
+    grid_groups: list[dict] = []
+    _colors = {"ADR-Base": "#95a5a6", "ADR+Vol": "#8e44ad",
+                "Hyb-Daily": "#27ae60"}
+    if config is not None:
+        for i, (label, result) in enumerate(results):
+            mode = _mode_for(label)
+            if mode == "bh":
+                continue
+            rc = (configs_per_result[i]
+                  if configs_per_result and i < len(configs_per_result)
+                  else config)
+            acfg = adaptive_cfgs.get(label)
+            vol_measure = volatility_measures.get(label, "atr")
+            envelope = _reconstruct_grid_envelope(
+                result=result,
+                config=rc,
+                mode=mode,
+                ohlcv_bars=bars,
+                adaptive_cfg=acfg,
+                volatility_measure=vol_measure,
+            )
+            if not envelope:
+                continue
+            bar_dates = [s.trade_date for s in result.daily_snapshots]
+            color = _colors.get(label, "#bdc3c7")
+            levels = _serialize_grid_series(envelope, bar_dates, color=color)
+            grid_groups.append({"label": label, "color": color, "levels": levels})
 
-    class _GridArtifact:
-        grid_levels = first_result.grid_levels
-        reference_price = first_result.reference_price
+    # Fallback: static grid from first result (used when config not provided).
+    if grid_groups:
+        return build_interactive_chart_html(
+            title=title,
+            ohlcv=ohlcv,
+            volume=volume,
+            marker_groups=marker_groups,
+            grid_levels=[],
+            grid_groups=grid_groups,
+        )
+    else:
+        first_result = results[0][1]
 
-    grid_lines = _serialize_grid_levels(_GridArtifact())
+        class _GridArtifact:
+            grid_levels = first_result.grid_levels
+            reference_price = first_result.reference_price
 
-    return build_interactive_chart_html(
-        title=title,
-        ohlcv=ohlcv,
-        volume=volume,
-        marker_groups=marker_groups,
-        grid_levels=grid_lines,
-    )
+        grid_lines = _serialize_grid_levels(_GridArtifact())
+        return build_interactive_chart_html(
+            title=title,
+            ohlcv=ohlcv,
+            volume=volume,
+            marker_groups=marker_groups,
+            grid_levels=grid_lines,
+        )
 
 
 def _build_interactive_per_stock_html(
     asset: "Asset",
     bars: list[OHLCV],
     results_for_stock: list[tuple[str, _DGTBacktestResult]],
+    config: _DGTConfig | None = None,
+    configs_per_result: list[_DGTConfig] | None = None,
 ) -> str:
-    """Build interactive lightweight-charts HTML for a single per-stock chart."""
+    """Build interactive lightweight-charts HTML for a single per-stock chart.
+
+    Time-varying grid LineSeries per grid strategy (Phase 0.11.j, ADR 0017).
+    config / configs_per_result required for grid reconstruction; falls back
+    to static grid_levels when omitted.
+    """
     date_set = {b.trade_date.strftime("%Y-%m-%d") for b in bars}
     ohlcv = _serialize_ohlcv(bars)
     volume = _serialize_volume(bars)
@@ -649,21 +710,60 @@ def _build_interactive_per_stock_html(
         for label, result in results_for_stock
     ]
 
-    first_result = results_for_stock[0][1]
+    # Time-varying grid groups (Phase 0.11.j — same logic as comparison builder).
+    grid_groups: list[dict] = []
+    _colors = {"ADR-Base": "#95a5a6", "ADR+Vol": "#8e44ad",
+                "Hyb-Daily": "#27ae60"}
+    if config is not None:
+        for i, (label, result) in enumerate(results_for_stock):
+            mode = _mode_for(label)
+            if mode == "bh":
+                continue
+            rc = (configs_per_result[i]
+                  if configs_per_result and i < len(configs_per_result)
+                  else config)
+            acfg = adaptive_cfgs.get(label)
+            vol_measure = volatility_measures.get(label, "atr")
+            envelope = _reconstruct_grid_envelope(
+                result=result,
+                config=rc,
+                mode=mode,
+                ohlcv_bars=bars,
+                adaptive_cfg=acfg,
+                volatility_measure=vol_measure,
+            )
+            if not envelope:
+                continue
+            bar_dates = [s.trade_date for s in result.daily_snapshots]
+            color = _colors.get(label, "#bdc3c7")
+            levels = _serialize_grid_series(envelope, bar_dates, color=color)
+            grid_groups.append({"label": label, "color": color, "levels": levels})
 
-    class _GridArtifact:
-        grid_levels = first_result.grid_levels
-        reference_price = first_result.reference_price
+    title = f"{escape(asset.name)} ({escape(asset.code)}) — Per-Strategy Detail"
+    if grid_groups:
+        return build_interactive_chart_html(
+            title=title,
+            ohlcv=ohlcv,
+            volume=volume,
+            marker_groups=marker_groups,
+            grid_levels=[],
+            grid_groups=grid_groups,
+        )
+    else:
+        first_result = results_for_stock[0][1]
 
-    grid_lines = _serialize_grid_levels(_GridArtifact())
+        class _GridArtifact:
+            grid_levels = first_result.grid_levels
+            reference_price = first_result.reference_price
 
-    return build_interactive_chart_html(
-        title=f"{escape(asset.name)} ({escape(asset.code)}) — Per-Strategy Detail",
-        ohlcv=ohlcv,
-        volume=volume,
-        marker_groups=marker_groups,
-        grid_levels=grid_lines,
-    )
+        grid_lines = _serialize_grid_levels(_GridArtifact())
+        return build_interactive_chart_html(
+            title=title,
+            ohlcv=ohlcv,
+            volume=volume,
+            marker_groups=marker_groups,
+            grid_levels=grid_lines,
+        )
 
 
 def _render_html_report(
@@ -675,12 +775,16 @@ def _render_html_report(
     assets: list[Asset] | None = None,
     bars_map: dict[str, list[OHLCV]] | None = None,
     static_charts: bool = False,
+    configs_per_result: list[_DGTConfig] | None = None,
 ) -> None:
     """Render the HTML report.
 
     Default (static_charts=False): interactive lightweight-charts embedded in-page.
     Rollback (static_charts=True or _STATIC_CHARTS env var): base64 PNG <img> path
     (Phase 0.11.h behaviour — for verification window only, removable per ADR 0016).
+
+    configs_per_result: per-strategy _DGTConfig list, passed to the interactive
+    builders for time-varying grid reconstruction (Phase 0.11.j, ADR 0017 Step 5).
     """
     _use_static = static_charts or (os.environ.get("_STATIC_CHARTS", "") == "1")
 
@@ -728,6 +832,8 @@ def _render_html_report(
         if _bars_for_chart:
             _chart_html = _build_interactive_comparison_html(
                 results, _bars_for_chart, f"DGT Comparison — {title_str}",
+                config=config,
+                configs_per_result=configs_per_result,
             )
             # build_interactive_chart_html returns a full standalone HTML page;
             # embed it via <iframe srcdoc> so its own <html>/<head>/<style>/100vh
@@ -763,6 +869,8 @@ def _render_html_report(
                     per_stock_results.append((label, _result))
                 _ps_html = _build_interactive_per_stock_html(
                     a, bars_map[a.code], per_stock_results,
+                    config=config,
+                    configs_per_result=configs_per_result,
                 )
                 # Full standalone page -> embed via <iframe srcdoc> (Phase 0.11.i fix).
                 per_stock_html += (
@@ -771,19 +879,37 @@ def _render_html_report(
                     f'</div>\n'
                 )
 
-    # Per-strategy trade logs — kept as-is (static HTML, CLAUDE.md §13.3)
+    # Per-strategy trade logs (Step 6: add Cum Realized % + Cum Realized Amount).
+    # Same-date collision: last trade's end-of-date cumulative value used for all
+    # same-date rows — matches the realized-curve semantics of
+    # _compute_cumulative_realized_single (reuses the function unchanged).
     trade_sections = ""
     for label, result in results:
-        trade_rows = "\n".join(_trade_row(t) for t in result.trades)
+        cum_realized = _compute_cumulative_realized_single(result)
+        initial_capital_amount = result.initial_capital.amount
+
+        def _cum_for_trade(t: _DGTTrade) -> tuple[Decimal, Decimal]:
+            cum_amt = cum_realized.get(t.trade_date, Decimal("0"))
+            cum_pct = (
+                cum_amt / initial_capital_amount * Decimal("100")
+                if initial_capital_amount > 0
+                else Decimal("0")
+            )
+            return cum_pct, cum_amt
+
+        trade_rows = "\n".join(
+            _trade_row(t, *_cum_for_trade(t)) for t in result.trades
+        )
         if not trade_rows:
-            trade_rows = '<tr><td colspan="8"><em>(no trades)</em></td></tr>'
+            trade_rows = '<tr><td colspan="10"><em>(no trades)</em></td></tr>'
         trade_sections += f"""
 <details>
 <summary>{escape(label)} — Trade Log ({len(result.trades)})</summary>
 <table>
 <thead>
 <tr><th>Date</th><th>Side</th><th>Grid Level</th><th>Price</th>
-<th>Qty</th><th>Gross</th><th>Tax+Comm</th><th>Cash Delta</th></tr>
+<th>Qty</th><th>Gross</th><th>Tax+Comm</th><th>Cash Delta</th>
+<th>Cum Realized %</th><th>Cum Realized Amount</th></tr>
 </thead>
 <tbody>
 {trade_rows}
@@ -859,7 +985,14 @@ summary:hover {{ background: #ecf0f1; }}
     output_path.write_text(html, encoding="utf-8")
 
 
-def _trade_row(t: _DGTTrade) -> str:
+def _trade_row(t: _DGTTrade, cum_pct: Decimal, cum_amount: Decimal) -> str:
+    """Render a single trade row (10 columns).
+
+    cum_pct: cumulative realized return % at trade_date (end-of-date value).
+    cum_amount: cumulative realized amount (KRW) at trade_date.
+    Note: "Cum Realized" means realized-only P&L — does not match headline
+    PnL% for strategies with open inventory (by design).
+    """
     side_cls = "side-buy" if t.side == "BUY" else "side-sell"
     tax_comm = t.tax + t.commission
     return (
@@ -872,6 +1005,8 @@ def _trade_row(t: _DGTTrade) -> str:
         f"<td>{_fmt_krw(t.gross)}</td>"
         f"<td>{_fmt_krw(tax_comm)}</td>"
         f"<td>{_fmt_krw(t.cash_delta)}</td>"
+        f"<td>{_fmt_pct(cum_pct)}</td>"
+        f"<td>{_fmt_krw(cum_amount)}</td>"
         f"</tr>"
     )
 
@@ -1386,6 +1521,7 @@ def main(argv: list[str] | None = None) -> int:
         assets=assets if is_multi else None,
         bars_map=bars_map,
         static_charts=_static_charts,
+        configs_per_result=variant_configs,
     )
 
     # Print comparison table

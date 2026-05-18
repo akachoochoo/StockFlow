@@ -229,18 +229,21 @@ class TestTradeRow:
         from src.research.dgt.kakao_dgt_backtest import _trade_row
 
         trade = _make_trade(date(2025, 1, 2), "BUY")
-        html = _trade_row(trade)
+        # Step 6: _trade_row now requires cum_pct + cum_amount (10-column table).
+        html = _trade_row(trade, Decimal("1.23"), Decimal("123000"))
 
         assert "<tr>" in html
         assert "</tr>" in html
         assert "<td" in html
         assert "BUY" in html
+        assert "1.23%" in html
+        assert "123,000" in html
 
     def test_trade_row_sell_side(self) -> None:
         from src.research.dgt.kakao_dgt_backtest import _trade_row
 
         trade = _make_trade(date(2025, 1, 3), "SELL")
-        html = _trade_row(trade)
+        html = _trade_row(trade, Decimal("2.50"), Decimal("250000"))
 
         assert "SELL" in html
         assert "side-sell" in html

@@ -1,7 +1,10 @@
-"""Phase 0.11.i — Tests for src/research/dgt/_interactive_chart.py.
+"""Phase 0.11.j — Tests for src/research/dgt/_interactive_chart.py.
+
+Extended from Phase 0.11.i with _serialize_grid_series + grid_groups tests
+(Steps 3+4, ADR 0017).
 
 Tests-first (CLAUDE.md §7.1): structural + serialization + JSON-safety assertions.
-No browser automation (DD3 — accepted bounded coverage gap).
+No browser automation in this file (headless gate is test_interactive_render_headless.py).
 
 Coverage targets:
   - _serialize_ohlcv: N bars → N dicts, correct keys, float values, dates ascending
@@ -13,7 +16,10 @@ Coverage targets:
   - build_interactive_chart_html: non-empty str, contains LightweightCharts/createChart,
     contains data island, balanced tags, zero network references
   - data-island JSON parse: array lengths match inputs
-  - _serialize_grid_levels: None input → [], attribute input → list[dict]
+  - _serialize_grid_levels: None input → [], attribute input → list[dict] (RETAINED)
+  - _serialize_grid_series: empty → []; N-level → N series; float values; isBound;
+    len-mismatch raises; grid_groups path emits LineSeries; #grid-toggles when >1 group;
+    backward-compat grid_levels path unchanged
   - asset integrity: SHA-256 of vendored JS matches PROVENANCE.txt
 """
 from __future__ import annotations
@@ -35,6 +41,7 @@ from src.research.dgt._interactive_chart import (
     _load_lightweight_charts_js,
     _safe_json_embed,
     _serialize_grid_levels,
+    _serialize_grid_series,
     _serialize_markers,
     _serialize_ohlcv,
     _serialize_volume,
@@ -493,6 +500,328 @@ class TestBuildInteractiveChartHtml:
         data = json.loads(match.group(1).replace("<\\/", "</"))
         assert len(data["markerGroups"]) == 2
         assert data["markerGroups"][0]["label"] == "ADR-Base"
+
+
+# ---------------------------------------------------------------------------
+# _serialize_grid_series (Phase 0.11.j Step 3)
+# ---------------------------------------------------------------------------
+
+def _make_envelope(n_bars: int = 3, n_levels: int = 3) -> list[list[Decimal]]:
+    """Create a synthetic envelope: n_bars bars, n_levels levels each, ascending."""
+    base = Decimal("10000")
+    step = Decimal("200")
+    result = []
+    for b in range(n_bars):
+        # Each bar shifts the reference slightly to give variety.
+        ref = base + Decimal(b * 50)
+        result.append([ref + step * i for i in range(n_levels)])
+    return result
+
+
+def _make_bar_dates(n: int = 3) -> list[date]:
+    return [date(2024, 1, i + 1) for i in range(n)]
+
+
+class TestSerializeGridSeries:
+    def test_empty_envelope_returns_empty(self) -> None:
+        result = _serialize_grid_series([], [], color="#ff0000")
+        assert result == []
+
+    def test_n_levels_produces_n_series(self) -> None:
+        n_levels = 5
+        n_bars = 4
+        envelope = _make_envelope(n_bars, n_levels)
+        bar_dates = _make_bar_dates(n_bars)
+        series = _serialize_grid_series(envelope, bar_dates, color="#aabbcc")
+        assert len(series) == n_levels
+
+    def test_each_series_has_n_bars_data_points(self) -> None:
+        n_bars = 6
+        envelope = _make_envelope(n_bars, 3)
+        bar_dates = _make_bar_dates(n_bars)
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        for s in series:
+            assert len(s["data"]) == n_bars
+
+    def test_values_are_floats(self) -> None:
+        envelope = _make_envelope(3, 4)
+        bar_dates = _make_bar_dates(3)
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        for s in series:
+            for point in s["data"]:
+                assert isinstance(point["value"], float), (
+                    f"Expected float, got {type(point['value'])}"
+                )
+
+    def test_isbound_correct_for_ends(self) -> None:
+        n_levels = 7
+        envelope = _make_envelope(2, n_levels)
+        bar_dates = _make_bar_dates(2)
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        assert series[0]["isBound"] is True,  "first level must be bound"
+        assert series[-1]["isBound"] is True, "last level must be bound"
+        for s in series[1:-1]:
+            assert s["isBound"] is False, f"interior level {s['levelIndex']} must not be bound"
+
+    def test_isbound_both_ends_when_two_levels(self) -> None:
+        # 2 levels → both are bound (index 0 and 1 are both ends).
+        envelope = [[Decimal("9000"), Decimal("11000")]] * 2
+        bar_dates = _make_bar_dates(2)
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        assert len(series) == 2
+        assert series[0]["isBound"] is True
+        assert series[1]["isBound"] is True
+
+    def test_level_index_sequential(self) -> None:
+        n_levels = 5
+        envelope = _make_envelope(3, n_levels)
+        bar_dates = _make_bar_dates(3)
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        assert [s["levelIndex"] for s in series] == list(range(n_levels))
+
+    def test_time_format_yyyy_mm_dd(self) -> None:
+        envelope = _make_envelope(3, 3)
+        bar_dates = _make_bar_dates(3)
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        for s in series:
+            for point in s["data"]:
+                assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", point["time"]), (
+                    f"Unexpected time format: {point['time']!r}"
+                )
+
+    def test_time_values_match_bar_dates(self) -> None:
+        bar_dates = [date(2024, 3, 15), date(2024, 3, 18), date(2024, 3, 20)]
+        envelope = _make_envelope(3, 3)
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        expected_times = ["2024-03-15", "2024-03-18", "2024-03-20"]
+        for s in series:
+            assert [p["time"] for p in s["data"]] == expected_times
+
+    def test_decimal_values_cast_correctly(self) -> None:
+        envelope = [[Decimal("35000"), Decimal("36000")]]
+        bar_dates = [date(2024, 1, 1)]
+        series = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        assert series[0]["data"][0]["value"] == 35000.0
+        assert series[1]["data"][0]["value"] == 36000.0
+
+    def test_len_mismatch_raises(self) -> None:
+        envelope = _make_envelope(3, 3)
+        bar_dates = _make_bar_dates(2)  # 2 != 3
+        with pytest.raises(AssertionError, match="len"):
+            _serialize_grid_series(envelope, bar_dates, color="#fff")
+
+    def test_single_bar_single_level_works(self) -> None:
+        envelope = [[Decimal("50000")]]
+        bar_dates = [date(2024, 6, 1)]
+        series = _serialize_grid_series(envelope, bar_dates, color="#e74c3c")
+        assert len(series) == 1
+        assert series[0]["isBound"] is True  # index 0 == n_levels-1 when n==1
+        assert series[0]["data"][0]["value"] == 50000.0
+
+    def test_output_is_json_serializable(self) -> None:
+        envelope = _make_envelope(4, 5)
+        bar_dates = _make_bar_dates(4)
+        series = _serialize_grid_series(envelope, bar_dates, color="#abc123")
+        # Should not raise
+        json.dumps(series)
+
+
+# ---------------------------------------------------------------------------
+# build_interactive_chart_html — grid_groups path (Phase 0.11.j Step 3+4)
+# ---------------------------------------------------------------------------
+
+def _make_grid_groups(n_levels: int = 3, n_bars: int = 3) -> list[dict]:
+    """Helper: produce 2 realistic grid_groups for testing toggle + LineSeries."""
+    envelope = _make_envelope(n_bars, n_levels)
+    bar_dates = _make_bar_dates(n_bars)
+    levels_adr_base = _serialize_grid_series(envelope, bar_dates, color="#95a5a6")
+    levels_adr_vol  = _serialize_grid_series(envelope, bar_dates, color="#8e44ad")
+    return [
+        {"label": "ADR-Base", "color": "#95a5a6", "levels": levels_adr_base},
+        {"label": "ADR+Vol",  "color": "#8e44ad", "levels": levels_adr_vol},
+    ]
+
+
+class TestBuildInteractiveChartHtmlGridGroups:
+    """Phase 0.11.j: grid_groups path — v5 LineSeries + #grid-toggles."""
+
+    def test_grid_groups_emits_line_series(self) -> None:
+        """grid_groups non-empty → HTML contains LightweightCharts.LineSeries."""
+        html = build_interactive_chart_html(
+            title="GridGroups Test",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[],
+            grid_groups=_make_grid_groups(),
+        )
+        assert "LightweightCharts.LineSeries" in html, (
+            "grid_groups path must use v5 LightweightCharts.LineSeries"
+        )
+
+    def test_no_v4_addseries_call(self) -> None:
+        """No functional v4 addLineSeries() call — only comments may mention it."""
+        html = build_interactive_chart_html(
+            title="V4 Check",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[],
+            grid_groups=_make_grid_groups(),
+        )
+        assert "addLineSeries(" not in html, (
+            "v4 addLineSeries() call must not appear in output (ADR 0016 §3.6)"
+        )
+
+    def test_data_island_has_grid_groups_key(self) -> None:
+        """Data island must contain gridGroups key when grid_groups provided."""
+        html = build_interactive_chart_html(
+            title="Island Check",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[],
+            grid_groups=_make_grid_groups(n_levels=4, n_bars=5),
+        )
+        match = re.search(
+            r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        assert match, "data island not found"
+        raw = match.group(1).strip().replace("<\\/", "</")
+        data = json.loads(raw)
+        assert "gridGroups" in data, "gridGroups key missing from data island"
+        assert len(data["gridGroups"]) == 2
+
+    def test_grid_levels_emitted_empty_when_grid_groups_provided(self) -> None:
+        """§9 note (a): when grid_groups non-empty, gridLevels must be [] in island."""
+        html = build_interactive_chart_html(
+            title="Mutual Excl",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[{"price": 100.0, "color": "#fff", "lineWidth": 1,
+                          "lineStyle": 1, "axisLabelVisible": False, "title": "g0"}],
+            grid_groups=_make_grid_groups(),
+        )
+        match = re.search(
+            r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        assert match
+        data = json.loads(match.group(1).strip().replace("<\\/", "</"))
+        assert data["gridLevels"] == [], (
+            "gridLevels must be [] when grid_groups provided (§9 mutual exclusivity)"
+        )
+
+    def test_grid_toggles_absent_with_single_group(self) -> None:
+        """Single grid_group → #grid-toggles must NOT render (threshold >1)."""
+        envelope = _make_envelope(3, 3)
+        bar_dates = _make_bar_dates(3)
+        levels = _serialize_grid_series(envelope, bar_dates, color="#fff")
+        html = build_interactive_chart_html(
+            title="Single Grp",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[],
+            grid_groups=[{"label": "ADR-Base", "color": "#fff", "levels": levels}],
+        )
+        assert 'id="grid-toggles"' not in html, (
+            "Single grid_group must NOT render #grid-toggles bar (threshold >1)"
+        )
+
+    def test_grid_toggles_present_with_two_groups(self) -> None:
+        """>1 grid_group → #grid-toggles bar with per-group checkboxes."""
+        html = build_interactive_chart_html(
+            title="Two Grps",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[],
+            grid_groups=_make_grid_groups(),
+        )
+        assert 'id="grid-toggles"' in html, (
+            ">1 grid_groups must render #grid-toggles bar"
+        )
+        assert 'data-grid-grp="0"' in html
+        assert 'data-grid-grp="1"' in html
+        assert "ADR-Base" in html
+        assert "ADR+Vol" in html
+
+    def test_toggle_bar_uses_toggle_bar_class(self) -> None:
+        """Toggle bars use .toggle-bar CSS class (not bare ID rule)."""
+        html = build_interactive_chart_html(
+            title="CSS",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[],
+            grid_groups=_make_grid_groups(),
+        )
+        assert 'class="toggle-bar"' in html, ".toggle-bar CSS class missing"
+        assert ".toggle-bar" in html, ".toggle-bar CSS rule missing"
+
+    def test_backward_compat_grid_levels_only(self) -> None:
+        """grid_levels only (no grid_groups) → createPriceLine path unchanged."""
+        html = build_interactive_chart_html(
+            title="Backward Compat",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[{"price": 35000.0, "color": "#bdc3c7", "lineWidth": 1,
+                          "lineStyle": 1, "axisLabelVisible": False, "title": "g0"}],
+        )
+        assert "createPriceLine" in html, "backward compat: createPriceLine missing"
+        # Data island must carry the static grid level
+        match = re.search(
+            r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        assert match
+        data = json.loads(match.group(1).strip().replace("<\\/", "</"))
+        assert len(data["gridLevels"]) == 1, "gridLevels must be present in fallback path"
+        assert data["gridGroups"] == [], "gridGroups must be [] in fallback path"
+
+    def test_backward_compat_no_grid_toggles(self) -> None:
+        """grid_levels-only path must NOT render #grid-toggles."""
+        html = build_interactive_chart_html(
+            title="No Grid Toggle",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[{"price": 10.0, "color": "#fff", "lineWidth": 1,
+                          "lineStyle": 1, "axisLabelVisible": False, "title": "g0"}],
+        )
+        assert 'id="grid-toggles"' not in html
+
+    def test_grid_groups_none_equivalent_to_empty(self) -> None:
+        """grid_groups=None and grid_groups=[] should both use createPriceLine path."""
+        html_none = build_interactive_chart_html(
+            title="None", ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[], grid_groups=None,
+        )
+        html_empty = build_interactive_chart_html(
+            title="Empty", ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[], grid_groups=[],
+        )
+        # Both should NOT have the LineSeries grid path
+        assert "LightweightCharts.LineSeries" in html_none  # still in JS code
+        # The key check: gridGroups in data island should be []
+        for html in (html_none, html_empty):
+            match = re.search(
+                r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+                html, re.DOTALL,
+            )
+            assert match
+            data = json.loads(match.group(1).strip().replace("<\\/", "</"))
+            assert data["gridGroups"] == []
+
+    def test_grid_groups_data_island_structure(self) -> None:
+        """Each group in gridGroups data island has label, color, levels keys."""
+        html = build_interactive_chart_html(
+            title="Structure",
+            ohlcv=[], volume=[], marker_groups=[],
+            grid_levels=[],
+            grid_groups=_make_grid_groups(n_levels=3, n_bars=2),
+        )
+        match = re.search(
+            r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        assert match
+        data = json.loads(match.group(1).strip().replace("<\\/", "</"))
+        for grp in data["gridGroups"]:
+            assert "label" in grp
+            assert "color" in grp
+            assert "levels" in grp
+            # Each level has levelIndex, isBound, data
+            for lvl in grp["levels"]:
+                assert "levelIndex" in lvl
+                assert "isBound" in lvl
+                assert "data" in lvl
 
 
 # ---------------------------------------------------------------------------
