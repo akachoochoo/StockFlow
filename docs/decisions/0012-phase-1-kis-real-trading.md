@@ -90,7 +90,7 @@
   | **(b') -20% 추가 매수 정지 + 매도 권고 알림** | **-20%** | ❌ | ✅ | ✅ 텔레그램 사람 매도 검토 권고 | **✅ default 채택** |
   | (c) -20% 자동 매도 | -20% | ✅ | — | ✅ | ❌ — 0.11.e §1.6 #1 + CLAUDE.md §11.4 "자동 손절 안 함" invariant 위반 |
 
-  **(b') 채택 근거**: 평가손 -20% 도달 시 (1) 추가 매수 *자동* 정지 + (2) 텔레그램 "사람 매도 검토 권고" 알림 (D3 (b) 인프라 활용). 자동 매도 = 절대 금지. 사람이 CLI `trading manual-sell <asset> <quantity>` 명시 명령 후 실행. **-20% default 근거**: Phase 0.9.2 MDD -37.65% (ADR 0005 §10.3) 의 약 절반 + Phase 0.7.3 MDD -14.2% 와 충분한 buffer (false trigger 방지) + 자본 200만원 시 -20% = 40만원 손실 한계 (자본 보존 trade-off). 1.1.1.b sub-step backtest (-15% / -20% / -25% 3 후보) 결과 흡수 후 정정 가능 (Phase 1.1 진입 전).
+  **(b') 채택 근거**: 평가손 -20% 도달 시 (1) 추가 매수 *자동* 정지 + (2) 텔레그램 "사람 매도 검토 권고" 알림 (D3 (b) 인프라 활용). 자동 매도 = 절대 금지. 사람이 CLI `trading manual-sell <asset> <quantity>` 명시 명령 후 실행. **-20% default 근거**: Phase 0.9.2 MDD -37.65% (ADR 0005 §10.3) 의 약 절반 + Phase 0.7.3 MDD -14.2% 와 충분한 buffer (false trigger 방지) + 자본 200만원 시 -20% = 40만원 손실 한계 (자본 보존 trade-off). 1.1.1.b sub-step backtest (-15% / -20% / -25% 3 후보) 결과 흡수 후 정정 가능 (Phase 1.1 진입 전). **Stage 1.1.b backtest 결과 박제 (2026-05-22, `docs/research/phase-1.1.b/`)**: -15/-20/-25% 모두 본 윈도우/정책 (drop 5% + 일 1회 + cooldown 60 + 7-split) 에서 **inert** (유효 차단 0 — 손실 임계 도달일에 PriceDropStrategy 가 이미 매수 안 함; 4-run byte-identical, faithfulness gate PASS). → 손절-추가매수-차단은 backtest 최적화 불가 = **라이브 안전장치** 성격 (ADR 0014/0011 정신 정합). 사용자 결정 = **-20% 유지** (ADR 기본값 확정). SL 효용은 더 공격적 매수 정책 (큰 max_split_per_day / 짧은 cooldown / 작은 drop) 에서만 측정 가능.
 
 - **D3** — **텔레그램 알림 도입 + 알림 종류 7 + 빈도 명시** (Round 1 ITERATE Patch 17, TBD 제거):
 
@@ -131,7 +131,7 @@
 
   실거래 전환 후 자본 시작 = D10 default (200만원, Patch 6 정합).
 
-- **D7** — **매도 임계치 비교 backtest 도입**: (a) 매도 임계 +10% 단일 (Phase 0.5 invariant 보존), (b) +10% / +15% / +20% 비교 backtest 후 채택 (ADR 0002 §12.4.1 보류 해소), (c) 자산별 차별화 (ADR 0010 D3 (i) Mapping 진입 시). **권고 default**: **(b)** — Phase 1 진입 전 별도 sub-step (1.1.1.a) 으로 backtest 실행 + 결정 박제. 후보 (c) = D8 (ADR 0010 D3) 채택 시 cascading 흡수.
+- **D7** — **매도 임계치 비교 backtest 도입**: (a) 매도 임계 +10% 단일 (Phase 0.5 invariant 보존), (b) +10% / +15% / +20% 비교 backtest 후 채택 (ADR 0002 §12.4.1 보류 해소), (c) 자산별 차별화 (ADR 0010 D3 (i) Mapping 진입 시). **권고 default**: **(b)** — Phase 1 진입 전 별도 sub-step (1.1.1.a) 으로 backtest 실행 + 결정 박제. 후보 (c) = D8 (ADR 0010 D3) 채택 시 cascading 흡수. **Stage 1.1.a backtest 결과 박제 (2026-05-22, `docs/research/phase-1.1.a/`)**: +10/+15/+20% 비교 (069500+132030 EQUAL, 2019–2024) → 사용자 채택 = **+15%** (risk-adjusted Sharpe 0.688 ≈ +20% 0.694, regime 민감도 낮음; +10% 대비 Sharpe/Calmar 우위). ADR 0002 §12.4.1 보류 해소, (b) 완료. Caveat: 단일 강세장 윈도우 — regime 전환 시 재검증. **적용 시점**: Phase 1 trading config (paper 셋업, Stage 4) 에 `profit_target_pct: 15` 로 wiring (현 시점 production config 변경 zero — 결정만 박제).
 
 - **D8** — **종목별 다른 정책 허용 여부 (ADR 0010 D3 종속)**: ADR 0010 §3 회고 commit 시 D3 결정 (4 후보 중 1 선택 또는 보류) → 본 phase D8 입력. (a) ADR 0010 D3 (i) Mapping 채택 → 본 phase D8 = 채택 (`per_asset_strategy_overrides` 활용), (b) ADR 0010 D3 (ii) AssetContext 채택 → 본 phase D8 = composition.py 변경 (Phase 1 안정화 후 promote), (c) ADR 0010 D3 보류 → 본 phase D8 = 보류 (Phase 0.7.3 baseline 동일 정책 유지). **권고 default**: **(c)** ADR 0010 D3 보류 권장 (Phase 1 안정화 우선) + 안정화 6개월 후 promote 재검토.
 
