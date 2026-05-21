@@ -237,6 +237,7 @@
     - **Open Q 3**: pykrx vs KIS API 데이터 불일치 시 정본 — D1 (c-read) MarketDataPort 일봉 = KIS 정본 채택 (Phase 0 invariant 보존 — pykrx fallback 도 허용 단, 실거래 의사결정 = KIS 정본).
     - **Open Q 4**: G2 "무사고" 해석 — 사용자 결정 ("Round 2 이전 KIS API 문서 검토 후 별도 결정") → 본 ADR §1 박제 commit 후 / sub-step 1.1.4 (entry readiness audit) 진입 전 별도 라운드 박제 의무.
   - **권고 default**: 본 ADR §1 박제 commit 후 *Phase 1 entry decision 라운드 #29* (가칭) 신규 — KIS API 문서 검토 + Open Q 4 결정 + D16 (vi) NTP 검증 + entry readiness 최종 audit.
+  - **✅ 해소: ADR 0020 (2026-05-22, Phase 1.1 Stage 2.0)** — KIS 공개문서 research 후 Open Q 1~4 박제: (1) PDNO 6자리 숫자 문자열 직접 매핑, (2) 모의투자 partial fill 시뮬 실증 보류(Stage 7) + D5(a) 차단 유지, (3) KIS 정본 + pykrx fallback, (4) "무사고" = **운영/무결성 사고만** (P&L 손실·-20% 손절 발동은 사고 아님 — Phase 1.1 = 시스템 정확성 검증). KIS API 스펙(엔드포인트/TR_ID/필드) 1차 박제 = ADR 0020 §2. D16 (vi) NTP 검증 + entry readiness audit = Stage 3/7 (별도). 실응답 검증 = 계정 발급 후 Stage 4/7.
 
 ### 1.4 Gates G1~G4 (success criterion, ralplan #28 박제 대상)
 
