@@ -25,6 +25,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from src.research.dynamic_adjustment._proposal import _ReadOnlyModeError
 from src.research.dynamic_adjustment._proposal_type import (
     _ProposalState,
     _ProposalType,
@@ -59,18 +60,70 @@ class _ProposalHistory:
         initial_values: 초기 설정 박제 — `{target: Decimal}` mapping.
             cumulative drift 계산의 reference. 보통 Phase 0.7.3 baseline
             또는 Phase 1 ADR 0012 진입 시점 값.
+        read_only: Phase 1.1 read-only 모드 (ADR 0012 D13 (a-rev)). True 시
+            `accept_proposal(...)` 가 APPLIED state proposal 수락 차단 +
+            APPLIED 전이 차단 — 변경 zero invariant 정합. NULL proposal
+            (PENDING/REJECTED 기록) 누적은 허용 (cumulative drift 검증
+            데이터 보유). 기본 False = Phase 1.2+ 정상 (회귀 zero).
 
     검증 함수 (메서드):
         - check_minimum_interval(...) — 동일 target 12주 간격.
         - check_cumulative_drift(...) — ±30% 한계.
         - check_trigger_cooldown(...) — 동일 trigger 12주 cooldown.
         - self_trigger_chain(...) — previous_proposal_ref 체인 추적.
+        - accept_proposal(...) — read-only 모드 게이트 (D13).
 
     CLAUDE.md §2.1 Decimal invariant — drift 값 float 미경유.
     """
 
     applied_proposals: list[_Proposal] = field(default_factory=list)
     initial_values: dict[str, Decimal] = field(default_factory=dict)
+    read_only: bool = False
+
+    def accept_proposal(self, proposal: _Proposal) -> _ProposalHistory:
+        """proposal 1 건을 history 에 수락 — read-only 모드 게이트 (D13).
+
+        Read-only 모드 (`self.read_only is True`, ADR 0012 D13 (a-rev)) 의
+        본질을 enforce:
+
+        - **허용**: NULL proposal 누적 (PENDING / REJECTED 기록). cumulative
+          drift 검증 데이터 축적. APPLIED 가 아닌 proposal 은 `applied_proposals`
+          에 반영되지 않으므로 history snapshot 은 그대로 (read-only 관찰).
+        - **차단**: APPLIED state proposal 수락 — `_ReadOnlyModeError` raise.
+          Phase 1.1 변경 zero invariant 정합 (ADR 0011 §1.6 #1 강화).
+
+        `frozen=True` dataclass — 새 instance 반환 (immutable). APPLIED
+        proposal 수락 시 created_at 오름차순 유지 + APPLIED only invariant
+        보존 (`_build_applied_history` 정신 정합).
+
+        Args:
+            proposal: 수락할 proposal.
+
+        Returns:
+            새 `_ProposalHistory` instance. APPLIED proposal 수락 시
+            `applied_proposals` 에 정렬 삽입; non-APPLIED (NULL 포함) 수락 시
+            현 snapshot 그대로 (read-only 관찰 — applied list 불변).
+
+        Raises:
+            _ReadOnlyModeError: read_only=True + proposal.state == APPLIED.
+        """
+        if self.read_only and proposal.state is _ProposalState.APPLIED:
+            raise _ReadOnlyModeError(
+                f"Read-only mode (ADR 0012 D13) blocks accepting APPLIED "
+                f"proposal {proposal.proposal_id!r}. Phase 1.1 변경 zero "
+                f"invariant — NULL proposal 누적은 허용, APPLIED 는 차단."
+            )
+        if proposal.state is not _ProposalState.APPLIED:
+            # Non-APPLIED (NULL proposal 포함) — read-only 관찰. applied
+            # snapshot 불변 (APPLIED only invariant 보존).
+            return self
+        merged = [*self.applied_proposals, proposal]
+        merged.sort(key=lambda p: p.created_at)
+        return _ProposalHistory(
+            applied_proposals=merged,
+            initial_values=dict(self.initial_values),
+            read_only=self.read_only,
+        )
 
     def check_minimum_interval(
         self,
@@ -205,6 +258,8 @@ class _ProposalHistory:
 def _build_applied_history(
     proposals: list[_Proposal],
     initial_values: dict[str, Decimal] | None = None,
+    *,
+    read_only: bool = False,
 ) -> _ProposalHistory:
     """APPLIED state proposal 만 필터 + time-ordered 정렬 후 history 박제.
 
@@ -214,6 +269,9 @@ def _build_applied_history(
     Args:
         proposals: raw proposal list (state 혼재 가능).
         initial_values: 초기 설정 mapping (선택). None 시 빈 dict.
+        read_only: Phase 1.1 read-only 모드 (ADR 0012 D13). True 시 생성된
+            history 의 `accept_proposal(...)` 가 APPLIED 수락 차단. 기본
+            False = 회귀 zero.
 
     Returns:
         `_ProposalHistory` — APPLIED 만 + created_at 오름차순 + initial_values.
@@ -223,4 +281,5 @@ def _build_applied_history(
     return _ProposalHistory(
         applied_proposals=applied,
         initial_values=dict(initial_values) if initial_values else {},
+        read_only=read_only,
     )
