@@ -25,6 +25,7 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10",
     "types-PyYAML",
+    "types-requests",
 ]
 # Phase 0.10 (ADR 0006 §6.1) — Backtest Reporting Enhancement.
 # 핵심 백테스트는 본 의존성 zero — `uv run --extra reporting trading report ...`
@@ -33,6 +34,12 @@ reporting = [
     "matplotlib>=3.8",
     "mplfinance>=0.12.10b0",
     "pandas>=2.0",
+]
+# Phase 1 (ADR 0012 §1.6 / ADR 0020) — KIS API adapter (real-money broker).
+# 핵심 install 은 본 의존성 zero (lean) — KIS = Phase 1 opt-in.
+# `uv sync --extra kis` 또는 `pip install -e '.[kis]'` 로 추가.
+kis = [
+    "requests>=2.31",
 ]
 
 [project.scripts]
