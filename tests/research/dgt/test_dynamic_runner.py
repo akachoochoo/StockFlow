@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from src.domain.models import OHLCV, Currency, Money
+from src.research.dgt.adaptive_runner import _AdaptiveConfig
 from src.research.dgt.cost_model import _KoreanMarketCostModel
 from src.research.dgt.dynamic_runner import _DGTDynamicRunner
 from src.research.dgt.runner import _DGTConfig
@@ -304,4 +305,220 @@ class TestDGTDynamicRunnerOnBreach:
         assert (
             result_breach.final_balance.amount != result_daily.final_balance.amount
             or len(result_breach.trades) != len(result_daily.trades)
+        )
+
+
+class TestDGTDynamicRunnerProfitGuard:
+    """profit_guard — Option A clause 3: '매도는 매수 레벨 위에서만'."""
+
+    @staticmethod
+    def _sell_audit(result) -> tuple[int, int]:
+        """Replay trades → (sell_count, loss_sell_count).
+
+        loss_sell = a SELL executed at/below the running weighted-average
+        buy cost (a realized loss). Mirrors _compute_cumulative_realized.
+        """
+        avg_cost = Decimal("0")
+        holdings = Decimal("0")
+        sells = 0
+        loss_sells = 0
+        for t in result.trades:
+            if t.side == "BUY":
+                new_h = holdings + t.quantity
+                avg_cost = (
+                    avg_cost * holdings + t.rounded_price * t.quantity
+                ) / new_h
+                holdings = new_h
+            else:
+                sells += 1
+                if avg_cost > 0 and t.rounded_price <= avg_cost:
+                    loss_sells += 1
+                holdings -= t.quantity
+        return sells, loss_sells
+
+    def test_default_profit_guard_is_off(self, cost_model, config):
+        """Existing callers unaffected — profit_guard defaults to False."""
+        runner = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+        )
+        assert runner.profit_guard is False
+
+    def test_guard_never_sells_below_avg_cost(
+        self, kr_stock_005930, cost_model, config, initial_capital
+    ):
+        """profit_guard=True → every SELL is strictly above weighted-avg cost."""
+        runner = _DGTDynamicRunner(
+            cost_model=cost_model, config=config,
+            rebalance_mode="on_breach", profit_guard=True,
+        )
+        bars = _make_bars(kr_stock_005930, n=200, drift=200, osc=3000)
+        result = runner.run(
+            asset=kr_stock_005930,
+            start=bars[0].trade_date, end=bars[-1].trade_date,
+            initial_capital=initial_capital, ohlcv=bars,
+        )
+        sells, loss_sells = self._sell_audit(result)
+        assert sells > 0, "test data must produce sells (non-vacuous)"
+        assert loss_sells == 0, f"{loss_sells} sell(s) below avg cost despite guard"
+
+    def test_guard_eliminates_loss_sells_present_without_it(
+        self, kr_stock_005930, cost_model, config, initial_capital
+    ):
+        """Downtrend: unguarded runner books loss sells; the guard removes them."""
+        bars = _make_bars(kr_stock_005930, n=150, drift=-200, osc=3000)
+        kwargs = dict(
+            asset=kr_stock_005930,
+            start=bars[0].trade_date, end=bars[-1].trade_date,
+            initial_capital=initial_capital, ohlcv=bars,
+        )
+        unguarded = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+        ).run(**kwargs)
+        guarded = _DGTDynamicRunner(
+            cost_model=cost_model, config=config,
+            rebalance_mode="on_breach", profit_guard=True,
+        ).run(**kwargs)
+
+        _, loss_unguarded = self._sell_audit(unguarded)
+        _, loss_guarded = self._sell_audit(guarded)
+        assert loss_unguarded > 0, "test data must produce loss sells without the guard"
+        assert loss_guarded == 0
+
+
+class TestDGTDynamicRunnerAdaptiveK:
+    """ADR/ATR-adaptive grid spacing (k) for _DGTDynamicRunner."""
+
+    def test_default_adaptive_is_off(self, cost_model, config):
+        """Existing callers unaffected — adaptive defaults to None (fixed k)."""
+        runner = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+        )
+        assert runner.adaptive is None
+        assert runner.volatility_measure == "atr"
+
+    def test_adaptive_k_fixed_when_none(self, kr_stock_005930, cost_model, config):
+        """adaptive=None → _adaptive_k returns the fixed config.k_ratio."""
+        runner = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+        )
+        bars = _make_bars(kr_stock_005930)
+        assert runner._adaptive_k(bars, 50, bars[50].close) == config.k_ratio
+
+    def test_adaptive_k_within_bounds(self, kr_stock_005930, cost_model, config):
+        """adaptive set → ADR-derived k is clamped to [k_min, k_max]."""
+        acfg = _AdaptiveConfig(
+            atr_period=14, multiplier=Decimal("1.5"),
+            k_min=Decimal("0.01"), k_max=Decimal("0.08"),
+        )
+        runner = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+            adaptive=acfg, volatility_measure="adr",
+        )
+        bars = _make_bars(kr_stock_005930, n=100)
+        for idx in (20, 50, 99):
+            k = runner._adaptive_k(bars, idx, bars[idx].close)
+            assert acfg.k_min <= k <= acfg.k_max
+
+    def test_adaptive_run_differs_from_fixed_k(
+        self, kr_stock_005930, cost_model, config, initial_capital
+    ):
+        """An ADR-adaptive runner produces a different grid than fixed k."""
+        bars = _make_bars(kr_stock_005930, n=200, drift=200, osc=3000)
+        kwargs = dict(
+            asset=kr_stock_005930,
+            start=bars[0].trade_date, end=bars[-1].trade_date,
+            initial_capital=initial_capital, ohlcv=bars,
+        )
+        fixed = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+        ).run(**kwargs)
+        adaptive = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+            adaptive=_AdaptiveConfig(
+                atr_period=14, multiplier=Decimal("1.0"),
+                k_min=Decimal("0.005"), k_max=Decimal("0.05"),
+            ),
+            volatility_measure="adr",
+        ).run(**kwargs)
+        assert (
+            fixed.final_balance.amount != adaptive.final_balance.amount
+            or len(fixed.trades) != len(adaptive.trades)
+            or fixed.grid_levels != adaptive.grid_levels
+        )
+
+
+class TestDGTDynamicRunnerEntryControls:
+    """flat_allocation (D) + max_invested_pct (B) — front-loaded-buying controls."""
+
+    @staticmethod
+    def _peak_cost_basis(result) -> Decimal:
+        """Peak (holdings x weighted-average buy cost) over the run."""
+        avg_cost = Decimal("0")
+        holdings = Decimal("0")
+        peak = Decimal("0")
+        for t in result.trades:
+            if t.side == "BUY":
+                new_h = holdings + t.quantity
+                avg_cost = (avg_cost * holdings + t.rounded_price * t.quantity) / new_h
+                holdings = new_h
+            else:
+                holdings -= t.quantity
+            peak = max(peak, holdings * avg_cost)
+        return peak
+
+    def test_defaults_off(self, cost_model, config):
+        """Existing callers unaffected — both entry controls default off."""
+        runner = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+        )
+        assert runner.flat_allocation is False
+        assert runner.max_invested_pct is None
+
+    def test_position_cap_bounds_exposure(
+        self, kr_stock_005930, cost_model, config, initial_capital
+    ):
+        """max_invested_pct caps cost-basis exposure near the cap (+1 chunk)."""
+        bars = _make_bars(kr_stock_005930, n=150, drift=-200, osc=3000)
+        kwargs = dict(
+            asset=kr_stock_005930,
+            start=bars[0].trade_date, end=bars[-1].trade_date,
+            initial_capital=initial_capital, ohlcv=bars,
+        )
+        # Hold allocation mode constant (both flat) so only the cap varies.
+        uncapped = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+            flat_allocation=True,
+        ).run(**kwargs)
+        capped = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+            flat_allocation=True, max_invested_pct=Decimal("0.60"),
+        ).run(**kwargs)
+
+        cap_amount = Decimal("0.60") * initial_capital.amount
+        chunk = initial_capital.amount / Decimal(config.grid_count + 1)
+        peak_capped = self._peak_cost_basis(capped)
+        peak_uncapped = self._peak_cost_basis(uncapped)
+        assert peak_capped <= cap_amount + chunk
+        assert peak_capped < peak_uncapped
+
+    def test_flat_allocation_changes_outcome(
+        self, kr_stock_005930, cost_model, config, initial_capital
+    ):
+        """flat_allocation produces a different result than cash/(n+1)."""
+        bars = _make_bars(kr_stock_005930, n=150, drift=-100, osc=3000)
+        kwargs = dict(
+            asset=kr_stock_005930,
+            start=bars[0].trade_date, end=bars[-1].trade_date,
+            initial_capital=initial_capital, ohlcv=bars,
+        )
+        default = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+        ).run(**kwargs)
+        flat = _DGTDynamicRunner(
+            cost_model=cost_model, config=config, rebalance_mode="on_breach",
+            flat_allocation=True,
+        ).run(**kwargs)
+        assert (
+            default.final_balance.amount != flat.final_balance.amount
+            or len(default.trades) != len(flat.trades)
         )

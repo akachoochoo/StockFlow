@@ -52,16 +52,26 @@ from src.research.dgt.paper_adaptive_runner import _DGTPaperAdaptiveRunner
 from src.research.dgt.paper_runner import _DGTPaperRunner
 from src.research.dgt.results import _DGTBacktestResult, _DGTSnapshot, _DGTTrade
 from src.research.dgt._grid_reconstruction import _reconstruct_grid_envelope
-from src.research.dgt.runner import _DGTConfig, _DGTPrototypeRunner
+from src.research.dgt.runner import _DGTConfig
 
 
 def _build_asset(code: str) -> Asset:
-    """pykrx에서 종목명을 조회하여 Asset 생성."""
+    """pykrx에서 종목명을 조회하여 Asset 생성.
+
+    KRX ticker-name 조회는 로그인 게이트 — 실패 시 (예외 / 빈 DataFrame /
+    None) code 로 폴백. 종목명은 리포트 표시용 only, 백테스트 결과와 무관.
+    """
     from pykrx import stock as pykrx_stock  # lazy import (research-only dep)
 
-    name = pykrx_stock.get_market_ticker_name(code)
-    if not name:
-        name = code
+    name = code
+    try:
+        looked_up = pykrx_stock.get_market_ticker_name(code)
+        if isinstance(looked_up, str) and looked_up:
+            name = looked_up
+    except Exception as exc:  # noqa: BLE001 — cosmetic lookup; fall back to code
+        print(f"  ! ticker-name lookup raised for {code}: {exc}")
+    if name == code:
+        print(f"  ! KRX ticker-name unavailable for {code} — using code as display name")
     return Asset(
         code=code,
         exchange=Exchange.KRX,
@@ -112,15 +122,6 @@ def _fetch_ohlcv(code: str, start: date, end: date, asset: Asset) -> list[OHLCV]
 # ---------------------------------------------------------------------------
 # Run 3-way comparison
 # ---------------------------------------------------------------------------
-
-def _run_static(
-    asset: Asset, config: _DGTConfig, capital: Money, bars: list[OHLCV],
-    start: date, end: date,
-) -> _DGTBacktestResult:
-    runner = _DGTPrototypeRunner(cost_model=_KoreanMarketCostModel(), config=config)
-    return runner.run(asset=asset, start=start, end=end,
-                      initial_capital=capital, ohlcv=bars)
-
 
 def _run_paper(
     asset: Asset, config: _DGTConfig, capital: Money, bars: list[OHLCV],
@@ -262,11 +263,18 @@ def _merge_multi_results(
 
 def _run_dynamic(
     asset: Asset, config: _DGTConfig, capital: Money, bars: list[OHLCV],
-    start: date, end: date, mode: str,
+    start: date, end: date, mode: str, profit_guard: bool = False,
+    adaptive: _AdaptiveConfig | None = None, volatility_measure: str = "atr",
+    flat_allocation: bool = False, max_invested_pct: Decimal | None = None,
 ) -> _DGTBacktestResult:
     runner = _DGTDynamicRunner(
         cost_model=_KoreanMarketCostModel(), config=config,
         rebalance_mode=mode,  # type: ignore[arg-type]
+        profit_guard=profit_guard,
+        adaptive=adaptive,
+        volatility_measure=volatility_measure,  # type: ignore[arg-type]
+        flat_allocation=flat_allocation,
+        max_invested_pct=max_invested_pct,
     )
     return runner.run(asset=asset, start=start, end=end,
                       initial_capital=capital, ohlcv=bars)
@@ -337,6 +345,8 @@ def _mode_for(lbl: str) -> str:
         return "paper_adaptive"
     if lbl.startswith("Paper"):
         return "paper"
+    if lbl.startswith("On-Breach"):
+        return "on_breach"
     return {"Static": "static", "On-Breach": "on_breach",
             "Daily": "daily", "Adaptive": "adaptive",
             "Adp-Narrow": "adaptive"}.get(lbl, "static")
@@ -346,6 +356,17 @@ _best_acfg = _AdaptiveConfig(
     k_min=Decimal("0.005"), k_max=Decimal("0.05"),
 )
 
+# On-Breach-ADR variants — ADR-adaptive k, multiplier 1.0, k_min 0.5%,
+# k_max paired with the fixed-k sweep (2/3/5%). The 5% cap matches the
+# memory-confirmed optimal DGT config (ADR x1.0, k in [0.5%, 5%]).
+_onbreach_adr_cfgs: dict[str, _AdaptiveConfig] = {
+    f"On-Breach-ADR-{p}%": _AdaptiveConfig(
+        atr_period=14, multiplier=Decimal("1.0"),
+        k_min=Decimal("0.005"), k_max=Decimal(p) / Decimal("100"),
+    )
+    for p in ("2", "3", "5")
+}
+
 # Map from strategy label to _AdaptiveConfig (None = non-adaptive mode).
 # ADR-Base and ADR+Vol use the same adaptive config as Hyb-Daily — they
 # differ only in volatility_measure (see volatility_measures below).
@@ -353,6 +374,7 @@ adaptive_cfgs: dict[str, _AdaptiveConfig | None] = {
     "Hyb-Daily": _best_acfg,
     "ADR-Base": _best_acfg,
     "ADR+Vol": _best_acfg,
+    **_onbreach_adr_cfgs,
 }
 
 # Map from strategy label to volatility measure used in grid reconstruction.
@@ -362,6 +384,7 @@ volatility_measures: dict[str, str] = {
     "ADR-Base": "adr",
     "ADR+Vol": "adr",
     "Hyb-Daily": "atr",
+    **{label: "adr" for label in _onbreach_adr_cfgs},
 }
 
 
@@ -634,7 +657,11 @@ def _build_interactive_comparison_html(
     # B&H strategies produce empty envelopes → skipped (no grid group).
     grid_groups: list[dict] = []
     _colors = {"ADR-Base": "#95a5a6", "ADR+Vol": "#8e44ad",
-                "Hyb-Daily": "#27ae60"}
+                "Hyb-Daily": "#27ae60",
+                "On-Breach-2%": "#5dade2", "On-Breach-3%": "#2e86c1",
+                "On-Breach-5%": "#1a5276",
+                "On-Breach-ADR-2%": "#f0b27a", "On-Breach-ADR-3%": "#e67e22",
+                "On-Breach-ADR-5%": "#ba4a00"}
     if config is not None:
         for i, (label, result) in enumerate(results):
             mode = _mode_for(label)
@@ -713,7 +740,11 @@ def _build_interactive_per_stock_html(
     # Time-varying grid groups (Phase 0.11.j — same logic as comparison builder).
     grid_groups: list[dict] = []
     _colors = {"ADR-Base": "#95a5a6", "ADR+Vol": "#8e44ad",
-                "Hyb-Daily": "#27ae60"}
+                "Hyb-Daily": "#27ae60",
+                "On-Breach-2%": "#5dade2", "On-Breach-3%": "#2e86c1",
+                "On-Breach-5%": "#1a5276",
+                "On-Breach-ADR-2%": "#f0b27a", "On-Breach-ADR-3%": "#e67e22",
+                "On-Breach-ADR-5%": "#ba4a00"}
     if config is not None:
         for i, (label, result) in enumerate(results_for_stock):
             mode = _mode_for(label)
@@ -776,6 +807,7 @@ def _render_html_report(
     bars_map: dict[str, list[OHLCV]] | None = None,
     static_charts: bool = False,
     configs_per_result: list[_DGTConfig] | None = None,
+    strategy_per_stock: dict[str, list[_DGTBacktestResult]] | None = None,
 ) -> None:
     """Render the HTML report.
 
@@ -787,6 +819,10 @@ def _render_html_report(
     builders for time-varying grid reconstruction (Phase 0.11.j, ADR 0017 Step 5).
     """
     _use_static = static_charts or (os.environ.get("_STATIC_CHARTS", "") == "1")
+    # Multi-asset: the MAIN comparison chart has no single candlestick series
+    # (merged portfolio result) → static equity-curve PNG. The PER-STOCK
+    # detail charts stay interactive — each stock is one real candle series.
+    _is_multi = assets is not None and len(assets) > 1
 
     asset = results[0][1].asset
     capital = results[0][1].initial_capital
@@ -815,8 +851,9 @@ def _render_html_report(
             f"</tr>\n"
         )
 
-    # Main comparison chart section — interactive or static rollback
-    if _use_static:
+    # Main comparison chart section — interactive or static rollback.
+    # Multi-asset uses the static equity-curve PNG (no single candle series).
+    if _use_static or _is_multi:
         chart_b64 = base64.b64encode(chart_png).decode("ascii")
         comparison_chart_html = (
             f'<div class="chart">\n'
@@ -859,14 +896,18 @@ def _render_html_report(
                     f'</div>\n'
                 )
             elif not _use_static and bars_map and a.code in bars_map:
-                # Build per-stock results list for this asset's stock index.
+                # Each stock is a genuine single-asset candle series — use the
+                # REAL per-stock results (strategy_per_stock), not the merged
+                # portfolio result (whose snapshots carry no per-bar close).
                 stock_idx = assets.index(a)
                 per_stock_results: list[tuple[str, _DGTBacktestResult]] = []
-                for label, _result in results:
-                    # strategy_per_stock is not passed here; use bars_map availability.
-                    # Interactive per-stock chart uses the merged result trades filtered
-                    # to this stock's asset code.
-                    per_stock_results.append((label, _result))
+                for label, merged in results:
+                    if strategy_per_stock and label in strategy_per_stock:
+                        per_stock_results.append(
+                            (label, strategy_per_stock[label][stock_idx])
+                        )
+                    else:
+                        per_stock_results.append((label, merged))
                 _ps_html = _build_interactive_per_stock_html(
                     a, bars_map[a.code], per_stock_results,
                     config=config,
@@ -885,7 +926,8 @@ def _render_html_report(
     # _compute_cumulative_realized_single (reuses the function unchanged).
     trade_sections = ""
     for label, result in results:
-        cum_realized = _compute_cumulative_realized_single(result)
+        _ps = strategy_per_stock.get(label) if strategy_per_stock else None
+        cum_realized = _cumulative_realized_by_date(result, _ps)
         initial_capital_amount = result.initial_capital.amount
 
         def _cum_for_trade(t: _DGTTrade) -> tuple[Decimal, Decimal]:
@@ -1035,6 +1077,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--levels-above", type=int, default=1, help="m (default: 1)")
     parser.add_argument(
+        "--strategy-set", choices=["adr", "breach"], default="adr",
+        help=(
+            "adr (default): daily-recentered adaptive grid (ADR-Base / ADR+Vol). "
+            "breach: option A — static grid that re-centers on boundary breach "
+            "(on_breach) + profit guard, 2%%/3%%/5%% k sweep."
+        ),
+    )
+    parser.add_argument(
         "--output-dir", type=Path, default=Path("report/kakao-dgt/"),
         help="Output directory",
     )
@@ -1070,7 +1120,14 @@ def _run_multi_asset_strategy(
     per_stock_results: list[_DGTBacktestResult] = []
     for asset in assets:
         bars = bars_map[asset.code]
-        if adp_params is None:
+        if adp_params is not None and adp_params.get("_onbreach"):
+            r = _run_dynamic(asset, config, per_stock_capital, bars, start, end,
+                             "on_breach", profit_guard=True,
+                             adaptive=adp_params.get("_adaptive"),  # type: ignore[arg-type]
+                             volatility_measure=str(adp_params.get("_volmeasure", "atr")),
+                             flat_allocation=True,
+                             max_invested_pct=Decimal("0.75"))
+        elif adp_params is None:
             r = _run_paper(asset, config, per_stock_capital, bars, start, end)
         else:
             r = _run_paper_adaptive(asset, config, per_stock_capital, bars, start, end, **adp_params)
@@ -1309,6 +1366,34 @@ def _compute_cumulative_realized(
         return filled
 
 
+def _cumulative_realized_by_date(
+    result: _DGTBacktestResult,
+    per_stock: list[_DGTBacktestResult] | None = None,
+) -> dict[date, Decimal]:
+    """Per-date cumulative realized P&L (Decimal) for the trade log.
+
+    Multi-asset: sum each stock's own avg-cost realized (forward-filled per
+    stock) — avoids the blended-instrument artifact of running single-stock
+    avg-cost accounting over merged multi-stock trades (e.g. selling a
+    20k-won stock booked as a loss against a 300k-won blended avg cost).
+    Single-asset: identical to _compute_cumulative_realized_single.
+    """
+    if not (per_stock and len(per_stock) > 1):
+        return _compute_cumulative_realized_single(result)
+    stock_by_date = [_compute_cumulative_realized_single(sr) for sr in per_stock]
+    per_stock_last = [Decimal("0")] * len(per_stock)
+    out: dict[date, Decimal] = {}
+    for snap in result.daily_snapshots:
+        d = snap.trade_date
+        total = Decimal("0")
+        for i, sbd in enumerate(stock_by_date):
+            if d in sbd:
+                per_stock_last[i] = sbd[d]
+            total += per_stock_last[i]
+        out[d] = total
+    return out
+
+
 def _render_equity_only_chart(
     results: list[tuple[str, _DGTBacktestResult]],
     title: str,
@@ -1383,7 +1468,8 @@ def _render_equity_only_chart(
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
 
     codes = [c.strip() for c in args.code.split(",")]
     start = date.fromisoformat(args.start)
@@ -1421,10 +1507,32 @@ def main(argv: list[str] | None = None) -> int:
     def _vol(period: int = 20, mult: str = "2.0") -> dict[str, object]:
         return {**_adp_base, "volume_gate": True, "volume_gate_period": period,
                 "volume_gate_multiplier": Decimal(mult)}
-    run_specs: list[tuple[str, _DGTConfig, dict[str, object] | None]] = [
-        ("ADR-Base", base_cfg, {**_adp_base}),
-        ("ADR+Vol", base_cfg, _vol(10, "1.5")),
-    ]
+    run_specs: list[tuple[str, _DGTConfig, dict[str, object] | None]]
+    if args.strategy_set == "breach":
+        # Option A — static grid that re-centers ONLY on boundary breach
+        # (on_breach) + profit guard (no sell below avg cost). m = n//2
+        # symmetric. Two parallel sweeps: fixed-k (2/3/5%) and ADR-adaptive-k
+        # (multiplier 1.0, k in [0.5%, cap]) at the same 2/3/5% caps — so each
+        # fixed/ADR pair is a direct A/B on grid-spacing policy.
+        run_specs = []
+        for pct in ("2", "3", "5"):
+            vc = _DGTConfig(grid_count=config.grid_count,
+                            grid_spacing_pct=Decimal(pct), levels_above=m_sym)
+            run_specs.append((f"On-Breach-{pct}%", vc, {"_onbreach": True}))
+        for pct in ("2", "3", "5"):
+            vc = _DGTConfig(grid_count=config.grid_count,
+                            grid_spacing_pct=Decimal(pct), levels_above=m_sym)
+            label = f"On-Breach-ADR-{pct}%"
+            run_specs.append((label, vc, {
+                "_onbreach": True,
+                "_adaptive": _onbreach_adr_cfgs[label],
+                "_volmeasure": "adr",
+            }))
+    else:
+        run_specs = [
+            ("ADR-Base", base_cfg, {**_adp_base}),
+            ("ADR+Vol", base_cfg, _vol(10, "1.5")),
+        ]
 
     n_variants = len(run_specs)
     mode_str = f"Multi-Asset ({len(codes)} stocks)" if is_multi else "Single"
@@ -1456,7 +1564,15 @@ def main(argv: list[str] | None = None) -> int:
         asset = assets[0]
         bars = bars_map[codes[0]]
         for idx, (label, vcfg, adp_params) in enumerate(run_specs, 1):
-            if adp_params is None:
+            if adp_params is not None and adp_params.get("_onbreach"):
+                print(f"  [{idx}/{n_variants}] {label} (on_breach + guard + flat-alloc + 75% cap) ...")
+                r = _run_dynamic(asset, vcfg, capital, bars, start, end, "on_breach",
+                                 profit_guard=True,
+                                 adaptive=adp_params.get("_adaptive"),  # type: ignore[arg-type]
+                                 volatility_measure=str(adp_params.get("_volmeasure", "atr")),
+                                 flat_allocation=True,
+                                 max_invested_pct=Decimal("0.75"))
+            elif adp_params is None:
                 print(f"  [{idx}/{n_variants}] {label} (fixed k, m=n//2) ...")
                 r = _run_paper(asset, vcfg, capital, bars, start, end)
             else:
@@ -1522,6 +1638,7 @@ def main(argv: list[str] | None = None) -> int:
         bars_map=bars_map,
         static_charts=_static_charts,
         configs_per_result=variant_configs,
+        strategy_per_stock=strategy_per_stock,
     )
 
     # Print comparison table

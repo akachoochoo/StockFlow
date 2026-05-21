@@ -25,3 +25,4 @@ class _DGTGridState:
     holdings: Decimal
     wallet: Decimal = Decimal("0")
     trades_count: int = 0
+    avg_cost: Decimal = Decimal("0")  # weighted-average buy cost (profit_guard)

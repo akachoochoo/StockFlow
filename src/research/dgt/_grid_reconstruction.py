@@ -93,7 +93,8 @@ def _reconstruct_grid_envelope(
             if mode in ("paper", "paper_adaptive", "paper_adaptive_daily"):
                 m = config.grid_count // 2  # re-symmetrize on reset
             if (
-                mode in ("adaptive", "paper_adaptive", "paper_adaptive_daily")
+                mode in ("adaptive", "paper_adaptive", "paper_adaptive_daily",
+                         "on_breach")
                 and ohlcv_bars
                 and adaptive_cfg
             ):

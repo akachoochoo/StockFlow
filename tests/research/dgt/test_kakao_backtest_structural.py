@@ -303,3 +303,69 @@ class TestMergeMultiResults:
         assert len(merged.daily_snapshots) == 3
         for snap in merged.daily_snapshots:
             assert snap.total_value == Decimal("10000000")
+
+
+class TestCumulativeRealizedByDate:
+    """_cumulative_realized_by_date — multi-asset avoids blended avg-cost artifact."""
+
+    @staticmethod
+    def _t(d: date, side: str, price: int, qty: int) -> _DGTTrade:
+        return _DGTTrade(
+            trade_date=d, side=side,
+            grid_level_price=Decimal(price), quantity=Decimal(qty),
+            rounded_price=Decimal(price), gross=Decimal(price * qty),
+            tax=Decimal("0"), commission=Decimal("0"), cash_delta=Decimal("0"),
+        )
+
+    def _res(self, asset, capital, trades, dates) -> _DGTBacktestResult:
+        snaps = [_make_snapshot(d, capital.amount) for d in dates]
+        return _DGTBacktestResult(
+            asset=asset, start=dates[0], end=dates[-1], initial_capital=capital,
+            final_cash=capital.amount, final_holdings=Decimal("0"),
+            final_close_price=Decimal("50000"),
+            final_balance=Money(amount=capital.amount, currency=capital.currency),
+            wallet_total=Decimal("0"), reference_price=Decimal("50000"),
+            grid_levels=[], trades=trades, daily_snapshots=snaps,
+        )
+
+    def test_multi_asset_avoids_blended_artifact(self) -> None:
+        from src.research.dgt.kakao_dgt_backtest import (
+            _compute_cumulative_realized_single,
+            _cumulative_realized_by_date,
+        )
+        asset = _make_asset()
+        cap = Money(amount=Decimal("1000000"), currency=Currency.KRW)
+        d = [date(2025, 1, 2), date(2025, 1, 3), date(2025, 1, 6), date(2025, 1, 7)]
+        # Cheap stock A vs expensive stock B — each a clean profitable round-trip.
+        sA = self._res(asset, cap, [self._t(d[0], "BUY", 100, 10),
+                                    self._t(d[2], "SELL", 110, 10)], d)
+        sB = self._res(asset, cap, [self._t(d[1], "BUY", 1000, 10),
+                                    self._t(d[3], "SELL", 1010, 10)], d)
+        merged_cap = Money(amount=Decimal("2000000"), currency=Currency.KRW)
+        merged = self._res(asset, merged_cap, [
+            self._t(d[0], "BUY", 100, 10), self._t(d[1], "BUY", 1000, 10),
+            self._t(d[2], "SELL", 110, 10), self._t(d[3], "SELL", 1010, 10),
+        ], d)
+
+        fixed = _cumulative_realized_by_date(merged, [sA, sB])
+        blended = _compute_cumulative_realized_single(merged)
+
+        # Per-stock-aware: no spurious loss, both round-trips realized (+100 each).
+        assert min(fixed.values()) >= Decimal("0")
+        assert fixed[d[-1]] == Decimal("200")
+        # The blended single-instrument path shows the artifact (large dip).
+        assert min(blended.values()) < Decimal("-1000")
+
+    def test_single_asset_unchanged(self) -> None:
+        from src.research.dgt.kakao_dgt_backtest import (
+            _compute_cumulative_realized_single,
+            _cumulative_realized_by_date,
+        )
+        asset = _make_asset()
+        cap = Money(amount=Decimal("1000000"), currency=Currency.KRW)
+        d = [date(2025, 1, 2), date(2025, 1, 3)]
+        r = self._res(asset, cap, [self._t(d[0], "BUY", 100, 10),
+                                   self._t(d[1], "SELL", 110, 10)], d)
+        single = _compute_cumulative_realized_single(r)
+        assert _cumulative_realized_by_date(r, None) == single
+        assert _cumulative_realized_by_date(r, [r]) == single

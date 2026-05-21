@@ -24,6 +24,7 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Literal
 
 from src.domain.models import Asset, Money, OHLCV
+from src.research.dgt.adaptive_runner import _AdaptiveConfig, _compute_adr, _compute_atr
 from src.research.dgt.cost_model import _KoreanMarketCostModel
 from src.research.dgt.formulas import grid_levels_table1
 from src.research.dgt.results import _DGTBacktestResult, _DGTSnapshot, _DGTTrade
@@ -45,6 +46,40 @@ class _DGTDynamicRunner:
     cost_model: _KoreanMarketCostModel
     config: _DGTConfig
     rebalance_mode: RebalanceMode = "on_breach"
+    # Option A clause 3 — when True, skip any sell whose executed price is
+    # at/below the weighted-average buy cost ("매도는 매수 레벨 위에서만").
+    profit_guard: bool = False
+    # ADR/ATR-adaptive grid spacing — when set, k is recomputed from
+    # volatility at each grid (re)build instead of the fixed config.k_ratio.
+    adaptive: _AdaptiveConfig | None = None
+    volatility_measure: Literal["atr", "adr"] = "atr"
+    # Entry controls — prevent front-loaded early buying:
+    #  D — flat_allocation: each buy uses initial_capital/(n+1) instead of
+    #      the front-loaded cash/(n+1) (which sizes the first/most-expensive
+    #      buys largest).
+    #  B — max_invested_pct: skip buys once cost-basis exposure reaches the
+    #      cap (fraction of initial capital). None = uncapped.
+    flat_allocation: bool = False
+    max_invested_pct: Decimal | None = None
+
+    def _adaptive_k(
+        self, bars: list[OHLCV], bar_idx: int, close: Decimal,
+    ) -> Decimal:
+        """Grid spacing k for the current (re)build.
+
+        Fixed config.k_ratio when `adaptive` is None; otherwise
+        clamp(volatility% x multiplier, k_min, k_max) using ADR or ATR.
+        """
+        if self.adaptive is None:
+            return self.config.k_ratio
+        if self.volatility_measure == "adr":
+            vol = _compute_adr(bars, self.adaptive.atr_period, bar_idx)
+        else:
+            vol = _compute_atr(bars, self.adaptive.atr_period, bar_idx)
+        if vol <= 0 or close <= 0:
+            return self.config.k_ratio
+        k = vol / close * self.adaptive.multiplier
+        return max(self.adaptive.k_min, min(self.adaptive.k_max, k))
 
     def run(
         self,
@@ -58,10 +93,11 @@ class _DGTDynamicRunner:
             raise ValueError("ohlcv must be non-empty")
 
         reference = ohlcv[0].close
+        k = self._adaptive_k(ohlcv, 0, reference)
         levels = grid_levels_table1(
             n=self.config.grid_count,
             reference_price=reference,
-            k=self.config.k_ratio,
+            k=k,
             levels_above=self.config.levels_above,
         )
 
@@ -76,7 +112,7 @@ class _DGTDynamicRunner:
         snapshots: list[_DGTSnapshot] = []
         prev_close = reference
 
-        for bar in ohlcv:
+        for bar_idx, bar in enumerate(ohlcv):
             curr_close = bar.close
 
             # Grid crossing detection (current levels)
@@ -86,7 +122,9 @@ class _DGTDynamicRunner:
                     if trade is not None:
                         trades.append(trade)
                 elif curr_close <= level < prev_close:
-                    trade = self._maybe_buy(state, asset, bar.trade_date, level)
+                    trade = self._maybe_buy(
+                        state, asset, bar.trade_date, level, initial_capital.amount,
+                    )
                     if trade is not None:
                         trades.append(trade)
 
@@ -101,10 +139,11 @@ class _DGTDynamicRunner:
 
             if should_rebalance:
                 reference = curr_close
+                k = self._adaptive_k(ohlcv, bar_idx, curr_close)
                 levels = grid_levels_table1(
                     n=self.config.grid_count,
                     reference_price=reference,
-                    k=self.config.k_ratio,
+                    k=k,
                     levels_above=self.config.levels_above,
                 )
                 state.reference_price = reference
@@ -145,10 +184,22 @@ class _DGTDynamicRunner:
         asset: Asset,
         trade_date: date,
         level_price: Decimal,
+        initial_capital: Decimal,
     ) -> _DGTTrade | None:
         if level_price <= 0:
             return None
-        allocation = state.cash / Decimal(self.config.grid_count + 1)
+        # B — position cap: skip once cost-basis exposure reaches the cap.
+        # Cost basis (holdings x avg_cost) does not shrink when price falls,
+        # so a deepening crash cannot unlock further buying.
+        if self.max_invested_pct is not None:
+            invested = state.holdings * state.avg_cost
+            if invested >= self.max_invested_pct * initial_capital:
+                return None
+        # D — flat allocation removes the cash/(n+1) front-loading.
+        if self.flat_allocation:
+            allocation = initial_capital / Decimal(self.config.grid_count + 1)
+        else:
+            allocation = state.cash / Decimal(self.config.grid_count + 1)
         if allocation <= 0:
             return None
         quantity = (allocation / level_price).quantize(Decimal("1"), rounding=ROUND_DOWN)
@@ -159,6 +210,12 @@ class _DGTDynamicRunner:
         )
         if cost.total_cost > state.cash:
             return None
+        # weighted-average buy cost (executed price) — drives profit_guard
+        prior = state.holdings
+        state.avg_cost = (
+            (state.avg_cost * prior + cost.rounded_price * quantity)
+            / (prior + quantity)
+        )
         state.cash -= cost.total_cost
         state.holdings += quantity
         state.trades_count += 1
@@ -191,6 +248,16 @@ class _DGTDynamicRunner:
         proceeds = self.cost_model.compute_sell_cost(
             price=level_price, quantity=quantity, asset=asset,
         )
+        # Option A clause 3 — never realize a loss: skip any sell whose
+        # executed price is at/below the weighted-average buy cost.
+        # Holdings are held until price recovers above avg cost (or the
+        # grid re-centers higher).
+        if (
+            self.profit_guard
+            and state.avg_cost > 0
+            and proceeds.rounded_price <= state.avg_cost
+        ):
+            return None
         state.holdings -= quantity
         state.cash += proceeds.net_proceeds
         state.wallet += proceeds.net_proceeds - proceeds.gross
