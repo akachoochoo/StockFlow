@@ -111,7 +111,9 @@ class _FakeKISClient:
 _ENVELOPE = {"rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상처리"}
 
 
-def _price_body(stck_prpr: str = "75000") -> dict[str, object]:
+def _price_body(
+    stck_prpr: str = "75000", stck_sdpr: str = "74500"
+) -> dict[str, object]:
     return {
         **_ENVELOPE,
         "output": {
@@ -120,7 +122,7 @@ def _price_body(stck_prpr: str = "75000") -> dict[str, object]:
             "stck_hgpr": "76000",
             "stck_lwpr": "73500",
             "acml_vol": "8500000",
-            "stck_sdpr": "74500",
+            "stck_sdpr": stck_sdpr,
             "prdy_vrss": "500",
             "prdy_ctrt": "0.67",
         },
@@ -190,8 +192,13 @@ class TestKisMarketDataGetPrice:
         assert client.calls[0]["tr_id"] == "FHKST01010100"
 
     def test_kis_market_data_get_price_invalid_zero_price_raises_unavailable(self) -> None:
-        """stck_prpr = 0 → Price model rejects (value > 0) → MarketDataUnavailableError."""
-        client = _FakeKISClient([_price_body("0")])
+        """stck_prpr = 0 → Price model rejects (value > 0) → MarketDataUnavailableError.
+
+        ``stck_sdpr=0`` too, so the day-over-day outlier guard is skipped
+        (change undefined) and the zero-price → Price-model-rejection path is
+        the one under test.
+        """
+        client = _FakeKISClient([_price_body(stck_prpr="0", stck_sdpr="0")])
         md = KISMarketData(client=client)
         with pytest.raises(MarketDataUnavailableError):
             md.get_price(_asset(), _DURING_SESSION)
@@ -515,3 +522,89 @@ class TestKisMarketDataPortSignature:
                         f"market_data.py calls datetime.now() at line {node.lineno} — "
                         "use as_of injection (CLAUDE.md §3.2)"
                     )
+
+
+# ---------------------------------------------------------------------------
+# get_price — ±30% day-over-day outlier guard (Stage 2.4, CLAUDE.md §5.2)
+# ---------------------------------------------------------------------------
+class TestKisMarketDataPriceOutlier:
+    """price_outlier_skips_buy gate.
+
+    A day-over-day move (vs stck_sdpr 전일종가) whose absolute value exceeds
+    ``max_daily_change_pct`` (default 30) is rejected with DataIntegrityError —
+    KRX caps regular trading at ±30%, so an over-±30% move signals a
+    split/merger/data error. The suspect price is then used NOWHERE (boundary
+    rejection, CLAUDE.md §5.2 — get_price feeds both buy decision and EOD
+    snapshot, so both paths are protected at once).
+    """
+
+    def test_kis_market_data_price_outlier_skips_buy_up_31pct_raises(self) -> None:
+        """+31% vs prev close (sdpr=74500 → 97595) → DataIntegrityError."""
+        # 74500 * 1.31 = 97595 → +31.00%
+        client = _FakeKISClient([_price_body(stck_prpr="97595", stck_sdpr="74500")])
+        md = KISMarketData(client=client)
+        with pytest.raises(DataIntegrityError):
+            md.get_price(_asset(), _DURING_SESSION)
+
+    def test_kis_market_data_price_outlier_skips_buy_down_31pct_raises(self) -> None:
+        """-31% vs prev close (sdpr=74500 → 51405) → DataIntegrityError."""
+        # 74500 * 0.69 = 51405 → -31.00%
+        client = _FakeKISClient([_price_body(stck_prpr="51405", stck_sdpr="74500")])
+        md = KISMarketData(client=client)
+        with pytest.raises(DataIntegrityError):
+            md.get_price(_asset(), _DURING_SESSION)
+
+    def test_kis_market_data_price_outlier_skips_buy_exactly_30pct_passes(self) -> None:
+        """Exactly +30% (boundary, NOT exceeding) → normal Price returned."""
+        # 74500 * 1.30 = 96850 → +30.00% exactly (> threshold is False)
+        client = _FakeKISClient([_price_body(stck_prpr="96850", stck_sdpr="74500")])
+        md = KISMarketData(client=client)
+        price = md.get_price(_asset(), _DURING_SESSION)
+        assert price.value == Decimal("96850")
+
+    def test_kis_market_data_price_outlier_skips_buy_29pct_passes(self) -> None:
+        """+29% vs prev close → within threshold → normal Price."""
+        # 74500 * 1.29 = 96105 → +29.00%
+        client = _FakeKISClient([_price_body(stck_prpr="96105", stck_sdpr="74500")])
+        md = KISMarketData(client=client)
+        price = md.get_price(_asset(), _DURING_SESSION)
+        assert price.value == Decimal("96105")
+
+    def test_kis_market_data_price_outlier_skips_buy_custom_threshold_raises(self) -> None:
+        """Custom max_daily_change_pct=10 + a +15% move → DataIntegrityError.
+
+        Proves the threshold is configurable (CLAUDE.md §9.2 하드코딩 금지):
+        +15% would pass the default 30% but exceeds the injected 10%.
+        """
+        # 74500 * 1.15 = 85675 → +15.00%
+        client = _FakeKISClient([_price_body(stck_prpr="85675", stck_sdpr="74500")])
+        md = KISMarketData(client=client, max_daily_change_pct=Decimal("10"))
+        with pytest.raises(DataIntegrityError):
+            md.get_price(_asset(), _DURING_SESSION)
+
+    def test_kis_market_data_price_outlier_skips_buy_zero_prev_close_skips_check(
+        self,
+    ) -> None:
+        """stck_sdpr=0 (prev close absent) → outlier check skipped, no ZeroDivision.
+
+        stck_prpr itself is still > 0, so a normal Price is returned.
+        """
+        client = _FakeKISClient([_price_body(stck_prpr="75000", stck_sdpr="0")])
+        md = KISMarketData(client=client)
+        price = md.get_price(_asset(), _DURING_SESSION)
+        assert price.value == Decimal("75000")
+
+    def test_kis_market_data_price_outlier_skips_buy_message_no_secret_has_fqn(
+        self,
+    ) -> None:
+        """Raised message contains asset.fqn and leaks NO secret (appkey/appsecret)."""
+        asset = _asset("005930")
+        client = _FakeKISClient([_price_body(stck_prpr="97595", stck_sdpr="74500")])
+        md = KISMarketData(client=client)
+        with pytest.raises(DataIntegrityError) as exc_info:
+            md.get_price(asset, _DURING_SESSION)
+        message = str(exc_info.value)
+        assert asset.fqn in message  # "KRX:005930"
+        # No KIS secret material leaks into the integrity message.
+        assert "PKabcdefghijklmnop" not in message  # appkey
+        assert "SECRETsecret==" not in message  # appsecret

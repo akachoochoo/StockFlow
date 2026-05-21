@@ -26,6 +26,7 @@ FHKST03010100 + 필드) / CLAUDE.md §3.2 (as_of 주입) / §5.1 (경계 검증)
 from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -67,9 +68,11 @@ class KISMarketData:
         *,
         client: KISClient,
         explicit_holidays: frozenset[date] = frozenset(),
+        max_daily_change_pct: Decimal = Decimal("30"),
     ) -> None:
         self._client = client
         self._explicit_holidays = explicit_holidays
+        self._max_daily_change_pct = max_daily_change_pct
 
     # ------------------------------------------------------------------
     # MarketDataPort — price
@@ -84,6 +87,26 @@ class KISMarketData:
 
         ``stck_prpr`` ≤ 0 (Price model requires value > 0) → wrapped into
         ``MarketDataUnavailableError`` (CLAUDE.md §5.1 — boundary validation).
+
+        Price-outlier guard (CLAUDE.md §5.2): the day-over-day move vs the
+        previous close (``stck_sdpr``) is computed here and, if its absolute
+        value exceeds ``max_daily_change_pct`` (default ±30%), a
+        ``DataIntegrityError`` is raised. KRX caps regular trading at ±30%, so
+        an *over*-±30% move cannot arise from normal trading — it signals a
+        stock split / merger / data error. The conservative response is to
+        reject the quote so the suspicious price is used NOWHERE and the asset
+        stays halted until a human confirms (telegram alert wiring = Stage 3).
+        The change is computed deterministically from
+        ``stck_prpr`` vs ``stck_sdpr`` (the KIS-provided ``prdy_ctrt`` is
+        reference-only — its live reliability is verified in Stage 4).
+
+        **Consequence**: ``get_price`` feeds BOTH the buy decision and the EOD
+        snapshot, so an outlier rejection affects both paths at once. This is
+        intentional and conservative — a suspect price must not enter any
+        downstream computation. ``stck_sdpr`` ≤ 0 (previous close absent / 0)
+        → the change is undefined, so the outlier check is skipped to avoid a
+        division by zero; ``stck_prpr`` itself is still > 0-validated by the
+        Price model.
         """
         body = self._client.request(
             "GET",
@@ -102,10 +125,24 @@ class KISMarketData:
                 f"({len(exc.errors())} field error(s))"
             ) from exc
 
+        prpr = parsed.output.stck_prpr
+        prev_close = parsed.output.stck_sdpr
+        # Outlier guard: skip when prev close is absent/0 (change undefined →
+        # avoid division by zero). stck_prpr itself is value>0-checked below.
+        if prev_close > 0:
+            change_pct = abs((prpr - prev_close) / prev_close * 100)
+            if change_pct > self._max_daily_change_pct:
+                raise DataIntegrityError(
+                    f"KIS inquire-price day-over-day change for {asset.fqn} "
+                    f"({change_pct}%) exceeds {self._max_daily_change_pct}% "
+                    f"threshold (CLAUDE.md §5.2: split/merger/data-error "
+                    f"suspected — quote rejected, asset halted)"
+                )
+
         try:
             return Price(
                 asset=asset,
-                value=parsed.output.stck_prpr,
+                value=prpr,
                 timestamp=as_of,
             )
         except ValidationError as exc:
