@@ -219,7 +219,7 @@
 
 #### Phase 1 특수 추가 결정 (Round 1 ITERATE Missing Gaps + Open Q 박제)
 
-- **D17** — **DB 마이그레이션** (Missing Gap 2, ADR 0002 §3.4 정합): Phase 0 SQLite schema 와 Phase 1 schema 호환성 + idempotency_key + KIS order ID 필드 추가 + 거래세 / 수수료 필드 추가. **권고 default**: 별도 ADR (가칭 ADR 0013, Phase 1.1 sub-step 1.1.2 진입 시점 박제) — 본 ADR scope 외. ADR 0013 진입 trigger = D17 의 마이그레이션 스크립트 작성 + 검증 + 백업 / rollback 절차 박제 의무. ADR 0002 §3.4 인용 정본.
+- **D17** — **DB 마이그레이션** (Missing Gap 2, ADR 0002 §3.4 정합): Phase 0 SQLite schema 와 Phase 1 schema 호환성 + idempotency_key + KIS order ID 필드 추가 + 거래세 / 수수료 필드 추가. **권고 default**: 별도 ADR (**ADR 0019** — 재번호: 가칭 0013 은 Phase 0.11.f 가 점유, 0019 free 확정 2026-05-21 Stage 0.2; Phase 1.1 sub-step 1.1.2 진입 시점 박제) — 본 ADR scope 외. ADR 0019 진입 trigger = D17 의 마이그레이션 스크립트 작성 + 검증 + 백업 / rollback 절차 박제 의무. ADR 0002 §3.4 인용 정본. 컬럼 형태 (tax / commission 분리 vs 통합) 는 D20 Open Q #29 결과 흡수 후 확정 (provisional).
 
 - **D18** — **`develop`/`main` Git workflow 분리** (Missing Gap 3, ADR 0001 §1.5 정합): Phase 1+ 실거래 진입 시 develop/main 분리 + PR review 룰 도입. **권고 default**: (a) Phase 1.1 진입 시점에 develop branch 신규 생성 + main = 실거래 운영 branch + PR review 의무 (사용자 self-review or 외부 reviewer). (b) 별도 commit (fold 금지) 으로 git workflow 변경 박제. ADR 0001 §1.5 인용 정본 + 본 ADR §3 회고 시 검증.
 
@@ -340,7 +340,7 @@
 | 1.1.1 | D1~D20 결정 + ADR §1 박제 + roadmap (본 ralplan #28 산출) | ADR 0012 §1 commit |
 | 1.1.1.a | D7 매도 임계 비교 backtest (+10% / +15% / +20%, ADR 0002 §12.4.1 보류 해소) | backtest 결과 박제 + 매도 임계 default 박제 |
 | 1.1.1.b | D2 손절 임계 backtest (-15% / -20% / -25%, ADR 0002 §12.4.2 보류 해소) | backtest 결과 박제 + 손절 임계 default 박제 |
-| 1.1.1.c | D17 DB 마이그레이션 ADR (가칭 ADR 0013) 별도 박제 + 마이그레이션 스크립트 + 백업/rollback 절차 | ADR 0013 §1 commit + 스크립트 |
+| 1.1.1.c | D17 DB 마이그레이션 ADR (**ADR 0019**) 별도 박제 + 마이그레이션 스크립트 + 백업/rollback 절차 (로드맵 Stage 4.5 = write 이전 hard gate) | ADR 0019 §1 commit + 스크립트 |
 | 1.1.1.d | D18 `develop` branch 신규 생성 + main = 실거래 운영 분리 + PR review 룰 박제 별도 commit | `develop` branch + git workflow 변경 박제 |
 | 1.1.1.e | D20 Open Q 별도 결정 라운드 (가칭 ralplan #29) — KIS API 문서 검토 + Open Q 1~4 결정 + G2 "무사고" 해석 + NTP 검증 | 별도 결정 commit |
 | 1.1.2 | KIS API 어댑터 구현 (D1 c-read 우선 + c-write 후행) — BrokerPort + MarketDataPort + Pydantic schema + 인증 보안 (R10) | `src/adapters/kis/` 신규 + Mock 정합 + `models.py` Pydantic + `.env.example` |
@@ -428,7 +428,42 @@
 
 ---
 
-## 2. `<TBD: ralplan #28 Round 2 박제 — Critic/Architect amendments 흡수 후 추가 예정>`
+## 2. Round 2 종료 박제 + Phase 1.1 구현 로드맵 consensus 라운드
+
+> 본 §2 는 두 단계 박제: (2.1) ralplan #28 Round 2 종료 (2026-05-12, §1 amendments 흡수 확인) + (2.2~2.4) Phase 1.1 구현 로드맵 consensus 라운드 (2026-05-21, Stage 0.1). D1~D20 default 결정은 §1 에서 확정 — 본 §2 는 *구현 순서/구조/게이트* 박제만 추가하며 default 를 재론하지 않는다.
+
+### 2.1 ralplan #28 Round 2 종료 (2026-05-12)
+
+- **Verdict**: APPROVE-WITH-RESERVATIONS (Architect + Critic).
+- **흡수된 amendments (§1 반영 완료)**:
+  - 2 BLOCKING 수치 정정 — (a) G2.1~G2.3 자본/기간 (200만 5일 / 300만 10일 / 500만 10일), (b) D6 (ii) reconciliation 40 회 (paper 10영업일 × 일 2회).
+  - G1 MINOR 정정 — D16 진입 조건 (i)~(vi) 6 조건 (본문 / sub-step 1.1.4 / closing summary 정합).
+- **Reservations**: 구현 순서 / 스키마 / 게이트 측정가능성 → §2.2 구현 로드맵 라운드에서 해소.
+
+### 2.2 Phase 1.1 구현 로드맵 consensus 라운드 (2026-05-21)
+
+사용자 명시 "Phase 1 진입 검토" → ralplan deliberate-mode consensus. D1~D20 default 를 *구현 순서·파일 구조·테스트 전략·게이트·리스크 완화* 로 번역.
+
+- **흐름**: Planner → Architect (AGREE-WITH-CHANGES) → Critic (ITERATE: 2 BLOCKING + 5 MAJOR) → 수정 → Architect (1차 blocker 4 RESOLVED, 신규 BLOCKING 1) → 수정 → Critic (**APPROVE**). 2 iterations.
+- **산출 아티팩트**: `.omc/plans/phase-1.1-kis-real-trading-roadmap.md` (Option C — read-before-write 를 파일 작성 순서로 강제하는 10-Stage 로드맵). `.omc/` 는 gitignored 이므로 **본 §2.3 가 정본 박제**.
+- **채택 = Option C**: write 메서드를 read 무사고 5영업일 게이트 통과 전까지 *작성하지 않음* → "write 조기 진입" pre-mortem 을 규율 아닌 구조로 차단. (거부: Option A 순차 strict = read/write 분리를 작업자 규율에 위임 / Option B 안전장치 우선 = recon/halt 이 KIS read 응답을 입력으로 받아 의존 역행.)
+
+### 2.3 구현 라운드 build-sequence amendments (D default 재론 아님)
+
+consensus 가 ADR 0012 §1.8 sub-step 표만으로는 드러나지 않은 결함을 박제:
+
+1. **[BLOCKING→해소] DB 마이그레이션 실행 누락**: `OrderResult` / `orders` 테이블에 tax/commission 컬럼 부재 (`db.py` "no Alembic"; tax/commission 은 5th ring `research/dgt` 에만 존재 = 도달 불가). write·비용 교차검증이 존재하지 않는 컬럼을 소비 → 첫 실거래 체결 시 잔고 불일치 risk. → **신규 Stage 4.5 (Schema Migration, ADR 0019)** = write (Stage 5) 이전 hard gate. ADR 0019 §1 + `orders` DDL `tax`/`commission` + migrate 스크립트 + 백업 + rollback + 게이트 3종.
+2. **[BLOCKING→해소] D6 (iii)/G2 (d) "Decision 객체 일치" 충족 불가능**: 라이브 `as_of=self._clock()` 실시각 + 라이브 가격 vs 백테스트 고정 날짜 → `Decision == Decision` 항상 False (`timestamp`/`reasoning` 차이). → **구조적 projection 으로 재정의**: `proj(d) = (skip_reason, sorted((slot_number, filled_quantity) for sell_actions), buy = (slot_number, split_level_after, filled_quantity, round_to_tick(target_price)) | None)`, 제외 = `{timestamp, reasoning, per-action {reasoning, filled_price, order_id}}`. 게이트 = `decision_equivalence_excludes_timestamp_and_live_price` (raw `==` 실패 + skip⇔빈 액션 불변 + sell canonical sort 동시 증명). "기록된 라이브 종가 재사용 (re-fetch 금지)" 결정론.
+3. **[MAJOR→해소] 도메인 모델 additive 허용 범위 명시**: 변경 zero invariant (D13) = Stage 8 운영 윈도우 룰. Stage 0–7 build 동안 domain 모델 **additive 확장** (`OrderResult.tax/commission`) 은 ADR 0019 하 허용 (Port 시그니처 불변).
+4. **[MAJOR→해소] D18 develop/main 분리 = Stage 0.4** build order 배치 (Stage 5 write 진입 선행).
+5. **[MAJOR→해소] write-absence 단일 메커니즘**: write 메서드 = `KISBroker` 에 *부재* (NotImplementedError placeholder 도 두지 않음 — placeholder/부재 양립 모호 제거). 게이트 = `kis_write_endpoints_absent_before_read_gate` = `not hasattr(...)`.
+6. **[MAJOR→해소] staleness tripwire N=20영업일**: Stage 1.2 손절 backtest 박제 후 20영업일 초과해서 Stage 6.1 손절 코드 작성 도달 시, default 를 fresh backtest 로 재검증 (시장 regime 변화 방지).
+7. **[MAJOR→해소] 테스트 selector↔개수 매핑** 140 (Unit 70 / Integration 30 / E2E 20 / Observability 20), 안전 invariant (kill switch / recon halt / NTP / partial fill / credentials / lock / PENDING / 이상치) 누락 selector 없음.
+8. **[gaps→해소]**: G-a rollback 테스트 게이트 (`rollback_reverts_capital_tier` + runbook 체크리스트) / G-c PENDING-recovery (Stage 2.5 read `get_order_status` + Stage 5.2 write timeout) / G-d lock-file (기존 `src/cli/safety.py:lock_file` wiring, 신규 구현 아님) / G-e 가격 이상치 ±30% skip (기존 `InvalidPriceError`/`DataIntegrityError` 재사용).
+
+### 2.4 Ordering-note 해소 (순환 차단)
+
+로드맵 §6 Ordering note (§2 ↔ 로드맵 순환 방지) 판정: 본 라운드 amendments 는 **D1~D20 default 결정을 변경하지 않는다** — 구현 순서 / 구조 / 게이트 / 테스트 측정법만 박제. §1 에 대한 유일한 touch = D17 ADR 번호 정정 (0013→0019, docs hygiene, Stage 0.2). 따라서 "§2 가 로드맵을 바꾸면 재검토" 순환은 **미발화** — 로드맵은 §1 의 downstream translation 이며 Stage 1+ (build) 진입 자격 충족. **실거래 ON 은 여전히 D16 (iv-a)~(vi) 게이트 (Stage 7/8) 뒤 — §1 불변.**
 
 ---
 
