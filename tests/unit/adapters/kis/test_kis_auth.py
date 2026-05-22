@@ -156,6 +156,25 @@ class TestKisAuthErrors:
         # No automatic retry — exactly one HTTP call (ADR 0012 §1.6 #1).
         assert len(http.post_calls) == 1
 
+    def test_kis_auth_403_surfaces_oauth_error_description(self) -> None:
+        # The OAuth2 token endpoint returns error_code/error_description (not the
+        # KIS envelope msg_cd). The message must surface it so a 403 is diagnosable.
+        http = _FakeHttp(
+            [
+                HttpResponse(
+                    status_code=403,
+                    body={
+                        "error_code": "EGW00133",
+                        "error_description": "등록되지 않은 IP 입니다.",
+                    },
+                )
+            ]
+        )
+        auth = KISAuth(config=_config(), http=http, clock=_MutableClock(_T0))
+        with pytest.raises(KISAuthError) as exc_info:
+            auth.get_token()
+        assert "등록되지 않은 IP" in str(exc_info.value)
+
     def test_kis_auth_missing_access_token_raises_auth_error(self) -> None:
         http = _FakeHttp(
             [
@@ -191,6 +210,24 @@ class TestKisAuthSecretSafety:
         text = str(exc_info.value)
         assert _SECRET_APPSECRET not in text
         assert _SECRET_ACCESS_TOKEN not in text
+
+    def test_kis_auth_error_redacts_appkey_if_echoed_in_body(self) -> None:
+        # R10 defense: even if KIS echoed the appkey into an error_description,
+        # the raised message must mask it.
+        http = _FakeHttp(
+            [
+                HttpResponse(
+                    status_code=403,
+                    body={"error_description": f"invalid appkey {_SECRET_APPKEY}"},
+                )
+            ]
+        )
+        auth = KISAuth(config=_config(), http=http, clock=_MutableClock(_T0))
+        with pytest.raises(KISAuthError) as exc_info:
+            auth.get_token()
+        text = str(exc_info.value)
+        assert _SECRET_APPKEY not in text
+        assert "***" in text
 
     def test_kis_auth_validation_error_excludes_token_body(self) -> None:
         # A 200 body that carries a token but fails validation must not echo it.

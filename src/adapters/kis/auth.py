@@ -111,12 +111,25 @@ class KISAuth:
         )
 
         if not (200 <= resp.status_code < 300):
-            # No retry (ADR 0012 §1.6 #1). Message carries status + msg_cd only —
-            # no secret. (rt_cd/msg_cd are non-sensitive KIS envelope codes.)
-            msg_cd = resp.json().get("msg_cd", "")
+            # No retry (ADR 0012 §1.6 #1). The token endpoint is OAuth2, so its
+            # error body uses error_code / error_description (NOT the KIS trading
+            # envelope msg_cd / msg1). Surface whichever is present so a 403
+            # (unregistered IP / wrong-env key / bad appsecret) is diagnosable.
+            err = resp.json()
+            detail = str(
+                err.get("error_description")
+                or err.get("msg1")
+                or err.get("error_code")
+                or err.get("msg_cd")
+                or ""
+            )[:200]
+            # R10 defense: never let appkey/appsecret echo through an error body.
+            for secret in (self._config.appkey, self._config.appsecret):
+                if secret and secret in detail:
+                    detail = detail.replace(secret, "***")
             raise KISAuthError(
                 f"KIS token issue failed: HTTP {resp.status_code} "
-                f"msg_cd={msg_cd!r} (no automatic retry; ADR 0012 §1.6 #1)"
+                f"detail={detail!r} (no automatic retry; ADR 0012 §1.6 #1)"
             )
 
         try:
