@@ -48,7 +48,9 @@ if TYPE_CHECKING:
     from src.domain.models import OHLCV, Asset, Money
     from src.domain.strategies.price_drop import SplitStrategyConfig
     from src.ports.market_data import MarketDataPort
+    from src.ports.notifications import NotifierPort
     from src.ports.reentry_strategy import ReentryPriceStrategyPort
+    from src.use_cases.reconciliation import Reconciler
 
 
 def create_buy_strategy(
@@ -228,6 +230,91 @@ def build_kis_market_data(
         config=config, http=http_client, auth=auth, clock=utc_clock
     )
     return KISMarketData(client=client)
+
+
+def _default_halt(reason: str) -> None:
+    """Default halt callback — write the persistent halt sentinel (CLAUDE.md §11.2).
+
+    The :class:`~src.use_cases.reconciliation.Reconciler` takes
+    ``halt: Callable[[str], None]`` so the use_case never imports cli (ring
+    정합 — the wiring lives here in composition). ``safety.write_halt`` returns
+    the sentinel ``Path``; we discard it so the signature matches
+    ``Callable[[str], None]`` (mypy clean). ``safety`` is a cli-ring module, so
+    importing it here (composition is also cli ring) is allowed.
+    """
+    from src.cli import safety
+
+    safety.write_halt(reason)
+
+
+def build_reconciler(
+    db_path: Path | str,
+    environ: Mapping[str, str] | None = None,
+    *,
+    http: HttpClient | None = None,
+    clock: Callable[[], datetime] | None = None,
+    notifier: NotifierPort | None = None,
+    halt: Callable[[str], None] | None = None,
+) -> tuple[Reconciler, Callable[[], None], KISConfig]:
+    """Wire the reconciliation use case (Phase 1.1 Stage 4).
+
+    Composition root for the ``trading reconcile`` command (CLAUDE.md §11.2 /
+    ADR 0012 D14): DB positions vs **live** KIS holdings 대조. Wires:
+
+    - the KIS **read-only** broker (``get_holdings`` — ``inquire-balance`` read;
+      ``market_data`` half is built but ignored — reconciliation only reads
+      holdings, never quotes). No write surface exists (Option C, ADR 0012).
+    - a SQLite ``uow_factory`` over ``connect(db_path)`` (positions.list_all()).
+    - the halt callback — defaults to :func:`_default_halt`
+      (``safety.write_halt``) so a mismatch records a **persistent** halt
+      sentinel; injectable so tests can spy without touching the real sentinel.
+    - the notifier — defaults to ``build_notifier(environ)`` (Telegram + Console
+      when configured, else Console-only) for the CRITICAL mismatch alert.
+    - the clock — defaults to a UTC wall clock (CLAUDE.md §3.1).
+
+    Reads credentials via ``KISConfig.from_env(environ)`` (inside
+    ``build_kis_read_components``) — missing / blank required vars raise
+    ``ConfigurationError`` (propagated; no silent fallback, CLAUDE.md §6.3). DI
+    per CLAUDE.md §1.2: ``http`` / ``clock`` / ``notifier`` / ``halt`` are all
+    injectable so tests stay network-free + sentinel-free.
+
+    Returns ``(reconciler, close, config)``: the wired :class:`Reconciler`, a
+    ``close`` callable that closes the SQLite connection (caller must invoke in
+    a ``finally``), and the resolved :class:`KISConfig` (so the command can
+    print mode / host — never the secret).
+
+    The graph is **read-only**: ``KISBroker`` exposes only ``get_balance`` /
+    ``get_holdings`` (no order surface), and the ``Reconciler`` itself never
+    calls ``save`` / ``place_order`` (자동 수정 zero — CLAUDE.md §11.2).
+    """
+    # Local imports keep the adapter / telegram dependency off the module-import
+    # path for the paper-trading callers (mirrors build_kis_read_components).
+    from src.adapters.telegram.notifier import build_notifier
+    from src.use_cases.reconciliation import Reconciler
+
+    kis = build_kis_read_components(environ, http=http, clock=clock)
+
+    conn = connect(db_path)
+
+    def uow_factory() -> SqliteUnitOfWork:
+        return SqliteUnitOfWork(conn)
+
+    clk: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
+    halt_cb: Callable[[str], None] = halt or _default_halt
+    notif: NotifierPort = notifier or build_notifier(environ)
+
+    reconciler = Reconciler(
+        uow_factory=uow_factory,
+        # KISBroker (read subset, Option C) satisfies HoldingsReaderPort — the
+        # narrow surface the Reconciler depends on (get_holdings only).
+        # Interface Segregation removes the full-BrokerPort coupling the
+        # Reconciler never used, so no suppression pragma is required here.
+        broker=kis.broker,
+        notifier=notif,
+        halt=halt_cb,
+        clock=clk,
+    )
+    return reconciler, conn.close, kis.config
 
 
 def check_snapshot_position_sync(

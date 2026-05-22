@@ -665,6 +665,79 @@ def kis_check(code: str) -> None:
     click.echo("✅ KIS read 연결 정상")
 
 
+@main.command("reconcile")
+@click.option(
+    "--db",
+    "db_path",
+    default="trading.db",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="실거래 상태 SQLite DB path (created on first run). ⚠️ 실거래 상태 DB — "
+    "dry-run.db(시뮬) 를 가리키지 말 것 (실계좌 0보유와 불일치 → 오halt).",
+)
+def reconcile(db_path: Path) -> None:
+    """DB 포지션 vs 실 KIS 보유(get_holdings, read-only) 대조.
+
+    불일치 시 영속 halt + 텔레그램 CRITICAL + 비정상 종료(자동수정 zero, §11.2).
+    실주문 zero, 실계좌 read만. ⚠️ --db 는 실거래 상태 DB — dry-run.db(시뮬) 가리키지
+    말 것(실계좌 0보유와 불일치 → 오halt).
+
+    NTP 게이트는 호출하지 않음 (read-only 대조, 주문이 아님). lock file 은 잡는다
+    (로컬 DB 상태 보호). 일치 시 ``✅ reconciliation matched`` exit 0; 불일치 시
+    Reconciler 가 이미 notify + halt 한 뒤 ``StateMismatchError`` → 비정상 종료
+    (자동 수정 zero, CLAUDE.md §11.2). 조사 후 ``trading resume`` 으로 재개.
+    """
+    from src.adapters.kis._client import KISApiError
+    from src.adapters.kis.auth import KISAuthError
+    from src.domain.exceptions import (
+        BrokerConnectionError,
+        ConfigurationError,
+        StateMismatchError,
+    )
+
+    with safety.lock_file():
+        # NTP 게이트 미호출: read-only 대조(get_holdings)이지 주문이 아님.
+        try:
+            reconciler, close, config = composition.build_reconciler(db_path)
+        except ConfigurationError as exc:
+            click.echo(
+                f"KIS config error — set the missing key(s) in .env "
+                f"(see .env.example): {exc}",
+                err=True,
+            )
+            raise click.exceptions.Exit(1) from exc
+
+        # mode / host (실보유 출처 확인) — never the secret.
+        click.echo(
+            f"KIS mode={config.mode.value} host={config.base_url} "
+            f"appkey={config.masked_appkey}"
+        )
+
+        try:
+            result = reconciler.reconcile()
+        except StateMismatchError as exc:
+            # Reconciler 가 이미 notify(CRITICAL) + halt(영속 sentinel) 함.
+            click.echo(
+                "❌ reconciliation 불일치 — 영속 halt 기록됨. 조사 후 "
+                "`trading resume`. 자동수정 zero (CLAUDE.md §11.2).",
+                err=True,
+            )
+            click.echo(f"  불일치 상세: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except KISAuthError as exc:
+            click.echo(f"KIS auth failed (token issue): {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except (BrokerConnectionError, KISApiError) as exc:
+            click.echo(f"KIS holdings query failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        finally:
+            close()
+
+    # result.matched is True here (mismatch raises above before reaching this).
+    assert result.matched, "matched path reached with mismatches"
+    click.echo("✅ reconciliation matched (DB positions = broker holdings)")
+
+
 @main.command("dry-run")
 @click.option(
     "--code",

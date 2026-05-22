@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
 
-    from src.ports.broker import BrokerPort
+    from src.ports.broker import HoldingsReaderPort
     from src.ports.notifications import NotifierPort
     from src.ports.unit_of_work import UnitOfWorkPort
 
@@ -85,7 +85,7 @@ class Reconciler:
     DI per CLAUDE.md §1.2 — every dependency is injected:
 
     - ``uow_factory`` : opens a UnitOfWork to read ``positions.list_all()``.
-    - ``broker``      : :meth:`BrokerPort.get_holdings` (aggregated holdings).
+    - ``broker``      : :meth:`HoldingsReaderPort.get_holdings` (aggregated holdings).
     - ``notifier``    : CRITICAL alert on mismatch (ADR 0012 D3 알림 #3).
     - ``halt``        : ``Callable[[str], None]`` — composition injects
       ``safety.write_halt`` so the use_case never imports cli (ring 정합).
@@ -96,7 +96,7 @@ class Reconciler:
         self,
         *,
         uow_factory: Callable[[], UnitOfWorkPort],
-        broker: BrokerPort,
+        broker: HoldingsReaderPort,
         notifier: NotifierPort,
         halt: Callable[[str], None],
         clock: Callable[[], datetime],

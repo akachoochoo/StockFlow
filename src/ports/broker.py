@@ -17,6 +17,21 @@ if TYPE_CHECKING:
     )
 
 
+class HoldingsReaderPort(Protocol):
+    """Read-only broker holdings accessor (Interface Segregation).
+
+    The narrow surface reconciliation depends on — it only ever reads the
+    broker's aggregated holdings (CLAUDE.md §11.2), never orders. A partial
+    read-subset adapter (e.g. ``KISBroker`` before the Stage 5 write surface
+    exists) satisfies this without pretending to be a full ``BrokerPort``.
+    Any full ``BrokerPort`` implementation also satisfies it structurally.
+    """
+
+    def get_holdings(self) -> list[BrokerHolding]:
+        """Return the broker's per-asset aggregated holdings (quantity > 0)."""
+        ...
+
+
 class BrokerPort(Protocol):
     """Order execution and account state.
 
