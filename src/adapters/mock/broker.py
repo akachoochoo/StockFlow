@@ -28,6 +28,7 @@ from src.domain.constants import KST
 from src.domain.exceptions import BrokerConnectionError
 from src.domain.models import (
     Balance,
+    BrokerHolding,
     Money,
     Order,
     OrderResult,
@@ -111,6 +112,20 @@ class MockBroker:
 
     def get_positions(self) -> list[Position]:
         return [p for p in self._positions.values() if p.quantity > 0]
+
+    def get_holdings(self) -> list[BrokerHolding]:
+        # Mirror of get_positions but as the aggregated BrokerHolding view
+        # (code + quantity + avg_price, no split-slot structure) used for
+        # reconciliation (CLAUDE.md §11.2). Only non-empty holdings (qty > 0).
+        return [
+            BrokerHolding(
+                asset_code=p.asset.code,
+                quantity=p.quantity,
+                avg_price=p.avg_price,
+            )
+            for p in self._positions.values()
+            if p.quantity > 0
+        ]
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         # Idempotency: same key returns the prior result without re-execution

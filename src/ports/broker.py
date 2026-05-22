@@ -8,7 +8,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from src.domain.models import Balance, OrderRequest, OrderResult, Position
+    from src.domain.models import (
+        Balance,
+        BrokerHolding,
+        OrderRequest,
+        OrderResult,
+        Position,
+    )
 
 
 class BrokerPort(Protocol):
@@ -32,6 +38,18 @@ class BrokerPort(Protocol):
 
     def get_positions(self) -> list[Position]:
         """Return non-empty holdings (quantity > 0)."""
+        ...
+
+    def get_holdings(self) -> list[BrokerHolding]:
+        """Return the broker's per-asset aggregated holdings (quantity > 0).
+
+        Distinct from :meth:`get_positions`: this returns the broker's
+        *aggregated* per-symbol view (:class:`~src.domain.models.BrokerHolding`)
+        — code + total quantity + average price, with **no split-slot
+        structure** (the broker does not model splits). Used by reconciliation
+        (CLAUDE.md §11.2) to compare DB Positions against the broker's reported
+        holdings; mismatches halt all trading and wait for human intervention.
+        """
         ...
 
     def place_order(self, request: OrderRequest) -> OrderResult:

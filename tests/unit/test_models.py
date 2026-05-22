@@ -16,6 +16,7 @@ from src.domain.models import (
     Asset,
     AssetClass,
     Balance,
+    BrokerHolding,
     BuyActionRecord,
     CircuitBreakerSignal,
     Currency,
@@ -627,6 +628,84 @@ class TestBalance:
         b = Balance(cash=Money(amount=Decimal("100"), currency=Currency.KRW))
         assert a == b
         assert hash(a) == hash(b)
+
+
+# ---------------------------------------------------------------------------
+# BrokerHolding (Phase 1.1 Stage 3.3 — reconciliation 대조용)
+# ---------------------------------------------------------------------------
+class TestBrokerHolding:
+    def test_construct_from_decimal(self):
+        h = BrokerHolding(
+            asset_code="069500",
+            quantity=Decimal("10"),
+            avg_price=Decimal("35000"),
+        )
+        assert h.asset_code == "069500"
+        assert h.quantity == Decimal("10")
+        assert h.avg_price == Decimal("35000")
+
+    def test_coerce_quantity_and_avg_price_from_string(self):
+        """Decimal coercion (str → Decimal) like other domain VOs."""
+        h = BrokerHolding(asset_code="005930", quantity="7", avg_price="71500")
+        assert h.quantity == Decimal("7")
+        assert h.avg_price == Decimal("71500")
+        assert isinstance(h.quantity, Decimal)
+        assert isinstance(h.avg_price, Decimal)
+
+    def test_reject_float_quantity(self):
+        with pytest.raises(ValidationError):
+            BrokerHolding(asset_code="069500", quantity=10.0, avg_price="35000")
+
+    def test_reject_zero_quantity(self):
+        """Only non-empty holdings are reported (quantity > 0)."""
+        with pytest.raises(ValidationError):
+            BrokerHolding(
+                asset_code="069500", quantity="0", avg_price="35000"
+            )
+
+    def test_reject_negative_quantity(self):
+        with pytest.raises(ValidationError):
+            BrokerHolding(
+                asset_code="069500", quantity="-1", avg_price="35000"
+            )
+
+    def test_reject_zero_avg_price(self):
+        with pytest.raises(ValidationError):
+            BrokerHolding(asset_code="069500", quantity="10", avg_price="0")
+
+    def test_reject_empty_asset_code(self):
+        with pytest.raises(ValidationError):
+            BrokerHolding(asset_code="", quantity="10", avg_price="35000")
+
+    def test_immutable(self):
+        h = BrokerHolding(
+            asset_code="069500", quantity="10", avg_price="35000"
+        )
+        with pytest.raises(ValidationError):
+            h.quantity = Decimal("20")
+
+    def test_extra_fields_forbidden(self):
+        with pytest.raises(ValidationError):
+            BrokerHolding(
+                asset_code="069500",
+                quantity="10",
+                avg_price="35000",
+                extra="x",
+            )
+
+    def test_equality_and_hash(self):
+        a = BrokerHolding(
+            asset_code="069500", quantity="10", avg_price="35000"
+        )
+        b = BrokerHolding(
+            asset_code="069500", quantity="10", avg_price="35000"
+        )
+        c = BrokerHolding(
+            asset_code="069500", quantity="11", avg_price="35000"
+        )
+        assert a == b
+        assert hash(a) == hash(b)
+        assert a != c
 
 
 # ---------------------------------------------------------------------------

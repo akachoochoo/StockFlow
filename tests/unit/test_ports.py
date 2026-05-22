@@ -26,6 +26,7 @@ class TestBrokerPort:
         expected = {
             "get_balance",
             "get_positions",
+            "get_holdings",
             "place_order",
             "get_order_status",
             "cancel_order",

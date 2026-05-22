@@ -409,6 +409,35 @@ class Balance(ValueObject):
     cash: Money
 
 
+class BrokerHolding(ValueObject):
+    """Broker-aggregated holding view for one asset (reconciliation 대조용).
+
+    Phase 1.1 Stage 3.3 (사용자 결정 2026-05-22 — additive). The broker (KIS
+    ``inquire-balance`` ``output1[]``) reports only an *aggregated* per-symbol
+    holding: it knows the asset **code** (not the full :class:`Asset`), a total
+    quantity, and an average purchase price — it has **no split-slot structure**.
+    This is deliberately distinct from :class:`Position` (full domain holding
+    with per-slot state); :class:`BrokerHolding` is the lightweight view used to
+    reconcile DB positions against the broker's reported holdings.
+
+    Fields:
+    - asset_code : broker-side symbol code (e.g. "069500"). Not a full Asset —
+                   the broker does not return exchange / market / asset_class.
+    - quantity   : aggregated held quantity (> 0). Only non-zero holdings are
+                   reported (broker get_holdings filters quantity > 0).
+    - avg_price  : aggregated purchase average price (> 0).
+    """
+
+    asset_code: str = Field(min_length=1, max_length=20)
+    quantity: Decimal = Field(gt=Decimal(0))
+    avg_price: Decimal = Field(gt=Decimal(0))
+
+    @field_validator("quantity", "avg_price", mode="before")
+    @classmethod
+    def _coerce_decimal(cls, v: object) -> Decimal:
+        return _to_decimal(v)
+
+
 class OHLCV(ValueObject):
     """Daily Open/High/Low/Close/Volume bar.
 

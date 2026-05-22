@@ -14,6 +14,7 @@ from src.domain.models import (
     Asset,
     AssetClass,
     Balance,
+    BrokerHolding,
     Currency,
     Exchange,
     Market,
@@ -311,6 +312,83 @@ class TestQueries:
         # Phase 0 immediate-fill broker has nothing pending to cancel.
         broker = MockBroker(initial_balance=_balance(), clock=lambda: UTC_NOW)
         assert broker.cancel_order("mock-1") is False
+
+
+# ---------------------------------------------------------------------------
+# get_holdings — reconciliation 대조용 (Phase 1.1 Stage 3.3)
+# ---------------------------------------------------------------------------
+class TestGetHoldings:
+    """get_holdings mirrors get_positions but as the aggregated
+    BrokerHolding view (code + quantity + avg_price, no split-slot)."""
+
+    def test_get_holdings_empty_when_no_positions(self):
+        broker = MockBroker(initial_balance=_balance(), clock=_FixedClock(UTC_NOW))
+        assert broker.get_holdings() == []
+
+    def test_get_holdings_maps_filled_position(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(), clock=_FixedClock(UTC_NOW)
+        )
+        broker.place_order(
+            _request(a, quantity="10", target_price="35000")
+        )
+        holdings = broker.get_holdings()
+        assert holdings == [
+            BrokerHolding(
+                asset_code="069500",
+                quantity=Decimal("10"),
+                avg_price=Decimal("35000"),
+            )
+        ]
+
+    def test_get_holdings_multiple_symbols(self):
+        a = _asset(code="069500")
+        b = _asset(code="005930")
+        broker = MockBroker(
+            initial_balance=_balance(), clock=_FixedClock(UTC_NOW)
+        )
+        broker.place_order(
+            _request(a, idempotency_key="ka", quantity="10", target_price="35000")
+        )
+        broker.place_order(
+            _request(b, idempotency_key="kb", quantity="7", target_price="71500")
+        )
+        holdings = broker.get_holdings()
+        by_code = {h.asset_code: h for h in holdings}
+        assert set(by_code) == {"069500", "005930"}
+        assert by_code["069500"].quantity == Decimal("10")
+        assert by_code["005930"].quantity == Decimal("7")
+
+    def test_get_holdings_excludes_fully_sold_position(self):
+        """A position sold down to quantity 0 must not appear (qty > 0 filter)."""
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(), clock=_FixedClock(UTC_NOW)
+        )
+        broker.place_order(
+            _request(a, quantity="10", target_price="35000")
+        )
+        broker.place_order(
+            _sell_request(
+                a, slot_number=1, quantity="10", target_price="36000"
+            )
+        )
+        # Sold-out position is gone from both views.
+        assert broker.get_positions() == []
+        assert broker.get_holdings() == []
+
+    def test_get_holdings_quantity_and_price_are_decimal(self):
+        a = _asset()
+        broker = MockBroker(
+            initial_balance=_balance(), clock=_FixedClock(UTC_NOW)
+        )
+        broker.place_order(
+            _request(a, quantity="10", target_price="35000")
+        )
+        holding = broker.get_holdings()[0]
+        assert isinstance(holding.quantity, Decimal)
+        assert isinstance(holding.avg_price, Decimal)
 
 
 # ---------------------------------------------------------------------------
