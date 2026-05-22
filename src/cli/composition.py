@@ -37,10 +37,14 @@ from src.use_cases.asset_context import AssetContext
 from src.use_cases.daily_orchestrator import DailyOrchestrator
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from datetime import date, time
     from pathlib import Path
 
+    from src.adapters.kis._http import HttpClient
+    from src.adapters.kis.broker import KISBroker
+    from src.adapters.kis.config import KISConfig
+    from src.adapters.kis.market_data import KISMarketData
     from src.domain.models import OHLCV, Asset, Money
     from src.domain.strategies.price_drop import SplitStrategyConfig
     from src.ports.reentry_strategy import ReentryPriceStrategyPort
@@ -116,6 +120,71 @@ class PaperComponents:
 def utc_for(d: date, t: time) -> datetime:
     """KST date+time → UTC datetime helper (matches BacktestRunner._utc_for)."""
     return datetime.combine(d, t, tzinfo=KST).astimezone(UTC)
+
+
+@dataclass(frozen=True)
+class KISReadComponents:
+    """Wired KIS read-only component graph (Phase 1.1 Stage 2.3).
+
+    Holds the read-subset broker (``get_balance`` / ``get_holdings``) +
+    market-data adapter, plus the resolved ``config`` (for printing
+    mode / host / masked appkey — never the secret). There is no write
+    surface here: ``KISBroker`` physically lacks ``place_order`` /
+    ``cancel_order`` (ADR 0012 Option C read-before-write).
+    """
+
+    broker: KISBroker
+    market_data: KISMarketData
+    config: KISConfig
+
+
+def build_kis_read_components(
+    environ: Mapping[str, str] | None = None,
+    *,
+    http: HttpClient | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> KISReadComponents:
+    """Wire the KIS read-only adapter graph from the environment.
+
+    Composition root for the ``trading kis-check`` smoke command (Phase 1.1
+    Stage 2.3). Reads credentials via ``KISConfig.from_env(environ)`` —
+    missing / blank required vars raise ``ConfigurationError`` (propagated;
+    no silent fallback, CLAUDE.md §6.3).
+
+    DI per CLAUDE.md §1.2: ``http`` / ``clock`` are injectable so tests stay
+    network-free (inject a fake ``HttpClient`` + a fixed UTC clock). In
+    production both default to the real ``RequestsHttpClient`` + a UTC wall
+    clock (CLAUDE.md §3.1 — UTC, no naïve ``datetime.now()``).
+
+    Returns a :class:`KISReadComponents` (broker + market_data + config).
+    The graph is **read-only**: ``KISBroker`` exposes only ``get_balance`` /
+    ``get_holdings``; no order surface exists (ADR 0012 Option C).
+    """
+    # Local imports keep the adapter dependency out of the module-import path
+    # for the paper-trading callers (which never touch KIS).
+    from src.adapters.kis._client import KISClient
+    from src.adapters.kis._http import RequestsHttpClient
+    from src.adapters.kis.auth import KISAuth
+    from src.adapters.kis.broker import KISBroker
+    from src.adapters.kis.config import KISConfig
+    from src.adapters.kis.market_data import KISMarketData
+
+    config = KISConfig.from_env(environ)
+    http_client: HttpClient = http if http is not None else RequestsHttpClient()
+    utc_clock: Callable[[], datetime] = (
+        clock if clock is not None else (lambda: datetime.now(UTC))
+    )
+
+    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    client = KISClient(
+        config=config, http=http_client, auth=auth, clock=utc_clock
+    )
+    broker = KISBroker(client=client)
+    market_data = KISMarketData(client=client)
+
+    return KISReadComponents(
+        broker=broker, market_data=market_data, config=config
+    )
 
 
 def check_snapshot_position_sync(

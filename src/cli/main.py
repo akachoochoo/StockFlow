@@ -583,6 +583,88 @@ def paper(
     )
 
 
+@main.command("kis-check")
+@click.option(
+    "--code",
+    default="069500",
+    show_default=True,
+    help="Asset code used to verify get_price (current quote).",
+)
+def kis_check(code: str) -> None:
+    """Read-only KIS connectivity smoke test (Phase 1.1 Stage 2.3).
+
+    Verifies the ``.env`` credentials + 모의투자 (VTS) server reachability by
+    issuing a token and three READ calls — balance / holdings / current price.
+    **Zero orders** (KISBroker has no write surface) and **zero state change**:
+    no DB, no lock file (read-only diagnostic). The NTP gate is intentionally
+    NOT invoked — this is a connectivity check, not a trade.
+
+    Output prints the trading mode / host / masked appkey so the operator can
+    confirm a 모의투자 (VTS) connection; the appsecret and access token are
+    NEVER printed (CLAUDE.md §8.3 / ADR 0012 R10).
+    """
+    from datetime import UTC, datetime
+
+    from src.adapters.kis._client import KISApiError
+    from src.adapters.kis.auth import KISAuthError
+    from src.domain.exceptions import (
+        BrokerConnectionError,
+        ConfigurationError,
+        DataIntegrityError,
+        MarketDataUnavailableError,
+    )
+
+    try:
+        components = composition.build_kis_read_components()
+    except ConfigurationError as exc:
+        click.echo(
+            f"KIS config error — set the missing key(s) in .env "
+            f"(see .env.example): {exc}",
+            err=True,
+        )
+        raise click.exceptions.Exit(1) from exc
+
+    config = components.config
+    click.echo(
+        f"KIS mode={config.mode.value} host={config.base_url} "
+        f"appkey={config.masked_appkey}"
+    )
+
+    try:
+        balance = components.broker.get_balance()
+        click.echo(f"예수금(cash): {balance.cash.amount} {balance.cash.currency.value}")
+
+        holdings = components.broker.get_holdings()
+        click.echo(f"보유 종목 수(holdings): {len(holdings)}")
+        for holding in holdings:
+            click.echo(
+                f"  {holding.asset_code}  qty={holding.quantity}  "
+                f"avg_price={holding.avg_price}"
+            )
+
+        asset = composition.asset_from_code(code)
+        price = components.market_data.get_price(asset, datetime.now(UTC))
+        click.echo(f"현재가({asset.code}): {price.value} {asset.currency.value}")
+    except KISAuthError as exc:
+        click.echo(f"KIS auth failed (token issue): {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+    except (BrokerConnectionError, KISApiError) as exc:
+        click.echo(f"KIS balance/holdings query failed: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+    except DataIntegrityError as exc:
+        click.echo(f"KIS price integrity check failed: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+    except MarketDataUnavailableError as exc:
+        click.echo(f"KIS get_price failed: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+    except KeyError as exc:
+        # asset_from_code: unknown --code.
+        click.echo(f"Unknown --code: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+
+    click.echo("✅ KIS read 연결 정상")
+
+
 @main.command("halt")
 @click.option(
     "--reason",
