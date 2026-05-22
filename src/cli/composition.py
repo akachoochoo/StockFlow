@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from src.adapters.kis.market_data import KISMarketData
     from src.domain.models import OHLCV, Asset, Money
     from src.domain.strategies.price_drop import SplitStrategyConfig
+    from src.ports.market_data import MarketDataPort
     from src.ports.reentry_strategy import ReentryPriceStrategyPort
 
 
@@ -187,6 +188,48 @@ def build_kis_read_components(
     )
 
 
+def build_kis_market_data(
+    environ: Mapping[str, str] | None = None,
+    *,
+    http: HttpClient | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> KISMarketData:
+    """Wire a read-only ``KISMarketData`` adapter from the environment.
+
+    Composition root for the ``trading dry-run`` command (Phase 1.1 — paper
+    -on-live): live KIS market data (``get_price`` / ``get_ohlcv`` read) feeds
+    a MockBroker fill simulator (no real order, no real account). Mirrors
+    :func:`build_kis_read_components` but wires the **market-data half only** —
+    no ``KISBroker``, so balance / holdings (실계좌) are never queried.
+
+    Reads credentials via ``KISConfig.from_env(environ)`` — missing / blank
+    required vars raise ``ConfigurationError`` (propagated; no silent fallback,
+    CLAUDE.md §6.3). DI per CLAUDE.md §1.2: ``http`` / ``clock`` are injectable
+    so tests stay network-free (inject a fake ``HttpClient`` + a fixed UTC
+    clock). In production both default to the real ``RequestsHttpClient`` + a
+    UTC wall clock (CLAUDE.md §3.1).
+    """
+    # Local imports keep the adapter dependency out of the module-import path
+    # for the paper-trading callers (which never touch KIS).
+    from src.adapters.kis._client import KISClient
+    from src.adapters.kis._http import RequestsHttpClient
+    from src.adapters.kis.auth import KISAuth
+    from src.adapters.kis.config import KISConfig
+    from src.adapters.kis.market_data import KISMarketData
+
+    config = KISConfig.from_env(environ)
+    http_client: HttpClient = http if http is not None else RequestsHttpClient()
+    utc_clock: Callable[[], datetime] = (
+        clock if clock is not None else (lambda: datetime.now(UTC))
+    )
+
+    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    client = KISClient(
+        config=config, http=http_client, auth=auth, clock=utc_clock
+    )
+    return KISMarketData(client=client)
+
+
 def check_snapshot_position_sync(
     uow_factory: Callable[[], SqliteUnitOfWork],
 ) -> None:
@@ -225,6 +268,7 @@ def build_paper_components(
     reentry_strategy_name: str = "hybrid",
     reentry_parameters: dict[str, Any] | None = None,
     buy_strategy_name: str = "price_drop",
+    market_data: MarketDataPort | None = None,
 ) -> PaperComponents:
     """Build a paper-trading orchestrator + snapshot builder.
 
@@ -240,6 +284,13 @@ def build_paper_components(
     - Wires MockBroker + MockMarketData + NullSignal + PriceDropStrategy
       with a mutable clock so the caller can swap decision-time vs
       snapshot-time without rebuilding the graph.
+
+    Phase 1.1 (paper-on-live) — ``market_data`` is optional. When ``None``
+    (default, backward-compatible) a ``MockMarketData(bars_by_asset)`` is
+    built as before (회귀 zero). When a ``MarketDataPort`` is injected (e.g.
+    a live ``KISMarketData``) it is used verbatim and ``bars_by_asset`` is
+    ignored (an empty dict is fine). The broker stays a MockBroker either
+    way — live data + simulated fills, no real order / no real account.
     """
     if not assets:
         raise ValueError("assets must be a non-empty list")
@@ -272,7 +323,14 @@ def build_paper_components(
     for position in stored_positions:
         broker.set_position(position)
 
-    market_data = MockMarketData(ohlcv_by_asset=bars_by_asset)
+    # Phase 1.1: live data injection (paper-on-live). Default = MockMarketData
+    # over bars_by_asset (backward-compatible). Injected market_data (e.g.
+    # KISMarketData) is used verbatim — bars_by_asset is then ignored.
+    effective_market_data: MarketDataPort = (
+        market_data
+        if market_data is not None
+        else MockMarketData(ohlcv_by_asset=bars_by_asset)
+    )
 
     effective_sell_config = sell_strategy_config or SellStrategyConfig(
         profit_target_pct=Decimal("10.0"),
@@ -286,7 +344,7 @@ def build_paper_components(
     reentry = (
         create_reentry_strategy(
             reentry_strategy_name,
-            market_data=market_data,
+            market_data=effective_market_data,
             **effective_reentry_params,
         )
         if buy_strategy_name == "price_drop"
@@ -312,7 +370,7 @@ def build_paper_components(
     ]
     orchestrator = DailyOrchestrator(
         broker=broker,
-        market_data=market_data,
+        market_data=effective_market_data,
         signal=NullSignal(),
         asset_contexts=asset_contexts,
         clock=clock,
@@ -320,7 +378,7 @@ def build_paper_components(
     )
     snapshot_builder = DailySnapshotBuilder(
         broker=broker,
-        market_data=market_data,
+        market_data=effective_market_data,
         uow_factory=uow_factory,
         clock=clock,
         initial_capital=initial_capital,

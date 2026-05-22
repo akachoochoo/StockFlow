@@ -665,6 +665,214 @@ def kis_check(code: str) -> None:
     click.echo("✅ KIS read 연결 정상")
 
 
+@main.command("dry-run")
+@click.option(
+    "--code",
+    "codes",
+    multiple=True,
+    default=("069500", "132030"),
+    show_default=True,
+    help="Asset code(s) to evaluate (repeatable). Default = KODEX 200 + 골드.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default="dry-run.db",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="SQLite DB path for the simulated broker state (created on first run).",
+)
+@click.option(
+    "--capital",
+    type=int,
+    default=10_000_000,
+    show_default=True,
+    help="Initial KRW capital — used only on the very first run "
+    "(no snapshot yet).",
+)
+@click.option(
+    "--date",
+    "trade_date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="KST trading date to evaluate (YYYY-MM-DD). Default = today (KST).",
+)
+@_strategy_options
+@click.pass_context
+def dry_run(
+    ctx: click.Context,
+    codes: tuple[str, ...],
+    db_path: Path,
+    capital: int,
+    trade_date: datetime | None,
+    config_path: Path | None,
+    drop_pct: str,
+    max_split: int,
+    per_split_amount: int,
+    max_split_per_day: int,
+    profit_target_pct: str,
+    max_sells_per_day: int,
+    reentry_strategy: str,
+    cooldown_days: int,
+) -> None:
+    """Paper-on-live dry run — live KIS quotes + simulated (Mock) fills.
+
+    **This is NOT real trading.** Market data is the LIVE KIS server
+    (``get_price`` / ``get_ohlcv`` read-only), but every order is filled by an
+    in-memory ``MockBroker`` against a local SQLite balance — **zero real
+    orders, zero real account access** (balance / holdings are the MockBroker's
+    virtual state; the KIS account is never queried). Running successive days
+    accumulates state in the SQLite DB so multi-day behaviour can be observed.
+
+    Verified: live-quote integration + decision pipeline + simulated fills +
+    multi-day state. NOT verified (limitation): the real KIS order-send / fill
+    (write) path — that is gated separately (ADR 0012 D6, the 모의투자 server
+    step this dry run substitutes for while VTS is unavailable).
+
+    The NTP gate is intentionally NOT invoked — a dry run is a simulation, not
+    a live trade. The lock file IS taken (it protects the local DB state).
+    """
+    from datetime import datetime as _dt
+
+    from src.adapters.kis._client import KISApiError
+    from src.adapters.kis.auth import KISAuthError
+    from src.adapters.kis.config import KISConfig
+    from src.adapters.telegram.notifier import build_notifier
+    from src.domain.constants import KST
+    from src.domain.exceptions import (
+        BrokerConnectionError,
+        ConfigurationError,
+        DataIntegrityError,
+        MarketDataUnavailableError,
+    )
+    from src.ports.notifications import NotificationLevel
+
+    # Phase 1.1 default: 매도 +15% when the flag-only path is used and the
+    # operator did not explicitly override --profit-target-pct (config mode
+    # takes the YAML value verbatim; explicit flag wins over the default).
+    if config_path is None:
+        try:
+            source = ctx.get_parameter_source("profit_target_pct")
+        except KeyError:
+            source = None
+        if source is not ParameterSource.COMMANDLINE:
+            profit_target_pct = "15.0"
+
+    today = trade_date.date() if trade_date is not None else _dt.now(KST).date()
+
+    with safety.lock_file():
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
+            _resolve_strategy_configs(
+                ctx,
+                config_path,
+                drop_pct=drop_pct,
+                max_split=max_split,
+                per_split_amount=per_split_amount,
+                max_split_per_day=max_split_per_day,
+                profit_target_pct=profit_target_pct,
+                max_sells_per_day=max_sells_per_day,
+                reentry_strategy=reentry_strategy,
+                cooldown_days=cooldown_days,
+            )
+        )
+        # In flag-only mode _resolve_strategy_configs returns ["069500"]; the
+        # dry-run command drives its own --code list instead (config mode still
+        # binds the YAML-enabled codes, which the operator must match).
+        effective_codes = (
+            asset_codes if config_path is not None else list(codes)
+        )
+        try:
+            assets = [composition.asset_from_code(c) for c in effective_codes]
+        except KeyError as exc:
+            click.echo(f"Unknown --code: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+
+        try:
+            # Resolve config once for the banner (mode / host — never secret),
+            # then wire the read-only KIS market data adapter.
+            kis_config = KISConfig.from_env()
+            market_data = composition.build_kis_market_data()
+        except ConfigurationError as exc:
+            click.echo(
+                f"KIS config error — set the missing key(s) in .env "
+                f"(see .env.example): {exc}",
+                err=True,
+            )
+            raise click.exceptions.Exit(1) from exc
+
+        notifier = build_notifier()
+        decision_at = composition.utc_for(today, time(9, 0))
+        snapshot_at = composition.utc_for(today, time(16, 0))
+        components = composition.build_paper_components(
+            assets=assets,
+            bars_by_asset={},
+            db_path=db_path,
+            initial_capital=_krw(capital),
+            strategy_config=buy_config,
+            sell_strategy_config=sell_config,
+            reentry_strategy_name=reentry_name,
+            reentry_parameters=reentry_params,
+            initial_clock=decision_at,
+            market_data=market_data,
+        )
+        try:
+            decisions = components.orchestrator.run_for_date(today)
+            components.set_clock(snapshot_at)
+            snapshot = components.snapshot_builder.build_and_save(today)
+        except KISAuthError as exc:
+            click.echo(f"KIS auth failed (token issue): {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except DataIntegrityError as exc:
+            click.echo(f"KIS price integrity check failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except (
+            MarketDataUnavailableError,
+            BrokerConnectionError,
+            KISApiError,
+        ) as exc:
+            click.echo(f"KIS market-data read failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        finally:
+            components.close()
+
+    # Banner + live-data source (host) — never the secret.
+    click.echo("=" * 64)
+    click.echo("DRY-RUN — 실주문 없음, 실계좌 미사용 (MockBroker 시뮬 체결)")
+    click.echo("=" * 64)
+    click.echo(
+        f"mode=paper-on-live  market_data=KIS(mode={kis_config.mode.value} "
+        f"host={kis_config.base_url})  date={today}"
+    )
+
+    # Notify + print each asset's intended decision (buy / sell / skip). The
+    # orchestrator does not own a notifier; we notify at the command level so
+    # its signature stays unchanged.
+    for decision in decisions:
+        kinds = " / ".join(decision.action_kinds())
+        title = f"[DRY-RUN] {decision.asset.fqn}"
+        body = f"intended: {kinds}"
+        notifier.notify(level=NotificationLevel.INFO, title=title, body=body)
+        click.echo(f"  {decision.asset.fqn}: intended {kinds}")
+
+    click.echo(
+        f"Cash (simulated): {snapshot.cash.amount} "
+        f"{snapshot.cash.currency.value}"
+    )
+    click.echo(
+        f"Total value (simulated): {snapshot.total_value.amount} "
+        f"{snapshot.total_value.currency.value} "
+        f"(return {snapshot.total_return_pct:.4f}%)"
+    )
+    if snapshot.valuations:
+        click.echo("Positions (simulated):")
+        for v in snapshot.valuations:
+            click.echo(
+                f"  {v.asset.fqn}  level={v.split_level}  qty={v.quantity}  "
+                f"avg={v.avg_price}  mkt={v.market_price}  "
+                f"PnL={v.unrealized_pnl.amount} ({v.unrealized_pnl_pct:.2f}%)"
+            )
+
+
 @main.command("halt")
 @click.option(
     "--reason",
