@@ -1715,6 +1715,98 @@ class TestOrderResult:
                 filled_at=naive,
             )
 
+    # ADR 0019 — additive nullable cost/routing fields.
+    def test_order_result_cost_fields_default_none(self):
+        r = OrderResult(
+            idempotency_key="k",
+            asset=make_asset(),
+            broker_order_id="bid-1",
+            status=OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            submitted_at=UTC_NOW,
+            filled_at=UTC_LATER,
+        )
+        assert r.tax is None
+        assert r.commission is None
+        assert r.broker_org_no is None
+
+    def test_order_result_cost_fields_accept_values(self):
+        r = OrderResult(
+            idempotency_key="k",
+            asset=make_asset(),
+            broker_order_id="bid-1",
+            status=OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            submitted_at=UTC_NOW,
+            filled_at=UTC_LATER,
+            tax=Decimal("52.5"),
+            commission=Decimal("17.5"),
+            broker_org_no="00950",
+        )
+        assert r.tax == Decimal("52.5")
+        assert r.commission == Decimal("17.5")
+        assert r.broker_org_no == "00950"
+
+    def test_order_result_zero_cost_allowed(self):
+        r = OrderResult(
+            idempotency_key="k",
+            asset=make_asset(),
+            broker_order_id="bid-1",
+            status=OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            submitted_at=UTC_NOW,
+            filled_at=UTC_LATER,
+            tax=Decimal("0"),
+            commission=Decimal("0"),
+        )
+        assert r.tax == Decimal("0")
+        assert r.commission == Decimal("0")
+
+    def test_order_result_negative_tax_rejected(self):
+        with pytest.raises(ValidationError):
+            OrderResult(
+                idempotency_key="k",
+                asset=make_asset(),
+                broker_order_id="bid-1",
+                status=OrderStatus.FILLED,
+                filled_quantity=Decimal("10"),
+                filled_price=Decimal("35000"),
+                submitted_at=UTC_NOW,
+                filled_at=UTC_LATER,
+                tax=Decimal("-1"),
+            )
+
+    def test_order_result_negative_commission_rejected(self):
+        with pytest.raises(ValidationError):
+            OrderResult(
+                idempotency_key="k",
+                asset=make_asset(),
+                broker_order_id="bid-1",
+                status=OrderStatus.FILLED,
+                filled_quantity=Decimal("10"),
+                filled_price=Decimal("35000"),
+                submitted_at=UTC_NOW,
+                filled_at=UTC_LATER,
+                commission=Decimal("-0.5"),
+            )
+
+    def test_order_result_tax_rejects_float(self):
+        with pytest.raises(ValidationError):
+            OrderResult(
+                idempotency_key="k",
+                asset=make_asset(),
+                broker_order_id="bid-1",
+                status=OrderStatus.FILLED,
+                filled_quantity=Decimal("10"),
+                filled_price=Decimal("35000"),
+                submitted_at=UTC_NOW,
+                filled_at=UTC_LATER,
+                tax=52.5,  # type: ignore[arg-type]
+            )
+
 
 # ---------------------------------------------------------------------------
 # Order
@@ -1741,6 +1833,37 @@ class TestOrder:
     def test_filled_happy_path(self):
         o = Order(**self._filled_kwargs())
         assert o.status is OrderStatus.FILLED
+
+    # ADR 0019 — additive nullable cost/routing fields.
+    def test_order_cost_fields_default_none(self):
+        o = Order(**self._filled_kwargs())
+        assert o.tax is None
+        assert o.commission is None
+        assert o.broker_org_no is None
+
+    def test_order_cost_fields_accept_values(self):
+        o = Order(
+            **self._filled_kwargs(
+                tax=Decimal("52.5"),
+                commission=Decimal("17.5"),
+                broker_org_no="00950",
+            )
+        )
+        assert o.tax == Decimal("52.5")
+        assert o.commission == Decimal("17.5")
+        assert o.broker_org_no == "00950"
+
+    def test_order_negative_tax_rejected(self):
+        with pytest.raises(ValidationError):
+            Order(**self._filled_kwargs(tax=Decimal("-1")))
+
+    def test_order_negative_commission_rejected(self):
+        with pytest.raises(ValidationError):
+            Order(**self._filled_kwargs(commission=Decimal("-0.5")))
+
+    def test_order_tax_rejects_float(self):
+        with pytest.raises(ValidationError):
+            Order(**self._filled_kwargs(tax=52.5))
 
     def test_filled_requires_broker_id(self):
         with pytest.raises(ValidationError, match="broker_order_id"):
@@ -1887,6 +2010,61 @@ class TestOrder:
         assert o.filled_price == Decimal("35000")
         assert o.submitted_at == UTC_NOW
         assert o.filled_at == UTC_LATER
+
+    def test_from_request_result_propagates_cost_fields(self):
+        # ADR 0019 — tax/commission/broker_org_no propagate result -> order.
+        a = make_asset()
+        req = OrderRequest(
+            idempotency_key="k",
+            asset=a,
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=Decimal("10"),
+            target_price=Decimal("35000"),
+        )
+        res = OrderResult(
+            idempotency_key="k",
+            asset=a,
+            broker_order_id="bid-1",
+            status=OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            submitted_at=UTC_NOW,
+            filled_at=UTC_LATER,
+            tax=Decimal("52.5"),
+            commission=Decimal("17.5"),
+            broker_org_no="00950",
+        )
+        o = Order.from_request_result(req, res)
+        assert o.tax == Decimal("52.5")
+        assert o.commission == Decimal("17.5")
+        assert o.broker_org_no == "00950"
+
+    def test_from_request_result_cost_fields_default_none(self):
+        # ADR 0019 — provisional None propagates as None.
+        a = make_asset()
+        req = OrderRequest(
+            idempotency_key="k",
+            asset=a,
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=Decimal("10"),
+            target_price=Decimal("35000"),
+        )
+        res = OrderResult(
+            idempotency_key="k",
+            asset=a,
+            broker_order_id="bid-1",
+            status=OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            submitted_at=UTC_NOW,
+            filled_at=UTC_LATER,
+        )
+        o = Order.from_request_result(req, res)
+        assert o.tax is None
+        assert o.commission is None
+        assert o.broker_org_no is None
 
     def test_from_request_result_idempotency_key_mismatch(self):
         req = OrderRequest(

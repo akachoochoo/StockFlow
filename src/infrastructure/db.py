@@ -64,7 +64,10 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         filled_quantity TEXT NOT NULL,
         filled_price TEXT,
         submitted_at TEXT NOT NULL,
-        filled_at TEXT
+        filled_at TEXT,
+        tax TEXT,                                -- ADR 0019 nullable (provisional)
+        commission TEXT,                         -- ADR 0019 nullable (provisional)
+        broker_org_no TEXT                       -- ADR 0019 KRX_FWDG_ORD_ORGNO (cancel routing)
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_orders_submitted_at ON orders(submitted_at)",

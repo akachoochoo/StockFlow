@@ -1107,15 +1107,23 @@ class OrderResult(DomainModel):
     filled_price: Decimal | None
     submitted_at: datetime
     filled_at: datetime | None
+    # ADR 0019 (Phase 1.1 Stage 4.5) — additive nullable cost/routing fields.
+    # KIS basic order/balance responses carry no per-order tax/commission
+    # (ADR 0020 §4: thdt_tlex_amt = today's total fees only) → provisional
+    # None until Stage 7 paper-trade response verification. broker_org_no
+    # (KRX_FWDG_ORD_ORGNO) is populated at Stage 5 cancel routing.
+    tax: Decimal | None = None
+    commission: Decimal | None = None
+    broker_org_no: str | None = None
 
     @field_validator("filled_quantity", mode="before")
     @classmethod
     def _coerce_filled_qty(cls, v: object) -> Decimal:
         return _to_decimal(v)
 
-    @field_validator("filled_price", mode="before")
+    @field_validator("filled_price", "tax", "commission", mode="before")
     @classmethod
-    def _coerce_filled_price(cls, v: object) -> Decimal | None:
+    def _coerce_optional_decimal(cls, v: object) -> Decimal | None:
         if v is None:
             return None
         return _to_decimal(v)
@@ -1132,6 +1140,13 @@ class OrderResult(DomainModel):
     def _positive_filled_price(cls, v: Decimal | None) -> Decimal | None:
         if v is not None and v <= 0:
             raise ValueError(f"filled_price must be > 0 when present, got {v}")
+        return v
+
+    @field_validator("tax", "commission")
+    @classmethod
+    def _non_negative_cost(cls, v: Decimal | None) -> Decimal | None:
+        if v is not None and v < 0:
+            raise ValueError(f"tax/commission must be >= 0 when present, got {v}")
         return v
 
     @field_validator("submitted_at")
@@ -1167,6 +1182,13 @@ class Order(DomainModel):
     filled_price: Decimal | None
     submitted_at: datetime
     filled_at: datetime | None
+    # ADR 0019 (Phase 1.1 Stage 4.5) — additive nullable cost/routing fields.
+    # Mirror of OrderResult; see that model's note. Provisional None until
+    # Stage 7 (tax/commission per-fill attribution) / Stage 5 (broker_org_no
+    # cancel routing, KRX_FWDG_ORD_ORGNO).
+    tax: Decimal | None = None
+    commission: Decimal | None = None
+    broker_org_no: str | None = None
 
     @field_validator(
         "quantity",
@@ -1178,9 +1200,9 @@ class Order(DomainModel):
     def _coerce_decimal(cls, v: object) -> Decimal:
         return _to_decimal(v)
 
-    @field_validator("filled_price", mode="before")
+    @field_validator("filled_price", "tax", "commission", mode="before")
     @classmethod
-    def _coerce_filled_price(cls, v: object) -> Decimal | None:
+    def _coerce_optional_decimal(cls, v: object) -> Decimal | None:
         if v is None:
             return None
         return _to_decimal(v)
@@ -1197,6 +1219,13 @@ class Order(DomainModel):
     def _positive_filled_price(cls, v: Decimal | None) -> Decimal | None:
         if v is not None and v <= 0:
             raise ValueError(f"filled_price must be > 0 when present, got {v}")
+        return v
+
+    @field_validator("tax", "commission")
+    @classmethod
+    def _non_negative_cost(cls, v: Decimal | None) -> Decimal | None:
+        if v is not None and v < 0:
+            raise ValueError(f"tax/commission must be >= 0 when present, got {v}")
         return v
 
     @field_validator("submitted_at")
@@ -1264,6 +1293,9 @@ class Order(DomainModel):
             filled_price=result.filled_price,
             submitted_at=result.submitted_at,
             filled_at=result.filled_at,
+            tax=result.tax,
+            commission=result.commission,
+            broker_org_no=result.broker_org_no,
         )
 
 

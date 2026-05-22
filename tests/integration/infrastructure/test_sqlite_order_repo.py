@@ -47,6 +47,9 @@ def _order(
     filled_quantity: str = "10",
     filled_price: str | None = "35000",
     broker_order_id: str | None = "bid-1",
+    tax: str | None = None,
+    commission: str | None = None,
+    broker_org_no: str | None = None,
 ) -> Order:
     return Order(
         idempotency_key=idempotency_key,
@@ -61,6 +64,9 @@ def _order(
         filled_price=Decimal(filled_price) if filled_price is not None else None,
         submitted_at=submitted_at,
         filled_at=filled_at,
+        tax=Decimal(tax) if tax is not None else None,
+        commission=Decimal(commission) if commission is not None else None,
+        broker_org_no=broker_org_no,
     )
 
 
@@ -103,6 +109,33 @@ class TestSqliteOrderRepoRoundTrip:
         loaded = repo.get_by_idempotency_key("k1")
         assert loaded == rejected
         assert loaded.broker_order_id is None
+
+    def test_cost_fields_none_round_trip(self, conn):
+        # ADR 0019 — provisional None tax/commission/broker_org_no.
+        repo = SqliteOrderRepo(conn)
+        original = _order()
+        assert original.tax is None
+        repo.save(original)
+        loaded = repo.get_by_idempotency_key("k1")
+        assert loaded == original
+        assert loaded.tax is None
+        assert loaded.commission is None
+        assert loaded.broker_org_no is None
+
+    def test_cost_fields_values_round_trip(self, conn):
+        # ADR 0019 — tax/commission/broker_org_no persist and restore.
+        repo = SqliteOrderRepo(conn)
+        original = _order(
+            tax="52.5",
+            commission="17.5",
+            broker_org_no="00950",
+        )
+        repo.save(original)
+        loaded = repo.get_by_idempotency_key("k1")
+        assert loaded == original
+        assert loaded.tax == Decimal("52.5")
+        assert loaded.commission == Decimal("17.5")
+        assert loaded.broker_org_no == "00950"
 
 
 class TestSqliteOrderRepoFilters:

@@ -33,7 +33,8 @@ class SqliteOrderRepo:
             "INSERT INTO orders (idempotency_key, asset_fqn, asset_json, "
             "side, order_type, quantity, target_price, status, "
             "broker_order_id, filled_quantity, filled_price, submitted_at, "
-            "filled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "filled_at, tax, commission, broker_org_no) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 order.idempotency_key,
                 order.asset.fqn,
@@ -48,6 +49,9 @@ class SqliteOrderRepo:
                 str(order.filled_price) if order.filled_price is not None else None,
                 order.submitted_at.isoformat(),
                 order.filled_at.isoformat() if order.filled_at is not None else None,
+                str(order.tax) if order.tax is not None else None,
+                str(order.commission) if order.commission is not None else None,
+                order.broker_org_no,
             ),
         )
 
@@ -99,4 +103,11 @@ class SqliteOrderRepo:
                 if row["filled_at"] is not None
                 else None
             ),
+            tax=Decimal(row["tax"]) if row["tax"] is not None else None,
+            commission=(
+                Decimal(row["commission"])
+                if row["commission"] is not None
+                else None
+            ),
+            broker_org_no=row["broker_org_no"],
         )

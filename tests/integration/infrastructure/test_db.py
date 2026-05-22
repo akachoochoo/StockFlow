@@ -79,6 +79,23 @@ class TestConnect:
             conn.close()
 
 
+class TestOrdersCostFieldsSchema:
+    """ADR 0019 — fresh DB orders table carries cost/routing columns."""
+
+    def test_orders_schema_has_tax_commission_broker_org_no(self):
+        conn = connect(":memory:")
+        try:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(orders)").fetchall()
+            }
+            assert "tax" in cols
+            assert "commission" in cols
+            assert "broker_org_no" in cols
+        finally:
+            conn.close()
+
+
 class TestBootstrapSchema:
     def test_idempotent(self):
         conn = sqlite3.connect(":memory:")
