@@ -266,13 +266,27 @@ class TestBuildKisReadComponents:
             composition.build_kis_read_components(incomplete, http=_FakeHttp())
 
     def test_kis_check_build_read_only_no_write_surface(self) -> None:
-        """KISBroker exposes no order surface (structural read-only)."""
+        """kis-check builds a read-only broker — orders structurally blocked.
+
+        Option C transition (Stage 5): the write methods now EXIST on KISBroker
+        but ``build_kis_read_components`` constructs it **without** an
+        ``order_store``, so every write call raises ``RuntimeError`` — the
+        kis-check / reconcile path cannot move money. The read-only guarantee is
+        no longer "method absent" but "method present, structurally gated".
+        """
         fake = _FakeHttp()
         components = composition.build_kis_read_components(
             _paper_environ(), http=fake, clock=_fixed_clock
         )
-        assert not hasattr(components.broker, "place_order")
-        assert not hasattr(components.broker, "cancel_order")
+        # Methods exist (Stage 5 write surface)...
+        assert hasattr(components.broker, "place_order")
+        assert hasattr(components.broker, "cancel_order")
+        assert hasattr(components.broker, "get_order_status")
+        # ...but the read-only construction (no order_store) blocks every write.
+        with pytest.raises(RuntimeError, match="requires order_store"):
+            components.broker.get_order_status("any-key")
+        with pytest.raises(RuntimeError, match="requires order_store"):
+            components.broker.cancel_order("any-oid")
 
 
 # ---------------------------------------------------------------------------

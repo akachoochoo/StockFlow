@@ -8,8 +8,10 @@ Coverage:
 - get_balance: output2 빈 응답 → BrokerConnectionError.
 - get_holdings: output1[] → BrokerHolding 매핑, hldg_qty>0 필터, 빈 보유 → [].
 - get_holdings: page-limit 도달 시 truncation WARNING 로깅.
-- kis_write_endpoints_absent_before_read_gate: hasattr 게이트.
-- kis_broker_port_signature: get_balance / get_holdings 존재, write 메서드 부재.
+- kis_write_endpoints_present_but_order_store_gated: Option C 전환 게이트 —
+  write 메서드 present + read-only 구성(order_store 없음)에서 호출 시 RuntimeError
+  (주문 불가). get_positions 는 여전히 부재.
+- kis_broker_port_signature: get_balance / get_holdings 존재.
 - kis_decimal_only: Balance.cash.amount is Decimal (float zero).
 
 Function names carry ``kis_broker_`` (Stage gate selector).
@@ -380,23 +382,39 @@ class TestKisBrokerPortSignature:
         assert hasattr(KISBroker, "get_holdings")
         assert callable(KISBroker.get_holdings)
 
-    def test_kis_write_endpoints_absent_before_read_gate(self) -> None:
-        """Stage gate: write methods must NOT exist until Stage 5.
+    def test_kis_write_endpoints_present_but_order_store_gated(self) -> None:
+        """Option C transition (Stage 5): write methods now EXIST but a
+        read-only construction (no order_store) cannot use them.
 
-        Locks Option C (read-before-write) boundary: a careless Stage 5 edit
-        that forgets to update this test will cause an immediate failure.
+        Supersedes the Stage 2.3 ``kis_write_endpoints_absent_before_read_gate``
+        ``hasattr`` test: the read-before-write boundary is no longer "method
+        physically absent" but "method present, structurally gated by a required
+        ``order_store`` injection". A read-only ``KISBroker(client=client)``
+        (the kis-check / reconcile construction, §2.5 read path) raises
+        ``RuntimeError`` on every write call → money cannot move through the
+        read-only path. ``get_positions`` stays absent (aggregate-only KIS
+        balance — reconciliation uses ``get_holdings``).
         """
-        assert not hasattr(KISBroker, "place_order"), (
-            "place_order must not exist until Stage 5 (write surface)"
-        )
-        assert not hasattr(KISBroker, "cancel_order"), (
-            "cancel_order must not exist until Stage 5 (write surface)"
-        )
+        # Write methods are now present (Stage 5 write surface).
+        assert hasattr(KISBroker, "place_order")
+        assert hasattr(KISBroker, "cancel_order")
+        assert hasattr(KISBroker, "get_order_status")
+
+        # ...but a read-only construction (order_store=None) cannot place,
+        # status, or cancel an order — every write call raises RuntimeError.
+        client = _FakeKISClient([_balance_body()])
+        broker = KISBroker(client=client)
+        with pytest.raises(RuntimeError, match="requires order_store"):
+            broker.get_order_status("any-key")
+        with pytest.raises(RuntimeError, match="requires order_store"):
+            broker.cancel_order("any-oid")
+        # No KIS call was issued by the blocked writes (no network attempt).
+        assert client.calls == []
+
+        # get_positions stays unimplemented (KIS balance is aggregate-only;
+        # reconciliation uses get_holdings — 사용자 결정 2026-05-22).
         assert not hasattr(KISBroker, "get_positions"), (
             "get_positions (full Position) is NOT implemented — KIS "
             "inquire-balance output1[] is aggregate-only; reconciliation uses "
             "get_holdings (BrokerHolding) instead (사용자 결정 2026-05-22)"
-        )
-        assert not hasattr(KISBroker, "get_order_status"), (
-            "get_order_status must not exist until Stage 2.5/5"
         )
