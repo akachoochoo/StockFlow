@@ -466,6 +466,28 @@ consensus 가 ADR 0012 §1.8 sub-step 표만으로는 드러나지 않은 결함
 
 로드맵 §6 Ordering note (§2 ↔ 로드맵 순환 방지) 판정: 본 라운드 amendments 는 **D1~D20 default 결정을 변경하지 않는다** — 구현 순서 / 구조 / 게이트 / 테스트 측정법만 박제. §1 에 대한 유일한 touch = D17 ADR 번호 정정 (0013→0019, docs hygiene, Stage 0.2). 따라서 "§2 가 로드맵을 바꾸면 재검토" 순환은 **미발화** — 로드맵은 §1 의 downstream translation 이며 Stage 1+ (build) 진입 자격 충족. **실거래 ON 은 여전히 D16 (iv-a)~(vi) 게이트 (Stage 7/8) 뒤 — §1 불변.**
 
+### 2.5 D6 amendment — 모의투자(VTS) 서버 → dry-run paper-on-live 대체 (2026-05-23)
+
+> **이것은 D6 (consensus 결정) 의 amendment 다.** 메타원칙(ADR 0006 §18.B "박제 reverse 시 양쪽 rationale 인용") 정합 — 원 D6 본문(§1, line 116~)은 보존하며 본 §2.5 가 변경/한계를 박제한다.
+
+**발단**: D6 (iv-b) "KIS 모의투자(VTS) 서버 무사고 5 영업일" 검증을 시도했으나, paper(VTS) 계좌가 `OPSQ2000`(조회 자료 없음 = 모의투자 계좌/앱 설정 미비)로 잔고조회조차 실패 — VTS 경로 사용 불가. (token 발급/IP/appkey 는 정상; 모의투자 *계좌* 자체 문제.) 사용자 결정(2026-05-23): **모의투자 서버 검증을 dry-run paper-on-live 로 대체.**
+
+**변경**: D6 paper trading 검증 = **dry-run paper-on-live** (`trading dry-run`, commit `47cfd71`):
+- market data = **실 KIS 시세** (KISMarketData get_price/get_ohlcv, read-only) — 실서버 라이브 데이터.
+- broker = **MockBroker** (체결 시뮬 + 모의 잔고, 로컬 SQLite). 실주문 zero, **실계좌 미사용**(inquire-balance 호출 zero).
+- DailyOrchestrator 정상 실행 + 다일(multi-day) 상태 누적.
+
+**dry-run 이 검증하는 것**: 실시세 통합 + 의사결정 파이프라인(PriceDropStrategy 등) + 시뮬 체결 + 다일 상태 + 알림(notifier) 경로. (D6 (iv-a) KIS Mock schema 검증 + read 표면은 ADR 0020 §5.1 라이브 검증으로 별도 충족.)
+
+**dry-run 이 검증하지 *못*하는 것 (CRITICAL 한계)**: **실 KIS 주문 전송/체결/부분체결/취소 (write 경로).** dry-run = 주문 미실행이 정의 — MockBroker 시뮬 체결은 실 KIS 체결 왕복(place_order→체결→inquire-daily-ccld)을 검증하지 않는다. 원 D6 (iv-b) 의 핵심이던 *주문 왕복* 검증이 dry-run 으로는 빠진다.
+
+**write 경로 검증 = 별도 (D16 진입 전 필수)**: 실거래 주문 ON 전, write 경로는 다음 중 하나로 검증되어야 한다 (Phase 1.1 sub-step 1.1.4 또는 실거래 진입 결정 라운드에서 박제):
+- (a) 모의투자(VTS) 계좌 복구 후 (iv-b) 원안대로 주문 왕복 검증, 또는
+- (b) Stage 8 첫 실주문을 **극소 수량 1주 + 사람 1:1 감독 + 즉시 검증**으로 제한한 supervised first-order 게이트.
+- **본 amendment 는 (a)/(b) 중 선택을 미결로 두되, write 경로 미검증 상태로 실거래 일반 운영 진입은 금지** 를 박제한다.
+
+**불변 (paper-before-real-trading 원칙 유지)**: 본 amendment 는 *paper 검증 수단*(VTS 서버 → dry-run)만 바꾼다. 실거래 **주문** ON 은 여전히 D16 게이트(NTP + read 검증 + write 경로 검증 (a)/(b)) 뒤이며, write 코드(Stage 5)는 미작성. ADR 0012 D6/D16 의 "검증 없이 실주문 금지" 정신 불변. D16 (iv-b) 는 본 §2.5 로 "VTS 서버 또는 dry-run + write 별도검증" 으로 해석 갱신.
+
 ---
 
 ## 3. `<TBD: Phase 1.1 종료 회고 commit 시 박제 — G2.4 게이트 판정 + Phase 1.2 진입 결정 라운드 박제 + Phase 2 진입 결정 trigger>`
