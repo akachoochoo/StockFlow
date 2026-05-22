@@ -324,6 +324,26 @@ class TestKisClientErrors:
         with pytest.raises(KISApiError):
             client.request("GET", "/path", tr_id="FHKST01010100", params={})
 
+    def test_kis_client_rt_cd_error_surfaces_msg1_reason(self) -> None:
+        # msg1 (human-readable Korean reason) must surface so failures like
+        # OPSQ2000 (조회 자료 없음) are diagnosable, not just the opaque code.
+        http = _FakeHttp(
+            [
+                HttpResponse(
+                    status_code=200,
+                    body={
+                        "rt_cd": "2",
+                        "msg_cd": "OPSQ2000",
+                        "msg1": "조회할 자료가 없습니다.",
+                    },
+                )
+            ]
+        )
+        client = _make_client(_paper_config(), http)
+        with pytest.raises(KISApiError) as exc_info:
+            client.request("GET", "/path", tr_id="VTTC8434R", params={})
+        assert "조회할 자료가 없습니다" in str(exc_info.value)
+
     def test_kis_client_no_retry_exactly_one_http_call(self) -> None:
         """ADR 0012 §1.6 #1: 자동 재시도 zero — exactly 1 HTTP call on error."""
         http = _FakeHttp(

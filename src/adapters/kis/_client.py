@@ -185,8 +185,10 @@ class KISClient:
     def _validate(self, resp: HttpResponse, tr_id: str) -> dict[str, object]:
         """Enforce HTTP-2xx + KIS ``rt_cd == "0"``; return the body or raise.
 
-        No secret appears in any raised message — only ``tr_id`` (non-secret),
-        HTTP status, and the KIS envelope codes (``rt_cd`` / ``msg_cd``).
+        On failure the raised message carries ``tr_id`` (non-secret), HTTP
+        status, and the KIS envelope codes (``rt_cd`` / ``msg_cd`` / ``msg1``)
+        so the human-readable Korean reason (``msg1``) is diagnosable. No
+        appkey / appsecret is exposed (R10 redaction defense applied to msg1).
         **자동 재시도 zero** (ADR 0012 §1.6 #1) — the caller decides.
         """
         body = resp.json()
@@ -194,6 +196,7 @@ class KISClient:
             msg_cd = body.get("msg_cd", "")
             raise KISApiError(
                 f"KIS {tr_id} HTTP {resp.status_code} msg_cd={msg_cd!r} "
+                f"msg1={self._safe_msg1(body)!r} "
                 f"(no automatic retry; ADR 0012 §1.6 #1)"
             )
         rt_cd = body.get("rt_cd")
@@ -201,6 +204,19 @@ class KISClient:
             msg_cd = body.get("msg_cd", "")
             raise KISApiError(
                 f"KIS {tr_id} rt_cd={rt_cd!r} msg_cd={msg_cd!r} "
+                f"msg1={self._safe_msg1(body)!r} "
                 f"(no automatic retry; ADR 0012 §1.6 #1)"
             )
         return body
+
+    def _safe_msg1(self, body: dict[str, object]) -> str:
+        """KIS ``msg1`` (human-readable reason), capped + secret-redacted (R10).
+
+        ``msg1`` is a generic KIS message and does not echo credentials, but we
+        defensively mask the appkey/appsecret if they ever appear (ADR 0012 R10).
+        """
+        detail = str(body.get("msg1", ""))[:200]
+        for secret in (self._config.appkey, self._config.appsecret):
+            if secret and secret in detail:
+                detail = detail.replace(secret, "***")
+        return detail
