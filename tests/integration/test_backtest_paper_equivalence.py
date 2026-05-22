@@ -62,6 +62,9 @@ SHARED_FLAGS: list[str] = [
 @pytest.fixture(autouse=True)
 def _isolated_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(safety, "_DEFAULT_LOCK_PATH", tmp_path / "test.lock")
+    # Stub the NTP gate (no reachable server in CI/sandbox). The real
+    # fail-closed behaviour is covered in tests/unit/cli/test_safety_ntp_halt.py.
+    monkeypatch.setattr(safety, "verify_ntp_sync", lambda **_: None)
 
 
 @pytest.fixture

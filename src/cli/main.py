@@ -359,10 +359,19 @@ def _resolve_strategy_configs(
 # ---------------------------------------------------------------------------
 # Group + subcommands
 # ---------------------------------------------------------------------------
+# Operator-recovery commands must stay reachable while halted, otherwise a
+# halt would lock out its own resume. Everything else (trading + utilities) is
+# blocked by the entry-time halt check (fail-safe default).
+_HALT_EXEMPT_SUBCOMMANDS: frozenset[str] = frozenset({"halt", "resume"})
+
+
 @click.group()
-def main() -> None:
+@click.pass_context
+def main(ctx: click.Context) -> None:
     """SevenSplit trading CLI (Phase 0, single-asset)."""
     safety.check_kill_switch()
+    if ctx.invoked_subcommand not in _HALT_EXEMPT_SUBCOMMANDS:
+        safety.check_halt()
 
 
 @main.command()
@@ -526,6 +535,9 @@ def paper(
     """
     today = trade_date.date()
     with safety.lock_file():
+        # CLAUDE.md §3.3 — verify clock sync before any live trade. Fail-closed
+        # (raises ClockSkewError → halt). Backtest skips this (historical data).
+        safety.verify_ntp_sync()
         asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
             _resolve_strategy_configs(
                 ctx,
@@ -569,6 +581,41 @@ def paper(
     click.echo(
         output_formatter.format_paper_decision(decision, snapshot, as_json=as_json)
     )
+
+
+@main.command("halt")
+@click.option(
+    "--reason",
+    required=True,
+    help="Why trading is being halted (recorded in the sentinel for audit).",
+)
+def halt(reason: str) -> None:
+    """Write the persistent halt sentinel — blocks all commands until resume.
+
+    Survives across cron processes (env vars do not). The first halt reason is
+    preserved if a sentinel already exists (CLAUDE.md §11.2).
+    """
+    path = safety.write_halt(reason)
+    if safety.halt_reason(path=path) == reason:
+        click.echo(f"Trading HALTED. Sentinel: {path}\n  reason: {reason}")
+    else:
+        existing = safety.halt_reason(path=path)
+        click.echo(
+            f"Already halted (sentinel exists: {path}).\n"
+            f"  preserved reason: {existing}"
+        )
+
+
+@main.command("resume")
+def resume() -> None:
+    """Clear the persistent halt sentinel (explicit human resume)."""
+    path = safety.default_halt_path()
+    was_halted = safety.is_halted(path=path)
+    safety.clear_halt(path=path)
+    if was_halted:
+        click.echo(f"Trading RESUMED. Sentinel removed: {path}")
+    else:
+        click.echo(f"No halt sentinel present ({path}) — nothing to clear.")
 
 
 @main.group()
