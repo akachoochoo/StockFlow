@@ -1,0 +1,33 @@
+# config/assets.yaml — 데이터 주도 자산 메타데이터 레지스트리 (Phase 1.1)
+#
+# composition.asset_from_code 가 하드코딩 _ASSET_FACTORIES (Phase 0 박제 9 종)
+# 에 없는 코드를 여기서 조회한다 (additive fallback — 기존 팩토리 무손상,
+# 회귀 zero). 새 종목은 코드 수정 없이 이 파일에 추가하면 거래 대상이 된다.
+#
+# 관리 도구: scripts/manage_strategies.py
+#   - add  : strategies*.yaml(전략) + assets.yaml(메타데이터) 동시 갱신
+#            + pykrx 교차검증 (종목명 / 시장 / 데이터 가용성)
+#   - list / show / validate / enable / disable / remove / set / new / diff
+#
+# 직접 편집도 가능. 단 money-critical 필드(tick_size / listed_at)는 KRX/DART
+# 공식 자료로 확인할 것 (CLAUDE.md §5.1 "외부 데이터는 검증 후 도메인 진입").
+#
+# 필드:
+#   name        : 종목명 (필수)
+#   market      : KOSPI | KOSDAQ (필수)
+#   asset_class : KR_ETF | KR_STOCK (필수)
+#   listed_at   : 상장일 YYYY-MM-DD (필수 — 5년 백테스트 가용성·tradeable 기준)
+#   tick_size   : 호가단위 (옵션 — 기본 KR_ETF=5 / KR_STOCK=1)
+#   lot_size    : 매매단위 (옵션 — 기본 1)
+#   exchange    : KRX (옵션 — 기본 KRX)
+#   currency    : KRW (옵션 — 기본 KRW)
+#   delisted_at : 상장폐지일 YYYY-MM-DD (옵션)
+#
+# 예시 (scripts/manage_strategies.py add 가 자동 생성하는 형태):
+#   "035720":
+#     name: "카카오"
+#     market: KOSPI
+#     asset_class: KR_STOCK
+#     listed_at: 2017-07-10
+version: "1.0"
+assets: {}

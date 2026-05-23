@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.adapters.mock.broker import MockBroker
@@ -33,13 +34,13 @@ from src.domain.strategies.reentry import create_reentry_strategy
 from src.domain.strategies.support_level import SupportLevelStrategy
 from src.infrastructure.db import connect
 from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
+from src.infrastructure.yaml_asset_loader import load_asset_registry
 from src.use_cases.asset_context import AssetContext
 from src.use_cases.daily_orchestrator import DailyOrchestrator
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from datetime import date, time
-    from pathlib import Path
 
     from src.adapters.db_position_broker_view import DbPositionBrokerView
     from src.adapters.kis._http import HttpClient
@@ -1044,19 +1045,46 @@ _ASSET_FACTORIES: dict[str, Callable[[], Asset]] = {
 }
 
 
-def asset_from_code(code: str) -> Asset:
-    """Look up an Asset factory by KRX code and instantiate it.
+# Phase 1.1 data-driven fallback (asset-registry-data-driven 박제): codes
+# not in the hardcoded registry are looked up in ``config/assets.yaml`` so a
+# new asset needs no composition.py edit. Resolved relative to the repo root
+# (composition.py = src/cli/composition.py → parents[2]) so cwd is irrelevant.
+_DEFAULT_ASSETS_YAML = Path(__file__).resolve().parents[2] / "config" / "assets.yaml"
 
-    Raises KeyError with a helpful message when the code is not registered.
-    New assets require a composition.py update (per Phase 0.7.1 design —
-    asset metadata stays hardcoded until Phase 1+ KIS adapter arrives).
+
+def asset_from_code(
+    code: str, registry_path: Path | str | None = None
+) -> Asset:
+    """Look up an Asset by KRX code and instantiate it.
+
+    Resolution order:
+      1. Hardcoded ``_ASSET_FACTORIES`` (Phase 0 박제 9 종 — byte-identical,
+         회귀 invariant).
+      2. ``config/assets.yaml`` data-driven fallback (Phase 1.1) — new assets
+         added via ``scripts/manage_strategies.py`` need no code change.
+
+    Args:
+        code: KRX asset code.
+        registry_path: assets.yaml path override (tests / non-default config).
+            Defaults to ``<repo>/config/assets.yaml``.
+
+    Raises:
+        KeyError: code is in neither the hardcoded registry nor assets.yaml.
     """
     factory = _ASSET_FACTORIES.get(code)
-    if factory is None:
-        supported = list(_ASSET_FACTORIES.keys())
-        raise KeyError(
-            f"No Asset factory for code {code!r}. "
-            f"Phase 0.7.1 supports {supported}; "
-            "new codes need composition.py update."
-        )
-    return factory()
+    if factory is not None:
+        return factory()
+
+    path = Path(registry_path) if registry_path is not None else _DEFAULT_ASSETS_YAML
+    registry = load_asset_registry(path)
+    asset = registry.get(code)
+    if asset is not None:
+        return asset
+
+    hardcoded = list(_ASSET_FACTORIES.keys())
+    from_yaml = sorted(registry.keys())
+    raise KeyError(
+        f"No Asset factory for code {code!r}. "
+        f"Hardcoded: {hardcoded}; config/assets.yaml: {from_yaml}. "
+        "Add a new asset via scripts/manage_strategies.py."
+    )
