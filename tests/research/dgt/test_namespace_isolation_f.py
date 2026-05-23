@@ -34,10 +34,18 @@ class TestNamespaceIsolationF:
 
     @pytest.mark.parametrize("module", PHASE_F_MODULES)
     def test_no_inner_ring_import(self, module: str) -> None:
-        """grep inner rings for any import of this module."""
+        """grep inner rings for any *import* of this module.
+
+        ADR 0022 §9.0 (DGT 승격): inner ring 으로 포팅된 grid 코드는 출처를
+        docstring 에 인용한다(예: "research ``_compute_atr`` 포팅"). 규칙은
+        여전히 "inner ring 이 research 를 **import** 금지" — 따라서 단순 문자열
+        매칭이 아니라 **import 라인**(``from``/``import`` 시작)만 검사한다.
+        docstring/주석의 출처 인용은 위반이 아니다.
+        """
+        pattern = rf"^[[:space:]]*(from|import)[[:space:]].*{module}"
         for ring in INNER_RINGS:
             result = subprocess.run(
-                ["grep", "-r", module, ring, "--include=*.py"],
+                ["grep", "-rE", pattern, ring, "--include=*.py"],
                 capture_output=True, text=True,
             )
             assert result.returncode != 0, (
