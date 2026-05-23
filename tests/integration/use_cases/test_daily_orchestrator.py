@@ -1478,3 +1478,57 @@ class TestSellsThenBuysFlow:
             decision.reasoning["sell_loop_abort_reason"]
             == SkipReason.BROKER_REJECTED.value
         )
+
+
+def test_pending_persisted_atomically_in_decision_uow() -> None:
+    """A live PENDING buy + its BROKER_TIMEOUT skip Decision persist in the SAME
+    decision UoW (M1 / Pre-mortem scenario 1) — a crash before commit leaves
+    NEITHER (no order without its record), so the next cron re-decides cleanly.
+    """
+    asset = _asset()
+    clock_at = _utc_after_close(TODAY)
+    bars = [_bar(asset, date(2026, 4, 29), "35000")]
+    pending = OrderResult(
+        idempotency_key="KRX:069500:2026-04-30:buy:1",
+        asset=asset,
+        broker_order_id="odno-pending",
+        status=OrderStatus.PENDING,
+        filled_quantity=Decimal(0),
+        filled_price=None,
+        submitted_at=clock_at,
+        filled_at=None,
+    )
+    broker = _FakeBroker(
+        balance=Balance(
+            cash=Money(amount=Decimal("100000000"), currency=Currency.KRW)
+        ),
+        place_result=pending,
+    )
+    shared = InMemoryUnitOfWork()
+    orch = DailyOrchestrator(
+        broker=broker,
+        market_data=MockMarketData(ohlcv_by_asset={asset: bars}),
+        signal=_FakeSignal(signal=_signal(at=clock_at)),
+        asset_contexts=[
+            AssetContext(
+                asset=asset,
+                strategy=_strategy(),
+                config=_config(),
+                sell_strategy=_sell_strategy(),
+                sell_config=_sell_config(),
+            )
+        ],
+        clock=lambda: clock_at,
+        uow_factory=lambda: shared,
+    )
+
+    decisions = orch.run_for_date(TODAY)
+
+    # Live PENDING buy is recorded as a BROKER_TIMEOUT skip (C1)...
+    assert decisions[0].skip_reason is SkipReason.BROKER_TIMEOUT
+    # ...AND the PENDING order is persisted in the SAME uow as the decision.
+    persisted_orders = shared.orders.list_by_date(TODAY)
+    assert len(persisted_orders) == 1
+    assert persisted_orders[0].status is OrderStatus.PENDING
+    assert persisted_orders[0].idempotency_key == "KRX:069500:2026-04-30:buy:1"
+    assert len(shared.decisions.list_by_date_range(TODAY, TODAY)) == 1

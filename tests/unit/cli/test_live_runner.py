@@ -158,6 +158,9 @@ def _run(
     max_loss_pct: str = "20",
     halt_active: bool = False,
     ntp_synced: bool = True,
+    supervised_first_order: bool = False,
+    orders_today_count=None,
+    halt_writer=None,
 ):
     notif = notifier or _RecordingNotifier()
     return run_live_pipeline(
@@ -172,6 +175,9 @@ def _run(
         halt_active=halt_active,
         ntp_synced=ntp_synced,
         max_loss_pct=Decimal(max_loss_pct),
+        supervised_first_order=supervised_first_order,
+        orders_today_count=orders_today_count,
+        halt_writer=halt_writer,
     )
 
 
@@ -254,6 +260,48 @@ def test_stop_loss_skipped_when_no_priced_decision() -> None:
     pos = _held_position(a, avg="35000")
     result = _run(log=[], decisions=[_skip(a)], positions=[pos])
     assert result.stop_loss_breaches == []
+
+
+# ---------------------------------------------------------------------------
+# Supervised first-order (Stage 8-6 / ADR 0012 §2.5(b)/(i))
+# ---------------------------------------------------------------------------
+class _HaltSpy:
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+
+    def __call__(self, reason: str) -> None:
+        self.reasons.append(reason)
+
+
+def test_supervised_hold_writes_halt_when_order_placed() -> None:
+    spy = _HaltSpy()
+    result = _run(
+        log=[], supervised_first_order=True,
+        orders_today_count=lambda: 1, halt_writer=spy,
+    )
+    assert result.supervised_hold is True
+    assert len(spy.reasons) == 1
+    assert "supervised first-order" in spy.reasons[0]
+
+
+def test_supervised_no_hold_when_no_order_placed() -> None:
+    spy = _HaltSpy()
+    result = _run(
+        log=[], supervised_first_order=True,
+        orders_today_count=lambda: 0, halt_writer=spy,
+    )
+    assert result.supervised_hold is False
+    assert spy.reasons == []
+
+
+def test_supervised_flag_off_never_holds() -> None:
+    spy = _HaltSpy()
+    result = _run(
+        log=[], supervised_first_order=False,
+        orders_today_count=lambda: 5, halt_writer=spy,
+    )
+    assert result.supervised_hold is False
+    assert spy.reasons == []
 
 
 # ---------------------------------------------------------------------------

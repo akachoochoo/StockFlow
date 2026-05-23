@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from src.ports.market_data import MarketDataPort
     from src.ports.notifications import NotifierPort
     from src.ports.reentry_strategy import ReentryPriceStrategyPort
+    from src.ports.unit_of_work import UnitOfWorkPort
     from src.use_cases.pending_settler import PendingSettler
     from src.use_cases.reconciliation import Reconciler
 
@@ -348,6 +349,7 @@ class LiveComponents:
     market_data: KISMarketData
     notifier: NotifierPort
     config: KISConfig
+    uow_factory: Callable[[], UnitOfWorkPort]
     clock: Callable[[], datetime]
     close: Callable[[], None]
 
@@ -518,6 +520,7 @@ def build_live_components(
         market_data=market_data,
         notifier=notif,
         config=config,
+        uow_factory=uow_factory,
         clock=utc_clock,
         close=conn.close,
     )

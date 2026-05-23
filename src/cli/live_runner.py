@@ -40,6 +40,7 @@ from src.domain.strategies.stop_loss import StopLossPolicy
 from src.ports.notifications import NotificationLevel
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import date
 
     from src.adapters.db_position_broker_view import DbPositionBrokerView
@@ -59,6 +60,7 @@ class LivePipelineResult:
     recon: ReconciliationResult
     decisions: list[Decision]
     stop_loss_breaches: list[tuple[str, Decimal]] = field(default_factory=list)
+    supervised_hold: bool = False
 
 
 def run_live_pipeline(
@@ -74,6 +76,9 @@ def run_live_pipeline(
     halt_active: bool,
     ntp_synced: bool,
     max_loss_pct: Decimal,
+    supervised_first_order: bool = False,
+    orders_today_count: Callable[[], int] | None = None,
+    halt_writer: Callable[[str], None] | None = None,
 ) -> LivePipelineResult:
     """Run the gated live pipeline. Orders flow only past the arming gate.
 
@@ -81,6 +86,13 @@ def run_live_pipeline(
     (``StateMismatchError``) or arming is refused (``LiveArmingError`` /
     ``ClockSkewError``). settle + reconcile have already run when arming
     refuses — both are safe (no new orders) and keep the DB synced.
+
+    Supervised first-order (Stage 8-6, ADR 0012 §2.5(b)/(i)): when
+    ``supervised_first_order`` is set and this run actually placed an order
+    (``orders_today_count() > 0``), a halt sentinel is written via
+    ``halt_writer`` so the NEXT live run is blocked by ``check_halt`` until the
+    operator confirms the first fill and runs ``trading resume`` (confirm UX =
+    halt/resume reuse, §8.5).
     """
     # 1. SETTLE — confirm prior PENDING fills (no new orders). Surface events.
     settle = settler.settle(today)
@@ -116,12 +128,56 @@ def run_live_pipeline(
         notifier=notifier,
     )
 
+    # 6. SUPERVISED first-order hold — after the first run that placed an order,
+    # self-halt so the NEXT run is blocked until the operator confirms the fill
+    # and runs `trading resume` (ADR 0012 §2.5(b)/(i); confirm UX = halt/resume).
+    supervised_hold = _maybe_supervised_hold(
+        supervised_first_order=supervised_first_order,
+        orders_today_count=orders_today_count,
+        halt_writer=halt_writer,
+        notifier=notifier,
+    )
+
     return LivePipelineResult(
         settle=settle,
         recon=recon,
         decisions=decisions,
         stop_loss_breaches=breaches,
+        supervised_hold=supervised_hold,
     )
+
+
+def _maybe_supervised_hold(
+    *,
+    supervised_first_order: bool,
+    orders_today_count: Callable[[], int] | None,
+    halt_writer: Callable[[str], None] | None,
+    notifier: NotifierPort,
+) -> bool:
+    """Write the halt sentinel iff supervised mode placed an order this run.
+
+    Returns True when the hold engaged. No order placed (count 0) → no hold
+    (keep running; the supervised window is about the first *order*, not the
+    first *run*). ``halt_writer`` is ``safety.write_halt`` in production.
+    """
+    if not supervised_first_order or orders_today_count is None:
+        return False
+    if orders_today_count() <= 0:
+        return False
+    if halt_writer is not None:
+        halt_writer(
+            "supervised first-order — 첫 주문 placed. 체결을 사람이 확인한 뒤 "
+            "`trading resume` 로 재개 (ADR 0012 §2.5(b)/(i))."
+        )
+    notifier.notify(
+        level=NotificationLevel.WARNING,
+        title="[LIVE] supervised first-order hold",
+        body=(
+            "첫 주문이 placed 되어 halt sentinel 을 기록했습니다 — 다음 live "
+            "run 은 차단됩니다. 체결/포지션을 확인한 뒤 `trading resume`."
+        ),
+    )
+    return True
 
 
 def _alert_stop_loss_breaches(

@@ -217,3 +217,9 @@ def test_live_requires_tier() -> None:
     result = CliRunner().invoke(main, ["live", "--db", "x.db"])
     assert result.exit_code != 0
     assert "tier" in result.output.lower()
+
+
+def test_live_supervised_flag_registered() -> None:
+    result = CliRunner().invoke(main, ["live", "--help"])
+    assert result.exit_code == 0
+    assert "--supervised-first-order" in result.output

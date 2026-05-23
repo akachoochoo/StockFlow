@@ -992,6 +992,14 @@ def dry_run(
     help="Stop-loss breach alert threshold magnitude (ADR 0012 D2(b'); "
     "alert only, never auto-sells).",
 )
+@click.option(
+    "--supervised-first-order",
+    is_flag=True,
+    default=False,
+    help="Supervised first-order (ADR 0012 §2.5(b)): after this run places an "
+    "order, write a halt sentinel so the NEXT run is blocked until you confirm "
+    "the fill and run `trading resume`.",
+)
 @_strategy_options
 @click.pass_context
 def live(
@@ -1002,6 +1010,7 @@ def live(
     tier: str,
     arm_tier: str | None,
     max_loss_pct: str,
+    supervised_first_order: bool,
     config_path: Path | None,
     drop_pct: str,
     max_split: int,
@@ -1128,6 +1137,14 @@ def live(
             f"armed={'YES' if armed else 'NO (settle+reconcile only, 실주문 zero)'}"
         )
 
+        def _orders_today_count() -> int:
+            with components.uow_factory() as uow:
+                return len(uow.orders.list_by_date(today))
+
+        def _write_halt(reason: str) -> None:
+            # Discard the returned Path so the signature is Callable[[str], None].
+            safety.write_halt(reason)
+
         try:
             result = run_live_pipeline(
                 settler=components.settler,
@@ -1141,6 +1158,9 @@ def live(
                 halt_active=safety.is_halted(),
                 ntp_synced=True,
                 max_loss_pct=Decimal(max_loss_pct),
+                supervised_first_order=supervised_first_order,
+                orders_today_count=_orders_today_count,
+                halt_writer=_write_halt,
             )
             click.echo(
                 f"settled: buys={len(result.settle.settled_buys)} "
@@ -1156,6 +1176,11 @@ def live(
                 click.echo("⚠️ 손절 임계 도달 (사람 매도 검토 권고):")
                 for fqn, loss in result.stop_loss_breaches:
                     click.echo(f"  {fqn}: {loss:.2f}%")
+            if result.supervised_hold:
+                click.echo(
+                    "🛑 supervised first-order — 첫 주문 후 halt 기록됨. 체결 확인 "
+                    "후 `trading resume` 로 다음 run 허용."
+                )
             click.echo("✅ live run 완료")
         except LiveArmingError as exc:
             click.echo(
