@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING
 from src.domain.models import OrderStatus
 
 if TYPE_CHECKING:
-    from datetime import date
+    from datetime import date, datetime
+    from decimal import Decimal
     from types import TracebackType
 
     from src.domain.models import (
@@ -31,6 +32,10 @@ if TYPE_CHECKING:
         PositionRepoPort,
     )
     from src.ports.unit_of_work import UnitOfWorkPort
+
+_TERMINAL_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.EXPIRED}
+)
 
 
 class InMemoryPositionRepo:
@@ -75,6 +80,53 @@ class InMemoryOrderRepo:
 
     def get_by_idempotency_key(self, key: str) -> Order | None:
         return self._orders.get(key)
+
+    def find_by_broker_order_id(self, broker_order_id: str) -> Order | None:
+        for o in self._orders.values():
+            if o.broker_order_id == broker_order_id:
+                return o
+        return None
+
+    def update_status(
+        self,
+        idempotency_key: str,
+        new_status: OrderStatus,
+        *,
+        filled_quantity: Decimal,
+        filled_price: Decimal | None,
+        filled_at: datetime | None,
+        broker_order_id: str | None = None,
+        broker_org_no: str | None = None,
+    ) -> None:
+        if new_status not in _TERMINAL_STATUSES:
+            raise ValueError(
+                f"update_status accepts terminal statuses only "
+                f"(FILLED / CANCELED / EXPIRED), got {new_status.value}"
+            )
+        existing = self._orders.get(idempotency_key)
+        if existing is None:
+            raise ValueError(
+                f"update_status: no order with idempotency_key={idempotency_key}"
+            )
+        # COALESCE semantics: None preserves the existing broker_* values.
+        self._orders[idempotency_key] = existing.model_copy(
+            update={
+                "status": new_status,
+                "filled_quantity": filled_quantity,
+                "filled_price": filled_price,
+                "filled_at": filled_at,
+                "broker_order_id": (
+                    broker_order_id
+                    if broker_order_id is not None
+                    else existing.broker_order_id
+                ),
+                "broker_org_no": (
+                    broker_org_no
+                    if broker_org_no is not None
+                    else existing.broker_org_no
+                ),
+            }
+        )
 
     def list_pending(self) -> list[Order]:
         pending_states = (OrderStatus.PENDING, OrderStatus.PARTIALLY_FILLED)

@@ -197,3 +197,182 @@ class TestSqliteOrderRepoIntegrity:
         repo.save(_order(idempotency_key="dup"))
         with pytest.raises(sqlite3.IntegrityError):
             repo.save(_order(idempotency_key="dup"))
+
+
+class TestSqliteOrderRepoFindByBrokerOrderId:
+    def test_find_by_broker_order_id_returns_order(self, conn):
+        repo = SqliteOrderRepo(conn)
+        repo.save(_order(idempotency_key="k1", broker_order_id="odno-1"))
+        loaded = repo.find_by_broker_order_id("odno-1")
+        assert loaded is not None
+        assert loaded.idempotency_key == "k1"
+        assert loaded.broker_order_id == "odno-1"
+
+    def test_find_by_broker_order_id_returns_none_when_unknown(self, conn):
+        repo = SqliteOrderRepo(conn)
+        repo.save(_order(idempotency_key="k1", broker_order_id="odno-1"))
+        assert repo.find_by_broker_order_id("odno-missing") is None
+
+
+class TestSqliteOrderRepoUpdateStatus:
+    def test_update_status_transitions_persisted(self, conn):
+        # M-major: status + filled_* UPDATE persists (re-save would hit the
+        # idempotency_key PRIMARY KEY → IntegrityError; UPDATE avoids it).
+        repo = SqliteOrderRepo(conn)
+        repo.save(
+            _order(
+                idempotency_key="k1",
+                status=OrderStatus.PENDING,
+                broker_order_id="odno-1",
+                filled_at=None,
+                filled_quantity="0",
+                filled_price=None,
+            )
+        )
+        repo.update_status(
+            "k1",
+            OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            filled_at=UTC_LATER,
+        )
+        loaded = repo.get_by_idempotency_key("k1")
+        assert loaded is not None
+        assert loaded.status == OrderStatus.FILLED
+        assert loaded.filled_quantity == Decimal("10")
+        assert loaded.filled_price == Decimal("35000")
+        assert loaded.filled_at == UTC_LATER
+
+    def test_update_status_preserves_broker_org_no(self, conn):
+        # Architect precision 1: PENDING→FILLED with broker_org_no=None
+        # (COALESCE) must not overwrite the existing org_no (cancel routing).
+        repo = SqliteOrderRepo(conn)
+        repo.save(
+            _order(
+                idempotency_key="k1",
+                status=OrderStatus.PENDING,
+                broker_order_id="odno-1",
+                broker_org_no="00950",
+                filled_at=None,
+                filled_quantity="0",
+                filled_price=None,
+            )
+        )
+        repo.update_status(
+            "k1",
+            OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            filled_at=UTC_LATER,
+            broker_order_id=None,
+            broker_org_no=None,
+        )
+        loaded = repo.get_by_idempotency_key("k1")
+        assert loaded is not None
+        assert loaded.broker_org_no == "00950"
+        assert loaded.broker_order_id == "odno-1"
+
+    def test_update_status_sets_broker_fields_when_provided(self, conn):
+        # COALESCE keeps the passed value when not None.
+        repo = SqliteOrderRepo(conn)
+        repo.save(
+            _order(
+                idempotency_key="k1",
+                status=OrderStatus.PENDING,
+                broker_order_id="odno-1",
+                broker_org_no=None,
+                filled_at=None,
+                filled_quantity="0",
+                filled_price=None,
+            )
+        )
+        repo.update_status(
+            "k1",
+            OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            filled_at=UTC_LATER,
+            broker_org_no="00950",
+        )
+        loaded = repo.get_by_idempotency_key("k1")
+        assert loaded is not None
+        assert loaded.broker_org_no == "00950"
+
+    def test_update_status_rejects_partially_filled(self, conn):
+        # Architect precision 2: terminal statuses only. PARTIALLY_FILLED must
+        # stay in list_pending (its termination is the max-age halt's job).
+        repo = SqliteOrderRepo(conn)
+        repo.save(
+            _order(
+                idempotency_key="k1",
+                status=OrderStatus.PENDING,
+                broker_order_id="odno-1",
+                filled_at=None,
+                filled_quantity="0",
+                filled_price=None,
+            )
+        )
+        with pytest.raises(ValueError, match="terminal"):
+            repo.update_status(
+                "k1",
+                OrderStatus.PARTIALLY_FILLED,
+                filled_quantity=Decimal("5"),
+                filled_price=Decimal("35000"),
+                filled_at=UTC_LATER,
+            )
+
+    def test_update_status_rejects_pending(self, conn):
+        repo = SqliteOrderRepo(conn)
+        repo.save(
+            _order(
+                idempotency_key="k1",
+                status=OrderStatus.PENDING,
+                broker_order_id="odno-1",
+                filled_at=None,
+                filled_quantity="0",
+                filled_price=None,
+            )
+        )
+        with pytest.raises(ValueError, match="terminal"):
+            repo.update_status(
+                "k1",
+                OrderStatus.PENDING,
+                filled_quantity=Decimal("0"),
+                filled_price=None,
+                filled_at=None,
+            )
+
+    def test_update_status_unknown_key_raises(self, conn):
+        repo = SqliteOrderRepo(conn)
+        with pytest.raises(ValueError, match="no order"):
+            repo.update_status(
+                "nonexistent",
+                OrderStatus.FILLED,
+                filled_quantity=Decimal("10"),
+                filled_price=Decimal("35000"),
+                filled_at=UTC_LATER,
+            )
+
+    def test_settled_order_drops_from_list_pending(self, conn):
+        # PENDING→FILLED via update_status falls out of list_pending so the
+        # next cron does not re-process it (gap a).
+        repo = SqliteOrderRepo(conn)
+        repo.save(
+            _order(
+                idempotency_key="k1",
+                status=OrderStatus.PENDING,
+                broker_order_id="odno-1",
+                filled_at=None,
+                filled_quantity="0",
+                filled_price=None,
+            )
+        )
+        assert {o.idempotency_key for o in repo.list_pending()} == {"k1"}
+        repo.update_status(
+            "k1",
+            OrderStatus.FILLED,
+            filled_quantity=Decimal("10"),
+            filled_price=Decimal("35000"),
+            filled_at=UTC_LATER,
+        )
+        assert repo.list_pending() == []
