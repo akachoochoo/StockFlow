@@ -4,17 +4,18 @@ Reads ``config/assets.yaml`` and produces domain ``Asset`` value objects.
 Phase 0 hardcoded asset metadata in ``composition._ASSET_FACTORIES``;
 ``composition.py`` itself predicted the graduation to a YAML lookup at
 Phase 1 ("When Phase 1 adds multiple assets this graduates to a YAML
-lookup"). This loader IS that graduation: a new asset is declared as data,
-no code change required. ``composition.asset_from_code`` consults the
-hardcoded registry first, then falls back to this loader, so the existing
-factories keep producing byte-identical ``Asset`` objects (회귀 zero).
+lookup"). This loader IS that graduation, and as of ADR 0021 §7.1 it is the
+**single source of truth**: ``composition.asset_from_code`` resolves *every*
+code (Phase 0 박제 9 종 포함) through this loader — the named accessors
+(``kodex200()`` etc.) are thin convenience wrappers over it. A new asset is
+declared as data, no code change required.
 
 Strict, extra='forbid' pydantic — a typo in a YAML key surfaces as
 ``ValidationError`` rather than a silent default (CLAUDE.md §13.3). The
-money-critical fields (``tick_size`` / ``listed_at``) pass through the same
-``Asset`` validation as the hardcoded factories; the management script
-(``scripts/manage_strategies.py``) additionally pykrx-cross-checks them on
-``add`` to catch a wrong code/name/market before it reaches this file.
+money-critical fields (``tick_size`` / ``listed_at``) pass through full
+``Asset`` validation; the management script (``scripts/manage_strategies.py``)
+additionally pykrx-cross-checks them on ``add`` to catch a wrong
+code/name/market before it reaches this file.
 
 YAML float → Decimal coerces via ``Decimal(str(value))`` (NOT the
 ``Decimal(float)`` path forbidden by CLAUDE.md §2.3).

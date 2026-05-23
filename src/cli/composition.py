@@ -735,36 +735,11 @@ def build_paper_components(
 
 
 def kodex200() -> Asset:
-    """Phase 0 single-asset definition.
+    """KODEX 200 (069500) — 편의 accessor. 정본 = config/assets.yaml (ADR 0021 §7.1).
 
-    Hardcoded here so the CLI default works without a config file. When
-    Phase 1 adds multiple assets this graduates to a YAML lookup.
-
-    Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 + §3 합병 박제): ``market`` /
-    ``listed_at`` 필수 필드 추가. listed_at = 2002-10-14 (KRX 공식).
+    ADR 0005 §1.7 (market/listed_at) 박제 종목. listed_at = 2002-10-14 (KRX 공식).
     """
-    from datetime import date  # local import: keeps top imports tight
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="069500",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_ETF,
-        currency=Currency.KRW,
-        name="KODEX 200",
-        tick_size=Decimal("5"),
-        lot_size=Decimal("1"),
-        listed_at=date(2002, 10, 14),
-    )
+    return asset_from_code("069500")
 
 
 def kodex_short_bond_plus() -> Asset:
@@ -777,28 +752,7 @@ def kodex_short_bond_plus() -> Asset:
     Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 + §3 합병 박제): ``market`` /
     ``listed_at`` 필수 필드 추가. listed_at = 2014-04-22 (KRX 공식).
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="214980",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_ETF,
-        currency=Currency.KRW,
-        name="KODEX 단기채권 PLUS",
-        tick_size=Decimal("5"),
-        lot_size=Decimal("1"),
-        listed_at=date(2014, 4, 22),
-    )
+    return asset_from_code("214980")
 
 
 def kodex_gold() -> Asset:
@@ -811,28 +765,7 @@ def kodex_gold() -> Asset:
     Phase 0.9 (ADR 0005 §1.7.1 / §1.7.2 + §3 합병 박제): ``market`` /
     ``listed_at`` 필수 필드 추가. listed_at = 2010-10-01 (KRX 공식).
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="132030",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_ETF,
-        currency=Currency.KRW,
-        name="KODEX 골드선물(H)",
-        tick_size=Decimal("5"),
-        lot_size=Decimal("1"),
-        listed_at=date(2010, 10, 1),
-    )
+    return asset_from_code("132030")
 
 
 # ---------------------------------------------------------------------------
@@ -850,28 +783,7 @@ def samsung_electronics() -> Asset:
     listed_at = 1975-06-11 (KRX 공식). Phase 0.9 sub-step 0.9.c
     사전 검증 PASS (lookback 246 + 5-year 데이터 충족, ADR 0005 §2).
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="005930",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_STOCK,
-        currency=Currency.KRW,
-        name="삼성전자",
-        tick_size=Decimal("1"),
-        lot_size=Decimal("1"),
-        listed_at=date(1975, 6, 11),
-    )
+    return asset_from_code("005930")
 
 
 def hyundai_motor() -> Asset:
@@ -881,28 +793,7 @@ def hyundai_motor() -> Asset:
     listed_at = 1974-06-28 (KRX 공식). Phase 0.9 sub-step 0.9.c
     사전 검증 PASS.
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="005380",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_STOCK,
-        currency=Currency.KRW,
-        name="현대차",
-        tick_size=Decimal("1"),
-        lot_size=Decimal("1"),
-        listed_at=date(1974, 6, 28),
-    )
+    return asset_from_code("005380")
 
 
 def shinhan_financial() -> Asset:
@@ -912,28 +803,7 @@ def shinhan_financial() -> Asset:
     listed_at = 2001-09-10 (지주사 전환 상장, KRX 공식).
     Phase 0.9 sub-step 0.9.c 사전 검증 PASS.
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="055550",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_STOCK,
-        currency=Currency.KRW,
-        name="신한지주",
-        tick_size=Decimal("1"),
-        lot_size=Decimal("1"),
-        listed_at=date(2001, 9, 10),
-    )
+    return asset_from_code("055550")
 
 
 def cj_cheiljedang() -> Asset:
@@ -943,28 +813,7 @@ def cj_cheiljedang() -> Asset:
     listed_at = 2007-09-19 (CJ 분할 후 재상장, KRX 공식).
     Phase 0.9 sub-step 0.9.c 사전 검증 PASS.
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="097950",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_STOCK,
-        currency=Currency.KRW,
-        name="CJ제일제당",
-        tick_size=Decimal("1"),
-        lot_size=Decimal("1"),
-        listed_at=date(2007, 9, 19),
-    )
+    return asset_from_code("097950")
 
 
 def kepco() -> Asset:
@@ -974,28 +823,7 @@ def kepco() -> Asset:
     listed_at = 1989-08-10 (KRX 공식). Phase 0.9 sub-step 0.9.c
     사전 검증 PASS.
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="015760",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_STOCK,
-        currency=Currency.KRW,
-        name="한국전력",
-        tick_size=Decimal("1"),
-        lot_size=Decimal("1"),
-        listed_at=date(1989, 8, 10),
-    )
+    return asset_from_code("015760")
 
 
 def hyosung_heavy_industries() -> Asset:
@@ -1004,64 +832,24 @@ def hyosung_heavy_industries() -> Asset:
     KOSPI 중대형주 (변압기 / 중전기). listed_at = 2018-07-13 (효성 인적분할
     재상장, KRX 공식, pykrx 검증). 2020-2024 백테스트 가능.
     """
-    from datetime import date
-    from decimal import Decimal
-
-    from src.domain.models import (
-        Asset,
-        AssetClass,
-        Currency,
-        Exchange,
-        Market,
-    )
-
-    return Asset(
-        code="298040",
-        exchange=Exchange.KRX,
-        market=Market.KOSPI,
-        asset_class=AssetClass.KR_STOCK,
-        currency=Currency.KRW,
-        name="효성중공업",
-        tick_size=Decimal("1"),
-        lot_size=Decimal("1"),
-        listed_at=date(2018, 7, 13),
-    )
+    return asset_from_code("298040")
 
 
-# Registry: code → factory. Phase 0.7.x: 3 ETF. Phase 0.9 (ADR 0005 §1.6.2
-# + §3 합병 박제): + 5 KR_STOCK 추가 (Phase 0.9.1 = 005930 + 005380,
-# Phase 0.9.2 = + 055550 + 097950 + 015760).
-# Phase 0.10.x ad-hoc 분석: + 298040 효성중공업 (사용자 단일 종목 백테스트).
-_ASSET_FACTORIES: dict[str, Callable[[], Asset]] = {
-    "069500": kodex200,
-    "214980": kodex_short_bond_plus,
-    "132030": kodex_gold,
-    "005930": samsung_electronics,
-    "005380": hyundai_motor,
-    "055550": shinhan_financial,
-    "097950": cj_cheiljedang,
-    "015760": kepco,
-    "298040": hyosung_heavy_industries,
-}
-
-
-# Phase 1.1 data-driven fallback (asset-registry-data-driven 박제): codes
-# not in the hardcoded registry are looked up in ``config/assets.yaml`` so a
-# new asset needs no composition.py edit. Resolved relative to the repo root
-# (composition.py = src/cli/composition.py → parents[2]) so cwd is irrelevant.
+# Phase 1.1 data-driven registry (ADR 0021 §7.1 통합): 전 자산 메타데이터의
+# 정본 = ``config/assets.yaml``. 하드코딩 _ASSET_FACTORIES 제거 — Phase 0 박제
+# 9 종 포함 모든 종목을 yaml 에서 로드. 위 named accessor (kodex200 등) 는 본
+# 함수를 호출하는 편의 wrapper. 경로는 repo root 기준 (composition.py =
+# src/cli/composition.py → parents[2]) 으로 cwd 무관.
 _DEFAULT_ASSETS_YAML = Path(__file__).resolve().parents[2] / "config" / "assets.yaml"
 
 
 def asset_from_code(
     code: str, registry_path: Path | str | None = None
 ) -> Asset:
-    """Look up an Asset by KRX code and instantiate it.
+    """Look up an Asset by KRX code from ``config/assets.yaml`` (단일 정본).
 
-    Resolution order:
-      1. Hardcoded ``_ASSET_FACTORIES`` (Phase 0 박제 9 종 — byte-identical,
-         회귀 invariant).
-      2. ``config/assets.yaml`` data-driven fallback (Phase 1.1) — new assets
-         added via ``scripts/manage_strategies.py`` need no code change.
+    데이터 주도 (ADR 0021). 새 종목은 ``scripts/manage_strategies.py`` 로
+    yaml 에 추가 — composition.py 수정 불요.
 
     Args:
         code: KRX asset code.
@@ -1069,22 +857,15 @@ def asset_from_code(
             Defaults to ``<repo>/config/assets.yaml``.
 
     Raises:
-        KeyError: code is in neither the hardcoded registry nor assets.yaml.
+        KeyError: code 가 assets.yaml 에 없음.
     """
-    factory = _ASSET_FACTORIES.get(code)
-    if factory is not None:
-        return factory()
-
     path = Path(registry_path) if registry_path is not None else _DEFAULT_ASSETS_YAML
     registry = load_asset_registry(path)
     asset = registry.get(code)
     if asset is not None:
         return asset
-
-    hardcoded = list(_ASSET_FACTORIES.keys())
-    from_yaml = sorted(registry.keys())
     raise KeyError(
-        f"No Asset factory for code {code!r}. "
-        f"Hardcoded: {hardcoded}; config/assets.yaml: {from_yaml}. "
+        f"No Asset metadata for code {code!r}. "
+        f"config/assets.yaml: {sorted(registry.keys())}. "
         "Add a new asset via scripts/manage_strategies.py."
     )

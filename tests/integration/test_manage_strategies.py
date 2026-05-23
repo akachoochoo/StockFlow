@@ -84,9 +84,29 @@ def strat_path(tmp_path: Path) -> Path:
     return p
 
 
+# assets.yaml metadata for the two assets in _BASE_STRATEGIES (ADR 0021 §7.1:
+# assets.yaml = 단일 정본, so cross_check needs every strategy code present).
+_BASE_ASSETS = """\
+version: "1.0"
+assets:
+  "069500":
+    name: "KODEX 200"
+    market: KOSPI
+    asset_class: KR_ETF
+    listed_at: 2002-10-14
+  "132030":
+    name: "KODEX 골드선물(H)"
+    market: KOSPI
+    asset_class: KR_ETF
+    listed_at: 2010-10-01
+"""
+
+
 @pytest.fixture
 def assets_path(tmp_path: Path) -> Path:
-    return tmp_path / "assets.yaml"
+    p = tmp_path / "assets.yaml"
+    p.write_text(_BASE_ASSETS, encoding="utf-8")
+    return p
 
 
 def _meta(**kw) -> AssetMeta:
@@ -251,32 +271,30 @@ class TestAssetOps:
         assert entry["tick_size"] == 5
         assert entry["lot_size"] == 10
 
-    def test_add_hardcoded_code_rejected(self):
-        data = {"version": "1.0", "assets": {}}
-        with pytest.raises(ValueError):
-            add_asset_meta(data, _meta(code="069500"))  # in _ASSET_FACTORIES
-
     def test_add_duplicate_rejected(self):
         data = {"version": "1.0", "assets": {}}
         add_asset_meta(data, _meta())
         with pytest.raises(ValueError):
             add_asset_meta(data, _meta())
 
-    def test_available_codes_union(self):
-        data = {"version": "1.0", "assets": {"035720": {}}}
+    def test_available_codes(self):
+        # ADR 0021 §7.1: assets.yaml = 단일 정본 (하드코딩 union 제거).
+        data = {"version": "1.0", "assets": {"035720": {}, "069500": {}}}
         codes = available_codes(data)
-        assert "069500" in codes  # hardcoded
-        assert "035720" in codes  # yaml
+        assert codes == {"035720", "069500"}
 
     def test_cross_check_flags_missing(self):
         strat = yaml.safe_load(_BASE_STRATEGIES)
         strat["assets"]["035720"] = {"name": "x", "enabled": True}
-        errors = cross_check(strat, {"version": "1.0", "assets": {}})
+        # 069500/132030 present; only the unregistered 035720 is flagged.
+        assets = {"version": "1.0", "assets": {"069500": {}, "132030": {}}}
+        errors = cross_check(strat, assets)
         assert any("035720" in e for e in errors)
 
     def test_cross_check_passes_when_present(self):
         strat = yaml.safe_load(_BASE_STRATEGIES)
-        assert cross_check(strat, {"version": "1.0", "assets": {}}) == []
+        assets = {"version": "1.0", "assets": {"069500": {}, "132030": {}}}
+        assert cross_check(strat, assets) == []
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +303,9 @@ class TestAssetOps:
 class TestFormatting:
     def test_format_list(self):
         data = yaml.safe_load(_BASE_STRATEGIES)
-        out = format_list(data, {"version": "1.0", "assets": {}})
-        assert "069500" in out and "KODEX 200" in out and "하드코딩" in out
+        assets = {"version": "1.0", "assets": {"069500": {}, "132030": {}}}
+        out = format_list(data, assets)
+        assert "069500" in out and "KODEX 200" in out and "등록" in out
 
     def test_format_diff(self):
         a = yaml.safe_load(_BASE_STRATEGIES)
@@ -358,20 +377,20 @@ class TestMainAdd:
         assert rc == 1  # no name available → refuse, no write
         assert "035720" not in load_yaml(strat_path)["assets"]
 
-    def test_add_hardcoded_code_fails_without_writing(
+    def test_add_existing_code_fails_without_writing(
         self, strat_path: Path, assets_path: Path
     ):
         before = strat_path.read_text(encoding="utf-8")
         rc = main(
             [
                 "add", str(strat_path),
-                "--code", "005930", "--name", "삼성전자",
-                "--market", "KOSPI", "--asset-class", "KR_STOCK",
-                "--listed-at", "1975-06-11", "--no-verify",
+                "--code", "069500", "--name", "KODEX 200",
+                "--market", "KOSPI", "--asset-class", "KR_ETF",
+                "--listed-at", "2002-10-14", "--no-verify",
                 "--assets-yaml", str(assets_path),
             ]
         )
-        assert rc == 1  # 005930 already hardcoded
+        assert rc == 1  # 069500 already in strategies file → duplicate
         assert strat_path.read_text(encoding="utf-8") == before  # untouched
 
 

@@ -6,8 +6,8 @@
 
   - ``config/strategies*.yaml`` : 종목별 매수/매도/재진입 전략 + 파라미터.
   - ``config/assets.yaml``      : 종목 메타데이터(시장/호가/상장일 등). Phase
-    1.1 data-driven 레지스트리 — ``composition.asset_from_code`` 가 하드코딩
-    ``_ASSET_FACTORIES`` 미스 시 여기서 조회한다.
+    1.1 data-driven 레지스트리 — ``composition.asset_from_code`` 의 단일 정본
+    (ADR 0021 §7.1 — Phase 0 박제 9 종 포함 전 종목).
 
 명령::
 
@@ -56,7 +56,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.cli.composition import _ASSET_FACTORIES  # noqa: E402
 from src.infrastructure.yaml_asset_loader import (  # noqa: E402
     load_asset_registry,
 )
@@ -365,11 +364,6 @@ def load_assets_data(path: Path | str) -> dict[str, Any]:
 
 def add_asset_meta(assets_data: dict[str, Any], meta: AssetMeta) -> None:
     """Insert metadata for ``meta.code`` into assets.yaml data."""
-    if meta.code in _ASSET_FACTORIES:
-        raise ValueError(
-            f"종목 {meta.code!r} 은(는) 이미 하드코딩 레지스트리에 있습니다 "
-            "(composition._ASSET_FACTORIES) — assets.yaml 추가 불필요."
-        )
     assets = assets_data.setdefault("assets", {})
     if meta.code in assets:
         raise ValueError(f"종목 {meta.code!r} 이(가) 이미 assets.yaml 에 있습니다.")
@@ -410,8 +404,8 @@ def _validate_assets(data: dict[str, Any]) -> None:
 
 
 def available_codes(assets_data: dict[str, Any]) -> set[str]:
-    """All resolvable codes: union of hardcoded registry and assets.yaml."""
-    return set(_ASSET_FACTORIES) | set(assets_data.get("assets", {}))
+    """All resolvable codes (assets.yaml = 단일 정본, ADR 0021 §7.1)."""
+    return set(assets_data.get("assets", {}))
 
 
 def cross_check(
@@ -423,8 +417,8 @@ def cross_check(
     for code in _assets_map(strategies_data):
         if code not in resolvable:
             errors.append(
-                f"종목 {code!r}: Asset 메타데이터 없음 — assets.yaml 에 add "
-                "하거나 composition._ASSET_FACTORIES 에 등록 필요."
+                f"종목 {code!r}: Asset 메타데이터 없음 — assets.yaml 에 "
+                "add 하거나 직접 추가 필요."
             )
     return errors
 
@@ -433,10 +427,8 @@ def cross_check(
 # Formatting
 # ---------------------------------------------------------------------------
 def _registry_tag(code: str, assets_data: dict[str, Any]) -> str:
-    if code in _ASSET_FACTORIES:
-        return "하드코딩"
     if code in assets_data.get("assets", {}):
-        return "assets.yaml"
+        return "등록"
     return "✗ 없음"
 
 
