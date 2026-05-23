@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from datetime import date, time
     from pathlib import Path
 
+    from src.adapters.db_position_broker_view import DbPositionBrokerView
     from src.adapters.kis._http import HttpClient
     from src.adapters.kis.broker import KISBroker
     from src.adapters.kis.config import KISConfig
@@ -343,6 +344,7 @@ class LiveComponents:
     settler: PendingSettler
     reconciler: Reconciler
     broker: KISBroker
+    position_source: DbPositionBrokerView
     market_data: KISMarketData
     notifier: NotifierPort
     config: KISConfig
@@ -512,6 +514,7 @@ def build_live_components(
         settler=settler,
         reconciler=reconciler,
         broker=kis_broker,
+        position_source=broker_view,
         market_data=market_data,
         notifier=notif,
         config=config,

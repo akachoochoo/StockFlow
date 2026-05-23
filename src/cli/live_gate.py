@@ -85,6 +85,21 @@ class LiveArmingToken:
     env_confirmed: bool
 
 
+def capital_tier_from_str(value: str) -> CapitalTier:
+    """Map a CLI tier string ('200'/'300'/'500') to a :class:`CapitalTier`."""
+    mapping = {
+        "200": CapitalTier.TIER_200,
+        "300": CapitalTier.TIER_300,
+        "500": CapitalTier.TIER_500,
+    }
+    try:
+        return mapping[value]
+    except KeyError:
+        raise LiveArmingError(
+            f"unknown capital tier {value!r}; expected one of {sorted(mapping)}"
+        ) from None
+
+
 def build_arming_token(
     cli_tier: CapitalTier | None,
     *,
@@ -164,4 +179,5 @@ __all__ = [
     "LiveArmingToken",
     "assert_armed_for_live",
     "build_arming_token",
+    "capital_tier_from_str",
 ]

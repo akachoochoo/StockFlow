@@ -946,6 +946,251 @@ def dry_run(
             )
 
 
+@main.command("live")
+@click.option(
+    "--code",
+    "codes",
+    multiple=True,
+    default=("069500", "132030"),
+    show_default=True,
+    help="Asset code(s) to trade (repeatable). Default = KODEX 200 + 골드.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default="trading.db",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="실거래 상태 SQLite DB path (created on first run).",
+)
+@click.option(
+    "--date",
+    "trade_date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="KST trading date (YYYY-MM-DD). Default = today (KST).",
+)
+@click.option(
+    "--tier",
+    required=True,
+    type=click.Choice(["200", "300", "500"]),
+    help="Intended capital tier (만원, ADR 0012 D10). Must be ≤ --arm-live cap "
+    "to place orders.",
+)
+@click.option(
+    "--arm-live",
+    "arm_tier",
+    type=click.Choice(["200", "300", "500"]),
+    default=None,
+    help="ARM live orders up to this tier. Requires TRADING_ARM_LIVE=<tier> env "
+    "too (double-confirm). Omit = no orders (settle + reconcile only).",
+)
+@click.option(
+    "--max-loss-pct",
+    default="20.0",
+    show_default=True,
+    help="Stop-loss breach alert threshold magnitude (ADR 0012 D2(b'); "
+    "alert only, never auto-sells).",
+)
+@_strategy_options
+@click.pass_context
+def live(
+    ctx: click.Context,
+    codes: tuple[str, ...],
+    db_path: Path,
+    trade_date: datetime | None,
+    tier: str,
+    arm_tier: str | None,
+    max_loss_pct: str,
+    config_path: Path | None,
+    drop_pct: str,
+    max_split: int,
+    per_split_amount: int,
+    max_split_per_day: int,
+    profit_target_pct: str,
+    max_sells_per_day: int,
+    reentry_strategy: str,
+    cooldown_days: int,
+) -> None:
+    """실거래 일일 runner — settle → reconcile → arm → decide (Phase 1.1 Stage 8).
+
+    ⚠️ **실주문 진입점.** Real orders go out ONLY when armed: pass
+    ``--arm-live <tier>`` AND set ``TRADING_ARM_LIVE=<tier>`` in the env
+    (double-confirm), with the intended ``--tier`` ≤ the armed cap, plus NTP
+    sync + no halt + today's reconciliation matched (the 5-AND arming gate,
+    Stage 8-3). Without arming the run does settle + reconcile only and exits
+    non-zero — **실주문 zero**.
+
+    Order sequence is hard-coded (ADR 0012): settle (confirm prior PENDING
+    fills) → reconcile (DB vs broker; mismatch halts) → arm gate → decide
+    (place orders). A -max-loss-pct breach raises a Telegram/Console WARNING
+    (사람 매도 검토 권고); it never auto-sells (CLAUDE.md §11.4).
+    """
+    import os
+    from datetime import datetime as _dt
+
+    from src.adapters.kis._client import KISApiError
+    from src.adapters.kis.auth import KISAuthError
+    from src.cli.live_gate import (
+        LiveArmingError,
+        build_arming_token,
+        capital_tier_from_str,
+    )
+    from src.cli.live_runner import run_live_pipeline
+    from src.domain.constants import KST
+    from src.domain.exceptions import (
+        BrokerConnectionError,
+        ClockSkewError,
+        ConfigurationError,
+        DataIntegrityError,
+        MarketDataUnavailableError,
+        StateMismatchError,
+    )
+
+    # Phase 1.1 default: 매도 +15% in flag-only mode unless explicitly overridden
+    # (config mode takes the YAML value verbatim). Mirrors dry-run.
+    if config_path is None:
+        try:
+            source = ctx.get_parameter_source("profit_target_pct")
+        except KeyError:
+            source = None
+        if source is not ParameterSource.COMMANDLINE:
+            profit_target_pct = "15.0"
+
+    today = trade_date.date() if trade_date is not None else _dt.now(KST).date()
+    intended_tier = capital_tier_from_str(tier)
+    arm_token = build_arming_token(
+        capital_tier_from_str(arm_tier) if arm_tier is not None else None,
+        env=os.environ,
+    )
+
+    with safety.lock_file():
+        # CLAUDE.md §3.3 — NTP gate before any live trade (fail-closed).
+        try:
+            safety.verify_ntp_sync()
+        except ClockSkewError as exc:
+            click.echo(
+                f"❌ NTP 동기화 실패 — 실거래 거부 (fail-closed): {exc}", err=True
+            )
+            raise click.exceptions.Exit(1) from exc
+
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
+            _resolve_strategy_configs(
+                ctx,
+                config_path,
+                drop_pct=drop_pct,
+                max_split=max_split,
+                per_split_amount=per_split_amount,
+                max_split_per_day=max_split_per_day,
+                profit_target_pct=profit_target_pct,
+                max_sells_per_day=max_sells_per_day,
+                reentry_strategy=reentry_strategy,
+                cooldown_days=cooldown_days,
+            )
+        )
+        effective_codes = (
+            asset_codes if config_path is not None else list(codes)
+        )
+        try:
+            assets = [composition.asset_from_code(c) for c in effective_codes]
+        except KeyError as exc:
+            click.echo(f"Unknown --code: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+
+        try:
+            components = composition.build_live_components(
+                assets=assets,
+                db_path=db_path,
+                strategy_config=buy_config,
+                sell_strategy_config=sell_config,
+                reentry_strategy_name=reentry_name,
+                reentry_parameters=reentry_params,
+            )
+        except ConfigurationError as exc:
+            click.echo(
+                f"KIS config error — set the missing key(s) in .env "
+                f"(see .env.example): {exc}",
+                err=True,
+            )
+            raise click.exceptions.Exit(1) from exc
+
+        config = components.config
+        armed = arm_token is not None and arm_token.env_confirmed
+        click.echo("=" * 64)
+        click.echo("LIVE — 실거래 runner (settle → reconcile → arm → decide)")
+        click.echo("=" * 64)
+        click.echo(
+            f"KIS mode={config.mode.value} host={config.base_url} "
+            f"appkey={config.masked_appkey}"
+        )
+        click.echo(
+            f"date={today}  intended_tier={tier}만  "
+            f"armed={'YES' if armed else 'NO (settle+reconcile only, 실주문 zero)'}"
+        )
+
+        try:
+            result = run_live_pipeline(
+                settler=components.settler,
+                reconciler=components.reconciler,
+                orchestrator=components.orchestrator,
+                position_source=components.position_source,
+                notifier=components.notifier,
+                today=today,
+                intended_tier=intended_tier,
+                arm_token=arm_token,
+                halt_active=safety.is_halted(),
+                ntp_synced=True,
+                max_loss_pct=Decimal(max_loss_pct),
+            )
+            click.echo(
+                f"settled: buys={len(result.settle.settled_buys)} "
+                f"sells={len(result.settle.settled_sells)} "
+                f"still_pending={len(result.settle.still_pending_keys)}"
+            )
+            for decision in result.decisions:
+                click.echo(
+                    f"  {decision.asset.fqn}: "
+                    f"{' / '.join(decision.action_kinds())}"
+                )
+            if result.stop_loss_breaches:
+                click.echo("⚠️ 손절 임계 도달 (사람 매도 검토 권고):")
+                for fqn, loss in result.stop_loss_breaches:
+                    click.echo(f"  {fqn}: {loss:.2f}%")
+            click.echo("✅ live run 완료")
+        except LiveArmingError as exc:
+            click.echo(
+                f"⚠️ 라이브 무장 안됨 — 실주문 zero (settle + reconcile 는 완료). "
+                f"{exc}",
+                err=True,
+            )
+            raise click.exceptions.Exit(1) from exc
+        except ClockSkewError as exc:
+            click.echo(f"❌ NTP 게이트 실패 — 실주문 거부: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except StateMismatchError as exc:
+            click.echo(
+                "❌ reconciliation 불일치 — 영속 halt 기록됨 (Reconciler). "
+                "조사 후 `trading resume`. 자동수정 zero (CLAUDE.md §11.2).",
+                err=True,
+            )
+            click.echo(f"  상세: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except KISAuthError as exc:
+            click.echo(f"KIS auth failed (token issue): {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except (BrokerConnectionError, KISApiError) as exc:
+            click.echo(f"KIS call failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except DataIntegrityError as exc:
+            click.echo(f"KIS price integrity check failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except MarketDataUnavailableError as exc:
+            click.echo(f"KIS market-data unavailable: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        finally:
+            components.close()
+
+
 @main.command("halt")
 @click.option(
     "--reason",
