@@ -61,6 +61,7 @@ from src.domain.models import (
     SignalLevel,
     SkipReason,
 )
+from src.domain.order_keys import build_order_key
 from src.domain.strategies.support_level import SupportLevelStrategy
 
 # ADR 0004 §5.5.2 — calendar buffer for SupportLevelStrategy lookback.
@@ -880,12 +881,29 @@ class DailyOrchestrator:
     # Misc helpers
     # ------------------------------------------------------------------
     def _buy_idempotency_key(self, ctx: AssetContext, today: date, slot_number: int) -> str:
-        """ADR §5.9.1 — slot-aware idempotency key for BUY."""
-        return f"{ctx.asset.fqn}:{today.isoformat()}:buy:{slot_number}"
+        """ADR §5.9.1 — slot-aware idempotency key for BUY.
+
+        Delegates to :func:`src.domain.order_keys.build_order_key` (Phase 1.1
+        Stage 8-2 single source of truth — byte-identical to the historical
+        format, so existing keys are unchanged; ``PendingSettler`` recovers the
+        slot via the matching parser).
+        """
+        return build_order_key(
+            asset_fqn=ctx.asset.fqn,
+            date_iso=today.isoformat(),
+            side=OrderSide.BUY,
+            slot_number=slot_number,
+        )
 
     def _sell_idempotency_key(self, ctx: AssetContext, today: date, slot_number: int) -> str:
-        """ADR §5.9.1 — slot-aware idempotency key for SELL."""
-        return f"{ctx.asset.fqn}:{today.isoformat()}:sell:{slot_number}"
+        """ADR §5.9.1 — slot-aware idempotency key for SELL. See
+        :meth:`_buy_idempotency_key` (shared :func:`build_order_key`)."""
+        return build_order_key(
+            asset_fqn=ctx.asset.fqn,
+            date_iso=today.isoformat(),
+            side=OrderSide.SELL,
+            slot_number=slot_number,
+        )
 
     def _signal_info(self, signal: CircuitBreakerSignal) -> dict[str, str]:
         return {

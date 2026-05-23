@@ -47,6 +47,22 @@ class HoldingsReaderPort(Protocol):
         ...
 
 
+class OrderStatusReaderPort(Protocol):
+    """Read-only order-status accessor (Interface Segregation).
+
+    The narrow surface ``PendingSettler`` depends on (Phase 1.1 Stage 8-2): it
+    only ever looks up an order's current status via ``get_order_status``, never
+    places or cancels orders. A write-capable adapter (e.g. ``KISBroker`` with
+    its order store) satisfies this structurally; any full ``BrokerPort`` does
+    too.
+    """
+
+    def get_order_status(self, idempotency_key: str) -> OrderResult | None:
+        """Look up an order by idempotency_key. None if the broker has no order
+        for that key (CLAUDE.md §4.3)."""
+        ...
+
+
 class BrokerPort(Protocol):
     """Order execution and account state.
 
