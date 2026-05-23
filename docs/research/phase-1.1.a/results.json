@@ -1,0 +1,64 @@
+{
+  "phase": "1.1.a",
+  "task": "매도 임계 비교 (profit_target_pct)",
+  "window": {
+    "start": "2019-01-02",
+    "end": "2024-12-30"
+  },
+  "initial_capital": "100000000",
+  "currency": "KRW",
+  "assets": [
+    "069500",
+    "132030"
+  ],
+  "allocation_policy": "EQUAL",
+  "fixed_parameters": {
+    "drop_threshold_pct": "5.0",
+    "max_split_count": 7,
+    "per_split_amount": "5000000",
+    "max_split_per_day": 1,
+    "reentry_strategy": "hybrid",
+    "reentry_parameters": {
+      "cooldown_days": 60
+    }
+  },
+  "default_recommendation": "pending 사용자 확정",
+  "runs": [
+    {
+      "profit_target_pct": "10",
+      "final_value": "115020106",
+      "currency": "KRW",
+      "total_return_pct": "15.02010600",
+      "cagr_pct": "2.417933413153636245140248000",
+      "max_drawdown_pct": "-8.208560739215761593850065942",
+      "sharpe_ratio": "0.5439051556963100115287141076",
+      "calmar_ratio": "0.2945624074634846885571195362",
+      "total_sells": 31,
+      "n_trading_days": 1477
+    },
+    {
+      "profit_target_pct": "15",
+      "final_value": "119123721",
+      "currency": "KRW",
+      "total_return_pct": "19.12372100",
+      "cagr_pct": "3.032754642952994939702653300",
+      "max_drawdown_pct": "-8.852308106536248994263303960",
+      "sharpe_ratio": "0.6881375913301190395820995671",
+      "calmar_ratio": "0.3425947906980000033621743978",
+      "total_sells": 25,
+      "n_trading_days": 1477
+    },
+    {
+      "profit_target_pct": "20",
+      "final_value": "126465846",
+      "currency": "KRW",
+      "total_return_pct": "26.46584600",
+      "cagr_pct": "4.090253853733807966291830500",
+      "max_drawdown_pct": "-9.837473338380799265066107139",
+      "sharpe_ratio": "0.6938008153823794756169966445",
+      "calmar_ratio": "0.4157829671340226526345264383",
+      "total_sells": 28,
+      "n_trading_days": 1477
+    }
+  ]
+}

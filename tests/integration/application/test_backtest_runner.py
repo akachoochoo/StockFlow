@@ -520,6 +520,43 @@ class TestPerAssetStrategyOverrides:
                 },
             )
 
+    def test_per_asset_overrides_tier2_run(self):
+        """Phase 1.1 Case A / Tier 2 — per-asset buy+sell+reentry params run."""
+        from src.domain.strategies.profit_target import SellStrategyConfig
+        from src.use_cases.asset_context import AssetPolicyOverride
+
+        a = _asset()
+        b = _asset_bond()
+        days = [date(2026, 4, 23) + timedelta(days=i) for i in range(6)]
+        a_bars = [_bar(a, d, "35000") for d in days]
+        b_bars = [_bar(b, d, "10000") for d in days]
+        overrides = {
+            "069500": AssetPolicyOverride(
+                buy_config=_config(per_split="500000"),
+                sell_config=SellStrategyConfig(
+                    profit_target_pct=Decimal("15"), max_sells_per_day=7
+                ),
+                reentry_parameters={"cooldown_days": 60},
+            ),
+            "214980": AssetPolicyOverride(
+                buy_config=_config(per_split="300000"),
+                sell_config=SellStrategyConfig(
+                    profit_target_pct=Decimal("20"), max_sells_per_day=7
+                ),
+                reentry_parameters={"cooldown_days": 30},
+            ),
+        }
+        runner = BacktestRunner(
+            assets=[a, b],
+            strategy_config=_config(),
+            initial_capital=_capital(),
+            ohlcv_by_asset={a: a_bars, b: b_bars},
+            per_asset_overrides=overrides,
+        )
+        assert runner._per_asset_policy is not None
+        result = runner.run(start=days[1], end=days[5])
+        assert result.n_trading_days == 5
+
     def test_override_dict_validation_missing_key_raises(self):
         """dict 에 assets 중 일부 누락 시 ValueError."""
         asset_a = _asset()

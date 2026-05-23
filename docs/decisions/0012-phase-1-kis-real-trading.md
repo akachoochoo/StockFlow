@@ -90,7 +90,7 @@
   | **(b') -20% 추가 매수 정지 + 매도 권고 알림** | **-20%** | ❌ | ✅ | ✅ 텔레그램 사람 매도 검토 권고 | **✅ default 채택** |
   | (c) -20% 자동 매도 | -20% | ✅ | — | ✅ | ❌ — 0.11.e §1.6 #1 + CLAUDE.md §11.4 "자동 손절 안 함" invariant 위반 |
 
-  **(b') 채택 근거**: 평가손 -20% 도달 시 (1) 추가 매수 *자동* 정지 + (2) 텔레그램 "사람 매도 검토 권고" 알림 (D3 (b) 인프라 활용). 자동 매도 = 절대 금지. 사람이 CLI `trading manual-sell <asset> <quantity>` 명시 명령 후 실행. **-20% default 근거**: Phase 0.9.2 MDD -37.65% (ADR 0005 §10.3) 의 약 절반 + Phase 0.7.3 MDD -14.2% 와 충분한 buffer (false trigger 방지) + 자본 200만원 시 -20% = 40만원 손실 한계 (자본 보존 trade-off). 1.1.1.b sub-step backtest (-15% / -20% / -25% 3 후보) 결과 흡수 후 정정 가능 (Phase 1.1 진입 전).
+  **(b') 채택 근거**: 평가손 -20% 도달 시 (1) 추가 매수 *자동* 정지 + (2) 텔레그램 "사람 매도 검토 권고" 알림 (D3 (b) 인프라 활용). 자동 매도 = 절대 금지. 사람이 CLI `trading manual-sell <asset> <quantity>` 명시 명령 후 실행. **-20% default 근거**: Phase 0.9.2 MDD -37.65% (ADR 0005 §10.3) 의 약 절반 + Phase 0.7.3 MDD -14.2% 와 충분한 buffer (false trigger 방지) + 자본 200만원 시 -20% = 40만원 손실 한계 (자본 보존 trade-off). 1.1.1.b sub-step backtest (-15% / -20% / -25% 3 후보) 결과 흡수 후 정정 가능 (Phase 1.1 진입 전). **Stage 1.1.b backtest 결과 박제 (2026-05-22, `docs/research/phase-1.1.b/`)**: -15/-20/-25% 모두 본 윈도우/정책 (drop 5% + 일 1회 + cooldown 60 + 7-split) 에서 **inert** (유효 차단 0 — 손실 임계 도달일에 PriceDropStrategy 가 이미 매수 안 함; 4-run byte-identical, faithfulness gate PASS). → 손절-추가매수-차단은 backtest 최적화 불가 = **라이브 안전장치** 성격 (ADR 0014/0011 정신 정합). 사용자 결정 = **-20% 유지** (ADR 기본값 확정). SL 효용은 더 공격적 매수 정책 (큰 max_split_per_day / 짧은 cooldown / 작은 drop) 에서만 측정 가능.
 
 - **D3** — **텔레그램 알림 도입 + 알림 종류 7 + 빈도 명시** (Round 1 ITERATE Patch 17, TBD 제거):
 
@@ -131,7 +131,7 @@
 
   실거래 전환 후 자본 시작 = D10 default (200만원, Patch 6 정합).
 
-- **D7** — **매도 임계치 비교 backtest 도입**: (a) 매도 임계 +10% 단일 (Phase 0.5 invariant 보존), (b) +10% / +15% / +20% 비교 backtest 후 채택 (ADR 0002 §12.4.1 보류 해소), (c) 자산별 차별화 (ADR 0010 D3 (i) Mapping 진입 시). **권고 default**: **(b)** — Phase 1 진입 전 별도 sub-step (1.1.1.a) 으로 backtest 실행 + 결정 박제. 후보 (c) = D8 (ADR 0010 D3) 채택 시 cascading 흡수.
+- **D7** — **매도 임계치 비교 backtest 도입**: (a) 매도 임계 +10% 단일 (Phase 0.5 invariant 보존), (b) +10% / +15% / +20% 비교 backtest 후 채택 (ADR 0002 §12.4.1 보류 해소), (c) 자산별 차별화 (ADR 0010 D3 (i) Mapping 진입 시). **권고 default**: **(b)** — Phase 1 진입 전 별도 sub-step (1.1.1.a) 으로 backtest 실행 + 결정 박제. 후보 (c) = D8 (ADR 0010 D3) 채택 시 cascading 흡수. **Stage 1.1.a backtest 결과 박제 (2026-05-22, `docs/research/phase-1.1.a/`)**: +10/+15/+20% 비교 (069500+132030 EQUAL, 2019–2024) → 사용자 채택 = **+15%** (risk-adjusted Sharpe 0.688 ≈ +20% 0.694, regime 민감도 낮음; +10% 대비 Sharpe/Calmar 우위). ADR 0002 §12.4.1 보류 해소, (b) 완료. Caveat: 단일 강세장 윈도우 — regime 전환 시 재검증. **적용 시점**: Phase 1 trading config (paper 셋업, Stage 4) 에 `profit_target_pct: 15` 로 wiring (현 시점 production config 변경 zero — 결정만 박제).
 
 - **D8** — **종목별 다른 정책 허용 여부 (ADR 0010 D3 종속)**: ADR 0010 §3 회고 commit 시 D3 결정 (4 후보 중 1 선택 또는 보류) → 본 phase D8 입력. (a) ADR 0010 D3 (i) Mapping 채택 → 본 phase D8 = 채택 (`per_asset_strategy_overrides` 활용), (b) ADR 0010 D3 (ii) AssetContext 채택 → 본 phase D8 = composition.py 변경 (Phase 1 안정화 후 promote), (c) ADR 0010 D3 보류 → 본 phase D8 = 보류 (Phase 0.7.3 baseline 동일 정책 유지). **권고 default**: **(c)** ADR 0010 D3 보류 권장 (Phase 1 안정화 우선) + 안정화 6개월 후 promote 재검토.
 
@@ -219,7 +219,7 @@
 
 #### Phase 1 특수 추가 결정 (Round 1 ITERATE Missing Gaps + Open Q 박제)
 
-- **D17** — **DB 마이그레이션** (Missing Gap 2, ADR 0002 §3.4 정합): Phase 0 SQLite schema 와 Phase 1 schema 호환성 + idempotency_key + KIS order ID 필드 추가 + 거래세 / 수수료 필드 추가. **권고 default**: 별도 ADR (가칭 ADR 0013, Phase 1.1 sub-step 1.1.2 진입 시점 박제) — 본 ADR scope 외. ADR 0013 진입 trigger = D17 의 마이그레이션 스크립트 작성 + 검증 + 백업 / rollback 절차 박제 의무. ADR 0002 §3.4 인용 정본.
+- **D17** — **DB 마이그레이션** (Missing Gap 2, ADR 0002 §3.4 정합): Phase 0 SQLite schema 와 Phase 1 schema 호환성 + idempotency_key + KIS order ID 필드 추가 + 거래세 / 수수료 필드 추가. **권고 default**: 별도 ADR (**ADR 0019** — 재번호: 가칭 0013 은 Phase 0.11.f 가 점유, 0019 free 확정 2026-05-21 Stage 0.2; Phase 1.1 sub-step 1.1.2 진입 시점 박제) — 본 ADR scope 외. ADR 0019 진입 trigger = D17 의 마이그레이션 스크립트 작성 + 검증 + 백업 / rollback 절차 박제 의무. ADR 0002 §3.4 인용 정본. 컬럼 형태 (tax / commission 분리 vs 통합) 는 D20 Open Q #29 결과 흡수 후 확정 (provisional).
 
 - **D18** — **`develop`/`main` Git workflow 분리** (Missing Gap 3, ADR 0001 §1.5 정합): Phase 1+ 실거래 진입 시 develop/main 분리 + PR review 룰 도입. **권고 default**: (a) Phase 1.1 진입 시점에 develop branch 신규 생성 + main = 실거래 운영 branch + PR review 의무 (사용자 self-review or 외부 reviewer). (b) 별도 commit (fold 금지) 으로 git workflow 변경 박제. ADR 0001 §1.5 인용 정본 + 본 ADR §3 회고 시 검증.
 
@@ -237,6 +237,7 @@
     - **Open Q 3**: pykrx vs KIS API 데이터 불일치 시 정본 — D1 (c-read) MarketDataPort 일봉 = KIS 정본 채택 (Phase 0 invariant 보존 — pykrx fallback 도 허용 단, 실거래 의사결정 = KIS 정본).
     - **Open Q 4**: G2 "무사고" 해석 — 사용자 결정 ("Round 2 이전 KIS API 문서 검토 후 별도 결정") → 본 ADR §1 박제 commit 후 / sub-step 1.1.4 (entry readiness audit) 진입 전 별도 라운드 박제 의무.
   - **권고 default**: 본 ADR §1 박제 commit 후 *Phase 1 entry decision 라운드 #29* (가칭) 신규 — KIS API 문서 검토 + Open Q 4 결정 + D16 (vi) NTP 검증 + entry readiness 최종 audit.
+  - **✅ 해소: ADR 0020 (2026-05-22, Phase 1.1 Stage 2.0)** — KIS 공개문서 research 후 Open Q 1~4 박제: (1) PDNO 6자리 숫자 문자열 직접 매핑, (2) 모의투자 partial fill 시뮬 실증 보류(Stage 7) + D5(a) 차단 유지, (3) KIS 정본 + pykrx fallback, (4) "무사고" = **운영/무결성 사고만** (P&L 손실·-20% 손절 발동은 사고 아님 — Phase 1.1 = 시스템 정확성 검증). KIS API 스펙(엔드포인트/TR_ID/필드) 1차 박제 = ADR 0020 §2. D16 (vi) NTP 검증 + entry readiness audit = Stage 3/7 (별도). 실응답 검증 = 계정 발급 후 Stage 4/7.
 
 ### 1.4 Gates G1~G4 (success criterion, ralplan #28 박제 대상)
 
@@ -340,7 +341,7 @@
 | 1.1.1 | D1~D20 결정 + ADR §1 박제 + roadmap (본 ralplan #28 산출) | ADR 0012 §1 commit |
 | 1.1.1.a | D7 매도 임계 비교 backtest (+10% / +15% / +20%, ADR 0002 §12.4.1 보류 해소) | backtest 결과 박제 + 매도 임계 default 박제 |
 | 1.1.1.b | D2 손절 임계 backtest (-15% / -20% / -25%, ADR 0002 §12.4.2 보류 해소) | backtest 결과 박제 + 손절 임계 default 박제 |
-| 1.1.1.c | D17 DB 마이그레이션 ADR (가칭 ADR 0013) 별도 박제 + 마이그레이션 스크립트 + 백업/rollback 절차 | ADR 0013 §1 commit + 스크립트 |
+| 1.1.1.c | D17 DB 마이그레이션 ADR (**ADR 0019**) 별도 박제 + 마이그레이션 스크립트 + 백업/rollback 절차 (로드맵 Stage 4.5 = write 이전 hard gate) | ADR 0019 §1 commit + 스크립트 |
 | 1.1.1.d | D18 `develop` branch 신규 생성 + main = 실거래 운영 분리 + PR review 룰 박제 별도 commit | `develop` branch + git workflow 변경 박제 |
 | 1.1.1.e | D20 Open Q 별도 결정 라운드 (가칭 ralplan #29) — KIS API 문서 검토 + Open Q 1~4 결정 + G2 "무사고" 해석 + NTP 검증 | 별도 결정 commit |
 | 1.1.2 | KIS API 어댑터 구현 (D1 c-read 우선 + c-write 후행) — BrokerPort + MarketDataPort + Pydantic schema + 인증 보안 (R10) | `src/adapters/kis/` 신규 + Mock 정합 + `models.py` Pydantic + `.env.example` |
@@ -428,7 +429,64 @@
 
 ---
 
-## 2. `<TBD: ralplan #28 Round 2 박제 — Critic/Architect amendments 흡수 후 추가 예정>`
+## 2. Round 2 종료 박제 + Phase 1.1 구현 로드맵 consensus 라운드
+
+> 본 §2 는 두 단계 박제: (2.1) ralplan #28 Round 2 종료 (2026-05-12, §1 amendments 흡수 확인) + (2.2~2.4) Phase 1.1 구현 로드맵 consensus 라운드 (2026-05-21, Stage 0.1). D1~D20 default 결정은 §1 에서 확정 — 본 §2 는 *구현 순서/구조/게이트* 박제만 추가하며 default 를 재론하지 않는다.
+
+### 2.1 ralplan #28 Round 2 종료 (2026-05-12)
+
+- **Verdict**: APPROVE-WITH-RESERVATIONS (Architect + Critic).
+- **흡수된 amendments (§1 반영 완료)**:
+  - 2 BLOCKING 수치 정정 — (a) G2.1~G2.3 자본/기간 (200만 5일 / 300만 10일 / 500만 10일), (b) D6 (ii) reconciliation 40 회 (paper 10영업일 × 일 2회).
+  - G1 MINOR 정정 — D16 진입 조건 (i)~(vi) 6 조건 (본문 / sub-step 1.1.4 / closing summary 정합).
+- **Reservations**: 구현 순서 / 스키마 / 게이트 측정가능성 → §2.2 구현 로드맵 라운드에서 해소.
+
+### 2.2 Phase 1.1 구현 로드맵 consensus 라운드 (2026-05-21)
+
+사용자 명시 "Phase 1 진입 검토" → ralplan deliberate-mode consensus. D1~D20 default 를 *구현 순서·파일 구조·테스트 전략·게이트·리스크 완화* 로 번역.
+
+- **흐름**: Planner → Architect (AGREE-WITH-CHANGES) → Critic (ITERATE: 2 BLOCKING + 5 MAJOR) → 수정 → Architect (1차 blocker 4 RESOLVED, 신규 BLOCKING 1) → 수정 → Critic (**APPROVE**). 2 iterations.
+- **산출 아티팩트**: `.omc/plans/phase-1.1-kis-real-trading-roadmap.md` (Option C — read-before-write 를 파일 작성 순서로 강제하는 10-Stage 로드맵). `.omc/` 는 gitignored 이므로 **본 §2.3 가 정본 박제**.
+- **채택 = Option C**: write 메서드를 read 무사고 5영업일 게이트 통과 전까지 *작성하지 않음* → "write 조기 진입" pre-mortem 을 규율 아닌 구조로 차단. (거부: Option A 순차 strict = read/write 분리를 작업자 규율에 위임 / Option B 안전장치 우선 = recon/halt 이 KIS read 응답을 입력으로 받아 의존 역행.)
+
+### 2.3 구현 라운드 build-sequence amendments (D default 재론 아님)
+
+consensus 가 ADR 0012 §1.8 sub-step 표만으로는 드러나지 않은 결함을 박제:
+
+1. **[BLOCKING→해소] DB 마이그레이션 실행 누락**: `OrderResult` / `orders` 테이블에 tax/commission 컬럼 부재 (`db.py` "no Alembic"; tax/commission 은 5th ring `research/dgt` 에만 존재 = 도달 불가). write·비용 교차검증이 존재하지 않는 컬럼을 소비 → 첫 실거래 체결 시 잔고 불일치 risk. → **신규 Stage 4.5 (Schema Migration, ADR 0019)** = write (Stage 5) 이전 hard gate. ADR 0019 §1 + `orders` DDL `tax`/`commission` + migrate 스크립트 + 백업 + rollback + 게이트 3종.
+2. **[BLOCKING→해소] D6 (iii)/G2 (d) "Decision 객체 일치" 충족 불가능**: 라이브 `as_of=self._clock()` 실시각 + 라이브 가격 vs 백테스트 고정 날짜 → `Decision == Decision` 항상 False (`timestamp`/`reasoning` 차이). → **구조적 projection 으로 재정의**: `proj(d) = (skip_reason, sorted((slot_number, filled_quantity) for sell_actions), buy = (slot_number, split_level_after, filled_quantity, round_to_tick(target_price)) | None)`, 제외 = `{timestamp, reasoning, per-action {reasoning, filled_price, order_id}}`. 게이트 = `decision_equivalence_excludes_timestamp_and_live_price` (raw `==` 실패 + skip⇔빈 액션 불변 + sell canonical sort 동시 증명). "기록된 라이브 종가 재사용 (re-fetch 금지)" 결정론.
+3. **[MAJOR→해소] 도메인 모델 additive 허용 범위 명시**: 변경 zero invariant (D13) = Stage 8 운영 윈도우 룰. Stage 0–7 build 동안 domain 모델 **additive 확장** (`OrderResult.tax/commission`) 은 ADR 0019 하 허용 (Port 시그니처 불변).
+4. **[MAJOR→해소] D18 develop/main 분리 = Stage 0.4** build order 배치 (Stage 5 write 진입 선행).
+5. **[MAJOR→해소] write-absence 단일 메커니즘**: write 메서드 = `KISBroker` 에 *부재* (NotImplementedError placeholder 도 두지 않음 — placeholder/부재 양립 모호 제거). 게이트 = `kis_write_endpoints_absent_before_read_gate` = `not hasattr(...)`.
+6. **[MAJOR→해소] staleness tripwire N=20영업일**: Stage 1.2 손절 backtest 박제 후 20영업일 초과해서 Stage 6.1 손절 코드 작성 도달 시, default 를 fresh backtest 로 재검증 (시장 regime 변화 방지).
+7. **[MAJOR→해소] 테스트 selector↔개수 매핑** 140 (Unit 70 / Integration 30 / E2E 20 / Observability 20), 안전 invariant (kill switch / recon halt / NTP / partial fill / credentials / lock / PENDING / 이상치) 누락 selector 없음.
+8. **[gaps→해소]**: G-a rollback 테스트 게이트 (`rollback_reverts_capital_tier` + runbook 체크리스트) / G-c PENDING-recovery (Stage 2.5 read `get_order_status` + Stage 5.2 write timeout) / G-d lock-file (기존 `src/cli/safety.py:lock_file` wiring, 신규 구현 아님) / G-e 가격 이상치 ±30% skip (기존 `InvalidPriceError`/`DataIntegrityError` 재사용).
+
+### 2.4 Ordering-note 해소 (순환 차단)
+
+로드맵 §6 Ordering note (§2 ↔ 로드맵 순환 방지) 판정: 본 라운드 amendments 는 **D1~D20 default 결정을 변경하지 않는다** — 구현 순서 / 구조 / 게이트 / 테스트 측정법만 박제. §1 에 대한 유일한 touch = D17 ADR 번호 정정 (0013→0019, docs hygiene, Stage 0.2). 따라서 "§2 가 로드맵을 바꾸면 재검토" 순환은 **미발화** — 로드맵은 §1 의 downstream translation 이며 Stage 1+ (build) 진입 자격 충족. **실거래 ON 은 여전히 D16 (iv-a)~(vi) 게이트 (Stage 7/8) 뒤 — §1 불변.**
+
+### 2.5 D6 amendment — 모의투자(VTS) 서버 → dry-run paper-on-live 대체 (2026-05-23)
+
+> **이것은 D6 (consensus 결정) 의 amendment 다.** 메타원칙(ADR 0006 §18.B "박제 reverse 시 양쪽 rationale 인용") 정합 — 원 D6 본문(§1, line 116~)은 보존하며 본 §2.5 가 변경/한계를 박제한다.
+
+**발단**: D6 (iv-b) "KIS 모의투자(VTS) 서버 무사고 5 영업일" 검증을 시도했으나, paper(VTS) 계좌가 `OPSQ2000`(조회 자료 없음 = 모의투자 계좌/앱 설정 미비)로 잔고조회조차 실패 — VTS 경로 사용 불가. (token 발급/IP/appkey 는 정상; 모의투자 *계좌* 자체 문제.) 사용자 결정(2026-05-23): **모의투자 서버 검증을 dry-run paper-on-live 로 대체.**
+
+**변경**: D6 paper trading 검증 = **dry-run paper-on-live** (`trading dry-run`, commit `47cfd71`):
+- market data = **실 KIS 시세** (KISMarketData get_price/get_ohlcv, read-only) — 실서버 라이브 데이터.
+- broker = **MockBroker** (체결 시뮬 + 모의 잔고, 로컬 SQLite). 실주문 zero, **실계좌 미사용**(inquire-balance 호출 zero).
+- DailyOrchestrator 정상 실행 + 다일(multi-day) 상태 누적.
+
+**dry-run 이 검증하는 것**: 실시세 통합 + 의사결정 파이프라인(PriceDropStrategy 등) + 시뮬 체결 + 다일 상태 + 알림(notifier) 경로. (D6 (iv-a) KIS Mock schema 검증 + read 표면은 ADR 0020 §5.1 라이브 검증으로 별도 충족.)
+
+**dry-run 이 검증하지 *못*하는 것 (CRITICAL 한계)**: **실 KIS 주문 전송/체결/부분체결/취소 (write 경로).** dry-run = 주문 미실행이 정의 — MockBroker 시뮬 체결은 실 KIS 체결 왕복(place_order→체결→inquire-daily-ccld)을 검증하지 않는다. 원 D6 (iv-b) 의 핵심이던 *주문 왕복* 검증이 dry-run 으로는 빠진다.
+
+**write 경로 검증 = 별도 (D16 진입 전 필수)**: 실거래 주문 ON 전, write 경로는 다음 중 하나로 검증되어야 한다 (Phase 1.1 sub-step 1.1.4 또는 실거래 진입 결정 라운드에서 박제):
+- (a) 모의투자(VTS) 계좌 복구 후 (iv-b) 원안대로 주문 왕복 검증, 또는
+- (b) Stage 8 첫 실주문을 **극소 수량 1주 + 사람 1:1 감독 + 즉시 검증**으로 제한한 supervised first-order 게이트.
+- **본 amendment 는 (a)/(b) 중 선택을 미결로 두되, write 경로 미검증 상태로 실거래 일반 운영 진입은 금지** 를 박제한다.
+
+**불변 (paper-before-real-trading 원칙 유지)**: 본 amendment 는 *paper 검증 수단*(VTS 서버 → dry-run)만 바꾼다. 실거래 **주문** ON 은 여전히 D16 게이트(NTP + read 검증 + write 경로 검증 (a)/(b)) 뒤이며, write 코드(Stage 5)는 미작성. ADR 0012 D6/D16 의 "검증 없이 실주문 금지" 정신 불변. D16 (iv-b) 는 본 §2.5 로 "VTS 서버 또는 dry-run + write 별도검증" 으로 해석 갱신.
 
 ---
 
@@ -437,3 +495,37 @@
 ---
 
 **본 ADR §1 Round 1 ITERATE 24 patches 흡수 완료 (ralplan #28 라운드 #28, 2026-05-12) — 13 BLOCKING + 4 NON-BLOCKING + 5 Missing + 2 Ambiguity. Round 2 Architect + Critic APPROVE 대기. Phase 1.1 실거래 진입 시점 = D16 (i)~(vi) *모두* 충족 후 (특히 0.11.b/c/d/e sub-step .2~.5 실행 완료 + 별도 2 commit 완료 + (iv-a) KIS Mock 5일 + (iv-b) KIS 모의투자 서버 5일 + D6 entry gate 5 조건 + NTP 검증). 본 phase 의 *모든* 결정은 사용자 명시 "주의 사항 모두 숙지" 정신 정합 — CLAUDE.md preamble "실계좌가 연결될 자동매매 시스템. 한 번의 버그가 돈으로 직결" 의 정본 박제. 핵심 추가 박제 (Round 1 ITERATE 흡수): D14 ProposalHistory read-only 모드 (Phase 1.1 변경 zero invariant 정합) / §1.6 #6 production rings 변경 zero invariant 해제 명시 (Phase 1 본질 = production rings 진입, 0.11.e D15 governance 정신 변경 아닌 phase 본질 차이) / §1.10 시나리오 E (KIS access_token 24h 만료) / R10 KIS 인증 보안 (appkey/appsecret/access_token mask + .env + .gitignore) / G2 (d) 백테스트 vs 실거래 의사결정 지속 감시 (5% 임계, 누적 hard halt) / D17~D20 신규 (DB 마이그레이션 별도 ADR / develop-main 분리 / 자본 rollback 경로 / KIS API Open Q 별도 결정 라운드 #29 가칭).**
+
+---
+
+## §4. 종목별 파라미터 차등 (Case A / Tier 2) — ADR 0003 §7.3 / §19.4 보류 해소 (2026-05-23)
+
+> 사용자 결정 라운드 (Phase 1.1 dry-run 준비 중). 사용자 요청 = "정책 동일성 규칙을
+> 바꿔 종목별 파라미터(+자본) 차등, 라이브 포함". 심층 분석 + 변경 계획 후 4 결정 확정.
+
+**배경**: ADR 0003 §7.3 가 정책 동일성(모든 enabled 종목 동일 buy/sell/reentry)을
+강제했고 §19.4 에서 "종목별 다른 정책"을 Phase 1+ 보류로 박제. 본 §4 가 보류 해소.
+구조 분석 발견: `AssetContext` / `DailyOrchestrator` / `BacktestRunner.per_asset_strategy_overrides`
+는 *이미* per-asset 지원. 차단 게이트 = 로더 `_check_policy_uniformity` + composition
+broadcast 3곳뿐.
+
+**결정 (사용자 승인)**:
+- **D1 — opt-in = root 플래그 `allow_per_asset_params: true`**. 없으면 기존 strict 균일
+  (G4 회귀 invariant, byte-identical). 명시 opt-in 만 차등 허용.
+- **D2 — 차등 범위 = Tier 2** (buy_parameters + sell_parameters + reentry_parameters).
+  자본은 per-asset `per_split_amount` 로 차등 (allocation_policy 아님 — paper/live 미배선).
+- **D3 — 실거래 자본 한도 검증**: 무장(arming) 시
+  Σ(per_split_amount_i × max_split_count_i) ≤ intended tier KRW, 초과 거부
+  (`assert_capital_within_tier`, R1 과노출 방지).
+- **D4 — 전략 TYPE 균일 유지 (Case B 거부)**: buy_strategy/sell_strategy/reentry_strategy
+  *종류* 는 종목 전체 동일 강제. price_drop + support_level 혼합 = 단일 broker/settler
+  slot_model 충돌이라 구조적 불가 (별도 Phase + 재설계 필요 시 후속).
+
+**구현 (commit 박제 예정)**: 로더 TYPE-only uniformity + 플래그 / `AssetPolicyOverride`
+(use_cases) / composition `build_asset_contexts` per-asset / build_paper·live_components +
+BacktestRunner `per_asset_overrides` / live `assert_capital_within_tier` / CLI 4 명령 배선.
+domain/ports/orchestrator 변경 zero. 회귀 zero (균일 경로 broadcast 보존).
+
+**라이브 사용 전 게이트**: 종목별 차등 = 새 regime → backtest 재검증 의무 (MDD/H3 특성
+변동 확인). 변경 zero invariant(D13) 로 본 변경은 **라이브 진입 전 (dry-run/paper 단계)**
+에 머지 — 진입 후엔 비상 4 사유만.

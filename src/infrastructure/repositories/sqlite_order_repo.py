@@ -21,6 +21,12 @@ from src.domain.models import (
 if TYPE_CHECKING:
     import sqlite3
 
+# Terminal statuses accepted by update_status (Architect precision 2):
+# PARTIALLY_FILLED is excluded so a partial fill stays in list_pending.
+_TERMINAL_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.EXPIRED}
+)
+
 
 class SqliteOrderRepo:
     """OrderRepoPort over a sqlite3.Connection."""
@@ -33,7 +39,8 @@ class SqliteOrderRepo:
             "INSERT INTO orders (idempotency_key, asset_fqn, asset_json, "
             "side, order_type, quantity, target_price, status, "
             "broker_order_id, filled_quantity, filled_price, submitted_at, "
-            "filled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "filled_at, tax, commission, broker_org_no) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 order.idempotency_key,
                 order.asset.fqn,
@@ -48,6 +55,9 @@ class SqliteOrderRepo:
                 str(order.filled_price) if order.filled_price is not None else None,
                 order.submitted_at.isoformat(),
                 order.filled_at.isoformat() if order.filled_at is not None else None,
+                str(order.tax) if order.tax is not None else None,
+                str(order.commission) if order.commission is not None else None,
+                order.broker_org_no,
             ),
         )
 
@@ -58,6 +68,54 @@ class SqliteOrderRepo:
         if row is None:
             return None
         return self._build_order(row)
+
+    def find_by_broker_order_id(self, broker_order_id: str) -> Order | None:
+        # NOTE: broker_order_id has no index (db.py indexes submitted_at +
+        # status only) → full table scan. Harmless at ≤ 2 symbols; add an
+        # index follow-up if the cancel-routing path becomes hot.
+        row = self._conn.execute(
+            "SELECT * FROM orders WHERE broker_order_id = ?", (broker_order_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._build_order(row)
+
+    def update_status(
+        self,
+        idempotency_key: str,
+        new_status: OrderStatus,
+        *,
+        filled_quantity: Decimal,
+        filled_price: Decimal | None,
+        filled_at: datetime | None,
+        broker_order_id: str | None = None,
+        broker_org_no: str | None = None,
+    ) -> None:
+        if new_status not in _TERMINAL_STATUSES:
+            raise ValueError(
+                f"update_status accepts terminal statuses only "
+                f"(FILLED / CANCELED / EXPIRED), got {new_status.value}"
+            )
+        cursor = self._conn.execute(
+            "UPDATE orders SET status = ?, filled_quantity = ?, "
+            "filled_price = ?, filled_at = ?, "
+            "broker_order_id = COALESCE(?, broker_order_id), "
+            "broker_org_no = COALESCE(?, broker_org_no) "
+            "WHERE idempotency_key = ?",
+            (
+                new_status.value,
+                str(filled_quantity),
+                str(filled_price) if filled_price is not None else None,
+                filled_at.isoformat() if filled_at is not None else None,
+                broker_order_id,
+                broker_org_no,
+                idempotency_key,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError(
+                f"update_status: no order with idempotency_key={idempotency_key}"
+            )
 
     def list_pending(self) -> list[Order]:
         rows = self._conn.execute(
@@ -99,4 +157,11 @@ class SqliteOrderRepo:
                 if row["filled_at"] is not None
                 else None
             ),
+            tax=Decimal(row["tax"]) if row["tax"] is not None else None,
+            commission=(
+                Decimal(row["commission"])
+                if row["commission"] is not None
+                else None
+            ),
+            broker_org_no=row["broker_org_no"],
         )

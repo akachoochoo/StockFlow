@@ -48,6 +48,18 @@ if TYPE_CHECKING:
 __all__: list[str] = []
 
 
+class _ReadOnlyModeError(ValueError):
+    """Phase 1.1 ProposalHistory read-only 모드 위반 (ADR 0012 D13 (a-rev)).
+
+    `_transition(..., read_only=True)` 가 APPLIED state 로의 전이 시도를
+    차단할 때 raise. `ValueError` 의 subclass — 기존 catch 패턴
+    (`pytest.raises(ValueError, ...)`) 호환 유지 + 정밀 type 식별 가능.
+
+    본질 (D13 read-only): "관찰/기록은 하되 시스템 변경(APPLIED)은 막는다."
+    Phase 1.1 변경 zero invariant 정합 (ADR 0011 §1.6 #1 강화).
+    """
+
+
 @dataclass(frozen=True)
 class _Proposal:
     """L2/L3 변경 제안 — 순간 snapshot (D14 cumulative history 와 분리).
@@ -155,6 +167,7 @@ def _transition(
     *,
     to_state: _ProposalState,
     adr_reference: str | None = None,
+    read_only: bool = False,
 ) -> _Proposal:
     """순수 함수 전이 — 새 Proposal instance 반환 (immutable).
 
@@ -162,14 +175,26 @@ def _transition(
         proposal: 현 proposal.
         to_state: 목적 state.
         adr_reference: APPROVED → ADR_FILED 전이 시 의무 (file path).
+        read_only: Phase 1.1 ProposalHistory read-only 모드 (ADR 0012 D13
+            (a-rev)). True 시 APPLIED state 로의 전이 시도 차단 — 변경 zero
+            invariant 정합. NULL proposal 누적 (PENDING/REJECTED 기록) 은
+            영향 없음 (drift 검증 데이터 축적 허용). 기본 False = Phase 1.2+
+            정상 전이 (회귀 zero).
 
     Returns:
         새 `_Proposal` instance (frozen) — 동일 8 필드 + 변경된 state +
         선택적 adr_reference.
 
     Raises:
-        ValueError: 차단 전이 시도.
+        _ReadOnlyModeError: read_only=True + to_state == APPLIED (D13 차단).
+        ValueError: 차단 전이 시도 (4-state 머신 invariant).
     """
+    if read_only and to_state is _ProposalState.APPLIED:
+        raise _ReadOnlyModeError(
+            f"Read-only mode (ADR 0012 D13) blocks transition to APPLIED: "
+            f"{proposal.state.value} → {to_state.value}. Phase 1.1 변경 zero "
+            f"invariant — NULL proposal 누적은 허용, APPLIED 전이는 차단."
+        )
     if not _can_transition(proposal.state, to_state):
         raise ValueError(
             f"Transition blocked: {proposal.state.value} → {to_state.value} "

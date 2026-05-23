@@ -151,21 +151,29 @@ class _RootSchema(_StrictBase):
     # ADR 0003 §16.1 — Phase 0.7.2 자본 배분 정책. default EQUAL 시 Phase
     # 0.7.1 동작 그대로 (회귀 invariant). 기존 yaml 들 명시 없이 호환.
     allocation_policy: AllocationPolicy = AllocationPolicy.EQUAL
+    # Phase 1.1 per-asset 파라미터 차등 (Case A). default False → Phase 0.7.1
+    # strict 균일 (회귀 invariant). true 시 전략 TYPE 만 균일 강제하고 종목별
+    # buy/sell/reentry **파라미터** 차등을 허용 (ADR 0003 §7.3 / §19.4 보류 해소).
+    allow_per_asset_params: bool = False
     assets: dict[str, _AssetEntry] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _check_policy_uniformity(self) -> _RootSchema:
-        """Phase 0.7.1 strict: all enabled assets must share the same policy.
+        """Enforce policy uniformity across enabled assets.
 
-        ADR 0003 §7.3 — 정책 동일성 강제. ``name`` and ``enabled`` may differ
-        per asset; every other field must be identical across all enabled
-        assets. Comparison uses ``model_dump()`` dict equality so Decimal /
-        int / str all compare correctly.
+        Two modes (ADR 0003 §7.3 / §19.4 보류 해소):
+        - ``allow_per_asset_params = False`` (default, Phase 0.7.1 strict):
+          every policy field (strategy TYPE + parameters) must be identical
+          across all enabled assets —회귀 invariant.
+        - ``allow_per_asset_params = True``: only the strategy **TYPE** fields
+          (``buy_strategy`` / ``sell_strategy`` / ``reentry_strategy``) must be
+          uniform; per-asset **parameters** (``*_parameters``) may differ. The
+          TYPE uniformity is structural — a single broker/settler carries one
+          ``slot_model``, so mixing strategy *types* (price_drop vs
+          support_level) is still forbidden.
 
-        Raises ValueError naming the first mismatch asset and differing field
-        to aid debugging (e.g. "asset '214980' differs from '069500':
-        buy_parameters differ").
-        Skips validation when ≤ 1 enabled asset exists (no pair to compare).
+        ``name`` and ``enabled`` may always differ per asset. Skips validation
+        when ≤ 1 enabled asset exists (no pair to compare).
         """
         enabled_items = [
             (code, entry)
@@ -178,24 +186,33 @@ class _RootSchema(_StrictBase):
         ref_code, ref_entry = enabled_items[0]
         ref_dump = ref_entry.model_dump()
 
-        policy_fields = (
-            "buy_strategy",
-            "buy_parameters",
-            "sell_strategy",
-            "sell_parameters",
-            "reentry_strategy",
-            "reentry_parameters",
+        type_fields = ("buy_strategy", "sell_strategy", "reentry_strategy")
+        param_fields = ("buy_parameters", "sell_parameters", "reentry_parameters")
+        checked_fields = (
+            type_fields
+            if self.allow_per_asset_params
+            else type_fields + param_fields
         )
 
         for code, entry in enabled_items[1:]:
             entry_dump = entry.model_dump()
-            for field_name in policy_fields:
+            for field_name in checked_fields:
                 if entry_dump[field_name] != ref_dump[field_name]:
+                    kind = (
+                        "strategy TYPE"
+                        if field_name in type_fields
+                        else "policy"
+                    )
+                    hint = (
+                        " (strategy TYPE 은 종목 전체 동일해야 함 — "
+                        "단일 broker/settler slot_model 제약)"
+                        if field_name in type_fields
+                        else " (set allow_per_asset_params: true 로 파라미터 "
+                        "차등 허용 가능)"
+                    )
                     raise ValueError(
-                        f"Phase 0.7.1 strict (ADR 0003 §7.3): asset "
-                        f"{code!r} differs from {ref_code!r}: "
-                        f"{field_name} differ. "
-                        f"All enabled assets must share the same policy."
+                        f"ADR 0003 §7.3: asset {code!r} differs from "
+                        f"{ref_code!r}: {field_name} differ ({kind}).{hint}"
                     )
 
         return self

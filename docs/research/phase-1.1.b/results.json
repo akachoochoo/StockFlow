@@ -1,0 +1,107 @@
+{
+  "phase": "1.1.b",
+  "task": "손절(추가매수 차단) 임계 비교 (ADR 0012 D2 b')",
+  "window": {
+    "start": "2019-01-02",
+    "end": "2024-12-30"
+  },
+  "initial_capital": "100000000",
+  "currency": "KRW",
+  "assets": [
+    "069500",
+    "132030"
+  ],
+  "allocation_policy": "EQUAL",
+  "baseline_profit_target_pct": "10",
+  "fixed_parameters": {
+    "drop_threshold_pct": "5.0",
+    "max_split_count": 7,
+    "per_split_amount": "5000000",
+    "max_split_per_day": 1,
+    "reentry_strategy": "hybrid",
+    "reentry_parameters": {
+      "cooldown_days": 60
+    }
+  },
+  "faithfulness_gate": {
+    "pass": true,
+    "detail": "canonical=(fv=115020106, cagr=2.417933413153636245140248000, mdd=-8.208560739215761593850065942, sharpe=0.5439051556963100115287141076, calmar=0.2945624074634846885571195362) mirror=(fv=115020106, cagr=2.417933413153636245140248000, mdd=-8.208560739215761593850065942, sharpe=0.5439051556963100115287141076, calmar=0.2945624074634846885571195362)",
+    "canonical": {
+      "final_value": "115020106",
+      "cagr_pct": "2.417933413153636245140248000",
+      "max_drawdown_pct": "-8.208560739215761593850065942",
+      "sharpe_ratio": "0.5439051556963100115287141076",
+      "calmar_ratio": "0.2945624074634846885571195362"
+    },
+    "mirror": {
+      "final_value": "115020106",
+      "cagr_pct": "2.417933413153636245140248000",
+      "max_drawdown_pct": "-8.208560739215761593850065942",
+      "sharpe_ratio": "0.5439051556963100115287141076",
+      "calmar_ratio": "0.2945624074634846885571195362"
+    }
+  },
+  "default_recommendation": "pending 사용자 확정",
+  "runs": [
+    {
+      "label": "no-SL",
+      "stop_loss_pct": null,
+      "final_value": "115020106",
+      "currency": "KRW",
+      "total_return_pct": "15.02010600",
+      "cagr_pct": "2.417933413153636245140248000",
+      "max_drawdown_pct": "-8.208560739215761593850065942",
+      "sharpe_ratio": "0.5439051556963100115287141076",
+      "calmar_ratio": "0.2945624074634846885571195362",
+      "total_sells": 31,
+      "block_count": 0,
+      "effective_block_count": 0,
+      "n_trading_days": 1477
+    },
+    {
+      "label": "-15%",
+      "stop_loss_pct": "15",
+      "final_value": "115020106",
+      "currency": "KRW",
+      "total_return_pct": "15.02010600",
+      "cagr_pct": "2.417933413153636245140248000",
+      "max_drawdown_pct": "-8.208560739215761593850065942",
+      "sharpe_ratio": "0.5439051556963100115287141076",
+      "calmar_ratio": "0.2945624074634846885571195362",
+      "total_sells": 31,
+      "block_count": 366,
+      "effective_block_count": 0,
+      "n_trading_days": 1477
+    },
+    {
+      "label": "-20%",
+      "stop_loss_pct": "20",
+      "final_value": "115020106",
+      "currency": "KRW",
+      "total_return_pct": "15.02010600",
+      "cagr_pct": "2.417933413153636245140248000",
+      "max_drawdown_pct": "-8.208560739215761593850065942",
+      "sharpe_ratio": "0.5439051556963100115287141076",
+      "calmar_ratio": "0.2945624074634846885571195362",
+      "total_sells": 31,
+      "block_count": 182,
+      "effective_block_count": 0,
+      "n_trading_days": 1477
+    },
+    {
+      "label": "-25%",
+      "stop_loss_pct": "25",
+      "final_value": "115020106",
+      "currency": "KRW",
+      "total_return_pct": "15.02010600",
+      "cagr_pct": "2.417933413153636245140248000",
+      "max_drawdown_pct": "-8.208560739215761593850065942",
+      "sharpe_ratio": "0.5439051556963100115287141076",
+      "calmar_ratio": "0.2945624074634846885571195362",
+      "total_sells": 31,
+      "block_count": 42,
+      "effective_block_count": 0,
+      "n_trading_days": 1477
+    }
+  ]
+}

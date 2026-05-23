@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     )
     from src.domain.strategies.price_drop import SplitStrategyConfig
     from src.ports.signals import SignalPort
+    from src.use_cases.asset_context import AssetPolicyOverride
 
 
 _DEFAULT_TRADING_DAYS_PER_YEAR = 252
@@ -186,6 +187,7 @@ class BacktestRunner:
         risk_free_rate: Decimal = _DEFAULT_RISK_FREE_RATE,
         per_asset_strategy_overrides: dict[str, SplitStrategyConfig] | None = None,
         buy_strategy_name: str = "price_drop",
+        per_asset_overrides: dict[str, AssetPolicyOverride] | None = None,
     ) -> None:
         if not assets:
             raise ValueError("assets must be a non-empty list")
@@ -212,6 +214,12 @@ class BacktestRunner:
             dict(per_asset_strategy_overrides)
             if per_asset_strategy_overrides is not None
             else None
+        )
+        # Phase 1.1 Case A / Tier 2: per-asset buy+sell+reentry params
+        # (code-keyed). Takes precedence over the legacy buy-only
+        # per_asset_strategy_overrides (fqn-keyed). None → broadcast / legacy.
+        self._per_asset_policy = (
+            dict(per_asset_overrides) if per_asset_overrides is not None else None
         )
         self._sell_strategy_config = sell_strategy_config or SellStrategyConfig(
             profit_target_pct=Decimal("10.0"),
@@ -264,6 +272,7 @@ class BacktestRunner:
         # Lazy import to avoid circular dependency
         # (src.cli.__init__ → main → backtest_runner → composition).
         from src.cli.composition import (
+            build_asset_contexts,
             create_buy_strategy,
             slot_model_for_buy_strategy,
         )
@@ -300,20 +309,33 @@ class BacktestRunner:
         # — per_asset_strategy_overrides 적용 시 자산별 SplitStrategyConfig
         # (per_split_amount 만 자산별 다름) 가능. None 시 단일 fallback
         # (Phase 0.7.1 회귀 invariant).
-        asset_contexts = [
-            AssetContext(
-                asset=asset,
-                strategy=strategy,
-                config=(
-                    self._per_asset_overrides[asset.fqn]
-                    if self._per_asset_overrides is not None
-                    else self._strategy_config
-                ),
-                sell_strategy=ProfitTargetSell(),
+        if self._per_asset_policy is not None:
+            # Phase 1.1 Case A / Tier 2 — per-asset buy+sell+reentry params.
+            asset_contexts = build_asset_contexts(
+                assets=self._assets,
+                buy_strategy_name=self._buy_strategy_name,
+                reentry_strategy_name=self._reentry_strategy_name,
+                market_data=market_data,
+                buy_config=self._strategy_config,
                 sell_config=self._sell_strategy_config,
+                reentry_parameters=self._reentry_parameters,
+                per_asset_overrides=self._per_asset_policy,
             )
-            for asset in self._assets
-        ]
+        else:
+            asset_contexts = [
+                AssetContext(
+                    asset=asset,
+                    strategy=strategy,
+                    config=(
+                        self._per_asset_overrides[asset.fqn]
+                        if self._per_asset_overrides is not None
+                        else self._strategy_config
+                    ),
+                    sell_strategy=ProfitTargetSell(),
+                    sell_config=self._sell_strategy_config,
+                )
+                for asset in self._assets
+            ]
         orchestrator = DailyOrchestrator(
             broker=broker,
             market_data=market_data,

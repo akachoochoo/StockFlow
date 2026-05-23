@@ -34,6 +34,16 @@ def _isolated_lock(tmp_path, monkeypatch):
     return lock_path
 
 
+@pytest.fixture(autouse=True)
+def _ntp_synced(monkeypatch):
+    """Stub the NTP gate to a no-op so the trading-flow tests do not depend on
+    a reachable NTP server (CI/sandbox have none). The real fail-closed
+    behaviour is covered by tests/unit/cli/test_safety_ntp_halt.py and by
+    ``test_unsynced_clock_blocks_paper`` below (which restores the real gate).
+    """
+    monkeypatch.setattr(safety, "verify_ntp_sync", lambda **_: None)
+
+
 @pytest.fixture
 def csv_path(tmp_path) -> Path:
     """Write a 4-day OHLCV fixture and return its path.
@@ -238,6 +248,35 @@ class TestKillSwitch:
         assert result.exit_code == 0
         assert "Paper trading" not in result.output
         assert not db.exists()
+
+    def test_unsynced_clock_blocks_paper(self, csv_path, tmp_path, monkeypatch):
+        # Re-arm the real NTP gate (override the autouse no-op stub) to raise,
+        # simulating clock drift. The paper command must abort before touching
+        # the DB — fail-closed end-to-end (CLAUDE.md §3.3).
+        from src.domain.exceptions import ClockSkewError
+
+        def _drifted(**_):
+            raise ClockSkewError("NTP offset exceeds threshold — refusing.")
+
+        monkeypatch.setattr(safety, "verify_ntp_sync", _drifted)
+        db = tmp_path / "paper.db"
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["paper", *_shared_args(csv_path),
+             "--date", "2026-04-29", "--db", str(db)],
+        )
+        assert result.exit_code != 0
+        assert isinstance(result.exception, ClockSkewError)
+        # No state created — the gate fires before any trading flow.
+        assert not db.exists()
+        # Backtest is unaffected (historical data → no NTP gate).
+        bt = runner.invoke(
+            main,
+            ["backtest", *_shared_args(csv_path),
+             "--start", "2026-04-27", "--end", "2026-04-30"],
+        )
+        assert bt.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
