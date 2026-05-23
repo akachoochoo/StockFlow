@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from src.ports.notifications import NotifierPort
     from src.ports.reentry_strategy import ReentryPriceStrategyPort
     from src.ports.unit_of_work import UnitOfWorkPort
+    from src.use_cases.asset_context import AssetPolicyOverride
     from src.use_cases.pending_settler import PendingSettler
     from src.use_cases.reconciliation import Reconciler
 
@@ -102,6 +103,70 @@ def slot_model_for_buy_strategy(
         f"unknown buy_strategy {name!r}; "
         "expected 'price_drop' or 'support_level'"
     )
+
+
+def build_asset_contexts(
+    *,
+    assets: list[Asset],
+    buy_strategy_name: str,
+    reentry_strategy_name: str,
+    market_data: MarketDataPort,
+    buy_config: SplitStrategyConfig,
+    sell_config: SellStrategyConfig,
+    reentry_parameters: dict[str, Any],
+    per_asset_overrides: dict[str, AssetPolicyOverride] | None = None,
+) -> list[AssetContext]:
+    """Build one AssetContext per asset (Phase 1.1 per-asset params, Case A).
+
+    ``per_asset_overrides`` (keyed by ``asset.code``) supplies per-asset
+    buy/sell/reentry **parameters** when set; the strategy *types*
+    (``buy_strategy_name`` / ``reentry_strategy_name`` / profit_target) stay
+    uniform. When None, every asset uses the shared default configs (the
+    Phase 0.7.1 broadcast — strategies are stateless, so per-asset instances
+    are byte-identical in behaviour). Reentry/buy strategy instances are built
+    per asset so each can carry its own reentry parameters.
+    """
+    if per_asset_overrides is not None:
+        expected = {a.code for a in assets}
+        if set(per_asset_overrides) != expected:
+            raise ValueError(
+                "per_asset_overrides keys must match asset codes exactly: "
+                f"expected {sorted(expected)}, got {sorted(per_asset_overrides)}"
+            )
+
+    contexts: list[AssetContext] = []
+    for asset in assets:
+        override = (
+            per_asset_overrides.get(asset.code)
+            if per_asset_overrides is not None
+            else None
+        )
+        eff_buy = override.buy_config if override is not None else buy_config
+        eff_sell = override.sell_config if override is not None else sell_config
+        eff_reentry_params = (
+            override.reentry_parameters
+            if override is not None
+            else reentry_parameters
+        )
+        reentry = (
+            create_reentry_strategy(
+                reentry_strategy_name,
+                market_data=market_data,
+                **eff_reentry_params,
+            )
+            if buy_strategy_name == "price_drop"
+            else None
+        )
+        contexts.append(
+            AssetContext(
+                asset=asset,
+                strategy=create_buy_strategy(buy_strategy_name, reentry=reentry),
+                config=eff_buy,
+                sell_strategy=ProfitTargetSell(),
+                sell_config=eff_sell,
+            )
+        )
+    return contexts
 
 
 @dataclass
@@ -370,6 +435,7 @@ def build_live_components(
     notifier: NotifierPort | None = None,
     halt: Callable[[str], None] | None = None,
     max_pending_age_business_days: int = 1,
+    per_asset_overrides: dict[str, AssetPolicyOverride] | None = None,
 ) -> LiveComponents:
     """Wire the live-trading component graph (Phase 1.1 Stage 8-4).
 
@@ -482,26 +548,18 @@ def build_live_components(
         if reentry_parameters is not None
         else {"cooldown_days": 60}
     )
-    reentry = (
-        create_reentry_strategy(
-            reentry_strategy_name,
-            market_data=market_data,
-            **effective_reentry_params,
-        )
-        if buy_strategy_name == "price_drop"
-        else None
+    # Per-asset params (Case A) or uniform broadcast (per_asset_overrides=None).
+    # Strategy TYPES stay uniform either way (single slot_model).
+    asset_contexts = build_asset_contexts(
+        assets=assets,
+        buy_strategy_name=buy_strategy_name,
+        reentry_strategy_name=reentry_strategy_name,
+        market_data=market_data,
+        buy_config=strategy_config,
+        sell_config=effective_sell_config,
+        reentry_parameters=effective_reentry_params,
+        per_asset_overrides=per_asset_overrides,
     )
-    buy_strategy = create_buy_strategy(buy_strategy_name, reentry=reentry)
-    asset_contexts = [
-        AssetContext(
-            asset=asset,
-            strategy=buy_strategy,
-            config=strategy_config,
-            sell_strategy=ProfitTargetSell(),
-            sell_config=effective_sell_config,
-        )
-        for asset in assets
-    ]
     orchestrator = DailyOrchestrator(
         broker=broker_view,
         market_data=market_data,
@@ -565,6 +623,7 @@ def build_paper_components(
     reentry_parameters: dict[str, Any] | None = None,
     buy_strategy_name: str = "price_drop",
     market_data: MarketDataPort | None = None,
+    per_asset_overrides: dict[str, AssetPolicyOverride] | None = None,
 ) -> PaperComponents:
     """Build a paper-trading orchestrator + snapshot builder.
 
@@ -637,33 +696,19 @@ def build_paper_components(
         if reentry_parameters is not None
         else {"cooldown_days": 60}
     )
-    reentry = (
-        create_reentry_strategy(
-            reentry_strategy_name,
-            market_data=effective_market_data,
-            **effective_reentry_params,
-        )
-        if buy_strategy_name == "price_drop"
-        else None
+
+    # ADR 0003 §7.3 / §19.4: uniform broadcast (per_asset_overrides=None) OR
+    # per-asset params (Case A). Strategy TYPES stay uniform either way.
+    asset_contexts = build_asset_contexts(
+        assets=assets,
+        buy_strategy_name=buy_strategy_name,
+        reentry_strategy_name=reentry_strategy_name,
+        market_data=effective_market_data,
+        buy_config=strategy_config,
+        sell_config=effective_sell_config,
+        reentry_parameters=effective_reentry_params,
+        per_asset_overrides=per_asset_overrides,
     )
-
-    # ADR 0004 §5.2: factory dispatches between PriceDropStrategy and
-    # SupportLevelStrategy based on yaml `buy_strategy`. SupportLevelStrategy
-    # ignores reentry (ADR §4.3 β-2).
-    buy_strategy = create_buy_strategy(buy_strategy_name, reentry=reentry)
-
-    # Build one AssetContext per asset; all share the same strategy instance
-    # and configs (ADR 0003 §7.3 — policy uniformity checked by loader).
-    asset_contexts = [
-        AssetContext(
-            asset=asset,
-            strategy=buy_strategy,
-            config=strategy_config,
-            sell_strategy=ProfitTargetSell(),
-            sell_config=effective_sell_config,
-        )
-        for asset in assets
-    ]
     orchestrator = DailyOrchestrator(
         broker=broker,
         market_data=effective_market_data,

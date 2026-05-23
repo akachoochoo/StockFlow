@@ -495,3 +495,37 @@ consensus 가 ADR 0012 §1.8 sub-step 표만으로는 드러나지 않은 결함
 ---
 
 **본 ADR §1 Round 1 ITERATE 24 patches 흡수 완료 (ralplan #28 라운드 #28, 2026-05-12) — 13 BLOCKING + 4 NON-BLOCKING + 5 Missing + 2 Ambiguity. Round 2 Architect + Critic APPROVE 대기. Phase 1.1 실거래 진입 시점 = D16 (i)~(vi) *모두* 충족 후 (특히 0.11.b/c/d/e sub-step .2~.5 실행 완료 + 별도 2 commit 완료 + (iv-a) KIS Mock 5일 + (iv-b) KIS 모의투자 서버 5일 + D6 entry gate 5 조건 + NTP 검증). 본 phase 의 *모든* 결정은 사용자 명시 "주의 사항 모두 숙지" 정신 정합 — CLAUDE.md preamble "실계좌가 연결될 자동매매 시스템. 한 번의 버그가 돈으로 직결" 의 정본 박제. 핵심 추가 박제 (Round 1 ITERATE 흡수): D14 ProposalHistory read-only 모드 (Phase 1.1 변경 zero invariant 정합) / §1.6 #6 production rings 변경 zero invariant 해제 명시 (Phase 1 본질 = production rings 진입, 0.11.e D15 governance 정신 변경 아닌 phase 본질 차이) / §1.10 시나리오 E (KIS access_token 24h 만료) / R10 KIS 인증 보안 (appkey/appsecret/access_token mask + .env + .gitignore) / G2 (d) 백테스트 vs 실거래 의사결정 지속 감시 (5% 임계, 누적 hard halt) / D17~D20 신규 (DB 마이그레이션 별도 ADR / develop-main 분리 / 자본 rollback 경로 / KIS API Open Q 별도 결정 라운드 #29 가칭).**
+
+---
+
+## §4. 종목별 파라미터 차등 (Case A / Tier 2) — ADR 0003 §7.3 / §19.4 보류 해소 (2026-05-23)
+
+> 사용자 결정 라운드 (Phase 1.1 dry-run 준비 중). 사용자 요청 = "정책 동일성 규칙을
+> 바꿔 종목별 파라미터(+자본) 차등, 라이브 포함". 심층 분석 + 변경 계획 후 4 결정 확정.
+
+**배경**: ADR 0003 §7.3 가 정책 동일성(모든 enabled 종목 동일 buy/sell/reentry)을
+강제했고 §19.4 에서 "종목별 다른 정책"을 Phase 1+ 보류로 박제. 본 §4 가 보류 해소.
+구조 분석 발견: `AssetContext` / `DailyOrchestrator` / `BacktestRunner.per_asset_strategy_overrides`
+는 *이미* per-asset 지원. 차단 게이트 = 로더 `_check_policy_uniformity` + composition
+broadcast 3곳뿐.
+
+**결정 (사용자 승인)**:
+- **D1 — opt-in = root 플래그 `allow_per_asset_params: true`**. 없으면 기존 strict 균일
+  (G4 회귀 invariant, byte-identical). 명시 opt-in 만 차등 허용.
+- **D2 — 차등 범위 = Tier 2** (buy_parameters + sell_parameters + reentry_parameters).
+  자본은 per-asset `per_split_amount` 로 차등 (allocation_policy 아님 — paper/live 미배선).
+- **D3 — 실거래 자본 한도 검증**: 무장(arming) 시
+  Σ(per_split_amount_i × max_split_count_i) ≤ intended tier KRW, 초과 거부
+  (`assert_capital_within_tier`, R1 과노출 방지).
+- **D4 — 전략 TYPE 균일 유지 (Case B 거부)**: buy_strategy/sell_strategy/reentry_strategy
+  *종류* 는 종목 전체 동일 강제. price_drop + support_level 혼합 = 단일 broker/settler
+  slot_model 충돌이라 구조적 불가 (별도 Phase + 재설계 필요 시 후속).
+
+**구현 (commit 박제 예정)**: 로더 TYPE-only uniformity + 플래그 / `AssetPolicyOverride`
+(use_cases) / composition `build_asset_contexts` per-asset / build_paper·live_components +
+BacktestRunner `per_asset_overrides` / live `assert_capital_within_tier` / CLI 4 명령 배선.
+domain/ports/orchestrator 변경 zero. 회귀 zero (균일 경로 broadcast 보존).
+
+**라이브 사용 전 게이트**: 종목별 차등 = 새 regime → backtest 재검증 의무 (MDD/H3 특성
+변동 확인). 변경 zero invariant(D13) 로 본 변경은 **라이브 진입 전 (dry-run/paper 단계)**
+에 머지 — 진입 후엔 비상 4 사유만.

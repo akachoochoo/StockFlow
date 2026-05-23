@@ -223,3 +223,20 @@ def test_live_supervised_flag_registered() -> None:
     result = CliRunner().invoke(main, ["live", "--help"])
     assert result.exit_code == 0
     assert "--supervised-first-order" in result.output
+
+
+def test_live_armed_over_exposure_refused_before_kis(tmp_path, monkeypatch) -> None:
+    # Armed + default per_split (1,000,000 x 7 x 2 assets = 14M) > tier 200 (2M)
+    # → capital cap refuses BEFORE any KIS call (D3 자본 과노출 방지).
+    monkeypatch.setenv("TRADING_ARM_LIVE", "TIER_200")
+    fake = _FakeHttp()
+    _patch_build(monkeypatch, fake)
+    db = tmp_path / "trading.db"
+    result = CliRunner().invoke(
+        main,
+        ["live", "--tier", "200", "--arm-live", "200", "--db", str(db),
+         "--date", "2026-05-22"],
+    )
+    assert result.exit_code == 1, result.output
+    assert "자본 과노출" in result.output
+    assert fake.calls == []  # refused before settle/recon → zero KIS calls

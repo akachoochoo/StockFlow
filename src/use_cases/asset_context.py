@@ -17,7 +17,7 @@ enforces this; the dataclass itself is policy-shape-agnostic.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.domain.models import Asset
@@ -30,7 +30,33 @@ if TYPE_CHECKING:
     from src.ports.sell_strategy import SellStrategyPort
 
 
-__all__ = ["AssetContext"]
+__all__ = ["AssetContext", "AssetPolicyOverride"]
+
+
+@dataclass(frozen=True)
+class AssetPolicyOverride:
+    """Per-asset policy override (Phase 1.1 per-asset params — Case A / Tier 2).
+
+    Strategy *types* (buy / sell / reentry) stay uniform across all assets in
+    one run (a single broker/settler carries one ``slot_model``); only these
+    per-asset *parameters* differ. The composition root + ``BacktestRunner``
+    build one per-asset ``AssetContext`` from each override, replacing the
+    single-config broadcast. Enabled only behind ``allow_per_asset_params``
+    (loader, ADR 0003 §7.3 / §19.4 보류 해소).
+
+    Fields mirror the differentiable YAML blocks:
+    - ``buy_config``         : per-asset ``SplitStrategyConfig`` (drop /
+                               max_split_count / per_split_amount(자본) /
+                               max_split_per_day).
+    - ``sell_config``        : per-asset ``SellStrategyConfig``
+                               (profit_target_pct / max_sells_per_day).
+    - ``reentry_parameters`` : per-asset reentry params (e.g. cooldown_days);
+                               the reentry strategy *kind* stays uniform.
+    """
+
+    buy_config: SplitStrategyConfig
+    sell_config: SellStrategyConfig
+    reentry_parameters: dict[str, Any]
 
 
 @dataclass(frozen=True)

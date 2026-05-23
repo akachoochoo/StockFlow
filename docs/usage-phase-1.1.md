@@ -283,10 +283,48 @@ YAML 에서 해당 종목의 **`enabled: false`** 로 두거나 항목을 제거
 해당 종목의 `buy_strategy` / `*_parameters` 값을 YAML 에서 바꾼 뒤
 `config validate` → 재실행. CLI 플래그 방식이면 플래그 값을 바꿔 재실행.
 
-### 6.4 ⚠️ 정책 동일성 규칙 (중요)
-한 번의 실행에 들어가는 **모든 종목은 같은 전략 *타입*과 정책**을 써야 합니다
-(ADR 0003 §7.3). 즉 종목별로 다른 `buy_strategy`/파라미터를 섞으면 로더가
-거부합니다. (종목별 차등 정책은 Phase 1+ 기능 — 미구현.)
+### 6.4 ⚠️ 종목별 파라미터 차등 (Case A) + 정책 동일성 규칙
+
+- **기본**: 한 실행의 **모든 종목은 같은 정책**(전략 타입 + 파라미터). 다른 값을
+  섞으면 로더가 거부 (ADR 0003 §7.3).
+- **종목별 파라미터 차등** (Phase 1.1 신규): YAML root 에
+  **`allow_per_asset_params: true`** 추가 시 종목마다 **파라미터**를 다르게 가능 —
+  `buy_parameters`(drop / max_split_count / **per_split_amount(자본)** /
+  max_split_per_day) + `sell_parameters`(profit_target_pct / max_sells_per_day) +
+  `reentry_parameters`(cooldown_days). **자본도 종목별로 다르게**하는 방법.
+- **전략 *타입*은 여전히 균일 강제**: `buy_strategy` / `sell_strategy` /
+  `reentry_strategy` 종류는 종목 전체 동일해야 함 (price_drop + support_level 혼합
+  불가 — 단일 broker/settler 가 slot 모델 1개만 다루는 구조적 제약).
+- **실거래 자본 한도(D3)**: 무장 시 Σ(per_split_amount × max_split_count) ≤ 자본
+  tier(만원) 검증, 초과 시 실주문 거부(과노출 방지).
+- **백테스트 재검증 의무**: 종목별 차등 = 새 regime → 라이브 전 backtest 재검증
+  권장. 변경 zero invariant(D13) 로 **라이브 진입 전**에 확정.
+
+예시 (root 플래그 + 종목별 다른 drop / 자본; 타입은 균일):
+```yaml
+version: "0.5"
+allocation_policy: EQUAL
+allow_per_asset_params: true
+assets:
+  "069500":
+    name: "KODEX 200"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters: { drop_threshold_pct: 5.0, max_split_count: 7, per_split_amount: 1000000, max_split_per_day: 1 }
+    sell_strategy: "profit_target"
+    sell_parameters: { profit_target_pct: 15.0, max_sells_per_day: 7 }
+    reentry_strategy: "hybrid"
+    reentry_parameters: { cooldown_days: 60 }
+  "005930":
+    name: "삼성전자"
+    enabled: true
+    buy_strategy: "price_drop"
+    buy_parameters: { drop_threshold_pct: 7.0, max_split_count: 5, per_split_amount: 500000, max_split_per_day: 1 }
+    sell_strategy: "profit_target"
+    sell_parameters: { profit_target_pct: 20.0, max_sells_per_day: 7 }
+    reentry_strategy: "hybrid"
+    reentry_parameters: { cooldown_days: 30 }
+```
 
 ### 6.5 ⚠️ 실거래(Phase 1.1) 중에는 "변경 zero"
 실거래 안정화 기간에는 **`src/` 코드 + `config/strategies.yaml` 변경 금지**

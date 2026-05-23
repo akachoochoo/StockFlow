@@ -26,6 +26,7 @@ from src.domain.strategies.price_drop import SplitStrategyConfig
 from src.domain.strategies.profit_target import SellStrategyConfig
 from src.infrastructure.csv_market_data_loader import load_ohlcv_csv
 from src.infrastructure.yaml_strategy_config_loader import load_strategy_config
+from src.use_cases.asset_context import AssetPolicyOverride
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -356,6 +357,42 @@ def _resolve_strategy_configs(
     )
 
 
+def _resolve_per_asset_overrides(
+    config_path: Path | None,
+) -> dict[str, AssetPolicyOverride] | None:
+    """Build per-asset overrides (keyed by code) from a --config YAML.
+
+    Phase 1.1 Case A. Returns None for flag-only mode, a single enabled asset,
+    or when all enabled bundles share identical policy params (broadcast —
+    byte-identical regression). When enabled bundles' buy/sell/reentry params
+    differ (allowed only with ``allow_per_asset_params: true``, which the loader
+    already gated + TYPE-uniformity enforced), returns one AssetPolicyOverride
+    per enabled asset.
+    """
+    if config_path is None:
+        return None
+    bundles = load_strategy_config(config_path)
+    enabled = [(code, b) for code, b in bundles.items() if b.enabled]
+    if len(enabled) <= 1:
+        return None
+    first = enabled[0][1]
+    homogeneous = all(
+        (b.buy_config, b.sell_config, b.reentry_parameters)
+        == (first.buy_config, first.sell_config, first.reentry_parameters)
+        for _, b in enabled[1:]
+    )
+    if homogeneous:
+        return None
+    return {
+        code: AssetPolicyOverride(
+            buy_config=b.buy_config,
+            sell_config=b.sell_config,
+            reentry_parameters=dict(b.reentry_parameters),
+        )
+        for code, b in enabled
+    }
+
+
 # ---------------------------------------------------------------------------
 # Group + subcommands
 # ---------------------------------------------------------------------------
@@ -461,6 +498,7 @@ def backtest(
             reentry_parameters=reentry_params,
             initial_capital=_krw(capital),
             ohlcv_by_asset=ohlcv_by_asset,
+            per_asset_overrides=_resolve_per_asset_overrides(config_path),
         )
         result = runner.run(start_date.date(), end_date.date())
     click.echo(output_formatter.format_backtest_result(result, as_json=as_json))
@@ -568,6 +606,7 @@ def paper(
             reentry_strategy_name=reentry_name,
             reentry_parameters=reentry_params,
             initial_clock=decision_at,
+            per_asset_overrides=_resolve_per_asset_overrides(config_path),
         )
         try:
             decisions = components.orchestrator.run_for_date(today)
@@ -887,6 +926,7 @@ def dry_run(
             reentry_parameters=reentry_params,
             initial_clock=decision_at,
             market_data=market_data,
+            per_asset_overrides=_resolve_per_asset_overrides(config_path),
         )
         try:
             decisions = components.orchestrator.run_for_date(today)
@@ -1042,6 +1082,7 @@ def live(
     from src.adapters.kis.auth import KISAuthError
     from src.cli.live_gate import (
         LiveArmingError,
+        assert_capital_within_tier,
         build_arming_token,
         capital_tier_from_str,
     )
@@ -1072,6 +1113,7 @@ def live(
         capital_tier_from_str(arm_tier) if arm_tier is not None else None,
         env=os.environ,
     )
+    armed = arm_token is not None and arm_token.env_confirmed
 
     with safety.lock_file():
         # CLAUDE.md §3.3 — NTP gate before any live trade (fail-closed).
@@ -1106,6 +1148,24 @@ def live(
             click.echo(f"Unknown --code: {exc}", err=True)
             raise click.exceptions.Exit(1) from exc
 
+        per_asset_overrides = _resolve_per_asset_overrides(config_path)
+
+        # D3 — per-asset 자본 과노출 방지 (armed 일 때만; 미무장이면 주문 zero라
+        # 무관): sum(per_split_amount * max_split_count) <= intended tier KRW.
+        if armed:
+            cap_configs = (
+                [per_asset_overrides[a.code].buy_config for a in assets]
+                if per_asset_overrides is not None
+                else [buy_config for _ in assets]
+            )
+            try:
+                assert_capital_within_tier(
+                    configs=cap_configs, intended_tier=intended_tier
+                )
+            except LiveArmingError as exc:
+                click.echo(f"❌ 자본 과노출 — 실주문 거부: {exc}", err=True)
+                raise click.exceptions.Exit(1) from exc
+
         try:
             components = composition.build_live_components(
                 assets=assets,
@@ -1114,6 +1174,7 @@ def live(
                 sell_strategy_config=sell_config,
                 reentry_strategy_name=reentry_name,
                 reentry_parameters=reentry_params,
+                per_asset_overrides=per_asset_overrides,
             )
         except ConfigurationError as exc:
             click.echo(
@@ -1124,7 +1185,6 @@ def live(
             raise click.exceptions.Exit(1) from exc
 
         config = components.config
-        armed = arm_token is not None and arm_token.env_confirmed
         click.echo("=" * 64)
         click.echo("LIVE — 실거래 runner (settle → reconcile → arm → decide)")
         click.echo("=" * 64)

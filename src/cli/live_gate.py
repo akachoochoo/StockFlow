@@ -35,8 +35,9 @@ from typing import TYPE_CHECKING
 from src.domain.exceptions import ClockSkewError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
+    from src.domain.strategies.price_drop import SplitStrategyConfig
     from src.use_cases.reconciliation import ReconciliationResult
 
 # Environment double-confirm for live arming. Must be set (to the armed tier's
@@ -172,12 +173,43 @@ def assert_armed_for_live(
         )
 
 
+def total_max_exposure(configs: Iterable[SplitStrategyConfig]) -> Decimal:
+    """Maximum KRW that could be deployed: Σ(per_split_amount * max_split_count)."""
+    return sum(
+        (c.per_split_amount.amount * c.max_split_count for c in configs),
+        Decimal(0),
+    )
+
+
+def assert_capital_within_tier(
+    *,
+    configs: Iterable[SplitStrategyConfig],
+    intended_tier: CapitalTier,
+) -> None:
+    """Raise :class:`LiveArmingError` if max exposure exceeds the capital tier.
+
+    Σ(per_split_amount_i * max_split_count_i) must be ≤ ``intended_tier.krw``
+    (Phase 1.1 per-asset 자본 과노출 방지, ADR 0012 D10/D19). A misconfigured
+    per-asset ``per_split_amount`` cannot commit more than the human-authorised
+    tier (R1 mitigation). Side-effect free.
+    """
+    total = total_max_exposure(configs)
+    if total > intended_tier.krw:
+        raise LiveArmingError(
+            f"strategy max exposure {total} KRW exceeds capital tier "
+            f"{intended_tier.name} ({intended_tier.krw} KRW) — refusing to arm "
+            "(Σ per_split_amount * max_split_count ≤ tier; per-asset 과노출 방지)"
+        )
+
+
 __all__ = [
     "ARM_LIVE_ENV",
     "CapitalTier",
     "LiveArmingError",
     "LiveArmingToken",
     "assert_armed_for_live",
+    "assert_capital_within_tier",
     "build_arming_token",
     "capital_tier_from_str",
+    "total_max_exposure",
 ]

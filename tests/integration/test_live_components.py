@@ -164,6 +164,51 @@ def test_build_missing_env_raises_configuration_error(tmp_path) -> None:
         )
 
 
+def test_live_per_asset_overrides_applied(tmp_path) -> None:
+    from src.domain.models import Currency, Money
+    from src.domain.strategies.profit_target import SellStrategyConfig
+    from src.use_cases.asset_context import AssetPolicyOverride
+
+    def _buy(drop: str, per_split: int) -> SplitStrategyConfig:
+        return SplitStrategyConfig(
+            drop_threshold_pct=Decimal(drop),
+            max_split_count=7,
+            per_split_amount=Money(amount=Decimal(per_split), currency=Currency.KRW),
+            max_split_per_day=1,
+        )
+
+    a = composition.asset_from_code("069500")
+    b = composition.asset_from_code("132030")
+    overrides = {
+        "069500": AssetPolicyOverride(
+            buy_config=_buy("5", 1000000),
+            sell_config=SellStrategyConfig(profit_target_pct=Decimal("15"), max_sells_per_day=7),
+            reentry_parameters={"cooldown_days": 60},
+        ),
+        "132030": AssetPolicyOverride(
+            buy_config=_buy("7", 1000000),
+            sell_config=SellStrategyConfig(profit_target_pct=Decimal("20"), max_sells_per_day=7),
+            reentry_parameters={"cooldown_days": 30},
+        ),
+    }
+    components = composition.build_live_components(
+        assets=[a, b],
+        db_path=tmp_path / "t.db",
+        strategy_config=_buy("5", 1000000),
+        environ=_paper_environ(),
+        http=_FakeHttp(),
+        clock=_fixed_clock,
+        per_asset_overrides=overrides,
+    )
+    try:
+        ctx = {c.asset.code: c for c in components.orchestrator._asset_contexts}
+        assert ctx["069500"].config.drop_threshold_pct == Decimal("5")
+        assert ctx["132030"].config.drop_threshold_pct == Decimal("7")
+        assert ctx["132030"].sell_config.profit_target_pct == Decimal("20")
+    finally:
+        components.close()
+
+
 def test_default_sell_threshold_is_15_pct(tmp_path) -> None:
     # ADR 0012 D7 — live sell threshold defaults to +15% (paper uses +10%).
     components, _ = _build(tmp_path)

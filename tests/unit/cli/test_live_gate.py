@@ -6,6 +6,7 @@ reconciliation condition uses the in-process result (not ambient state).
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -16,9 +17,13 @@ from src.cli.live_gate import (
     LiveArmingError,
     LiveArmingToken,
     assert_armed_for_live,
+    assert_capital_within_tier,
     build_arming_token,
+    total_max_exposure,
 )
 from src.domain.exceptions import ClockSkewError
+from src.domain.models import Currency, Money
+from src.domain.strategies.price_drop import SplitStrategyConfig
 from src.use_cases.reconciliation import ReconciliationResult
 
 
@@ -129,8 +134,51 @@ def test_build_token_then_gate_end_to_end_refuses_without_env() -> None:
 
 
 def test_capital_tier_krw_values() -> None:
-    from decimal import Decimal
-
     assert CapitalTier.TIER_200.krw == Decimal("2000000")
     assert CapitalTier.TIER_300.krw == Decimal("3000000")
     assert CapitalTier.TIER_500.krw == Decimal("5000000")
+
+
+# ---------------------------------------------------------------------------
+# Capital tier-cap (Phase 1.1 per-asset 과노출 방지, D3)
+# ---------------------------------------------------------------------------
+def _cfg(per_split: int, max_split: int) -> SplitStrategyConfig:
+    return SplitStrategyConfig(
+        drop_threshold_pct=Decimal("5"),
+        max_split_count=max_split,
+        per_split_amount=Money(amount=Decimal(per_split), currency=Currency.KRW),
+        max_split_per_day=1,
+    )
+
+
+def test_total_max_exposure_sums_per_split_times_max_split() -> None:
+    # 1,000,000x7 + 2,000,000x3 = 7,000,000 + 6,000,000 = 13,000,000
+    total = total_max_exposure([_cfg(1000000, 7), _cfg(2000000, 3)])
+    assert total == Decimal(13000000)
+
+
+def test_capital_within_tier_ok() -> None:
+    # 200,000 x 7 = 1.4M ≤ 2M tier → no raise.
+    assert (
+        assert_capital_within_tier(
+            configs=[_cfg(200000, 7)], intended_tier=CapitalTier.TIER_200
+        )
+        is None
+    )
+
+
+def test_capital_exceeds_tier_raises() -> None:
+    # 1,000,000 x 7 = 7M > 2M tier → refuse.
+    with pytest.raises(LiveArmingError, match="exceeds capital tier"):
+        assert_capital_within_tier(
+            configs=[_cfg(1000000, 7)], intended_tier=CapitalTier.TIER_200
+        )
+
+
+def test_capital_cap_sums_across_assets() -> None:
+    # Two assets each 1.5Mx1 = 3M total > 2M tier → refuse (per-asset 합산).
+    with pytest.raises(LiveArmingError):
+        assert_capital_within_tier(
+            configs=[_cfg(1500000, 1), _cfg(1500000, 1)],
+            intended_tier=CapitalTier.TIER_200,
+        )
