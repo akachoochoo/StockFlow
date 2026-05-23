@@ -31,6 +31,11 @@ from src.domain.models import (
     Exchange,
     Market,
     Money,
+    OrderRequest,
+    OrderResult,
+    OrderSide,
+    OrderStatus,
+    OrderType,
     Position,
     SplitEntry,
     SplitSlot,
@@ -255,14 +260,98 @@ class TestDbPositionBrokerView:
         assert balance.cash.currency == Currency.KRW
 
     def test_write_surface_raises_not_implemented(self, conn):
+        # No order_broker (8-1.5 read-only construction) → write methods raise.
         repo = SqlitePositionRepo(conn)
         view = DbPositionBrokerView(
             positions=repo,
             balance_source=_FakeBalanceSource("1000000"),
         )
         with pytest.raises(NotImplementedError):
+            view.place_order(_buy_request(_asset()))
+        with pytest.raises(NotImplementedError):
             view.get_order_status("k1")
         with pytest.raises(NotImplementedError):
             view.cancel_order("odno-1")
+        with pytest.raises(NotImplementedError):
+            view.get_holdings()
+
+
+def _buy_request(asset: Asset) -> OrderRequest:
+    return OrderRequest(
+        idempotency_key="KRX:069500:2026-05-21:buy:1",
+        asset=asset,
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("10"),
+        target_price=Decimal("35000"),
+        slot_number=1,
+    )
+
+
+class _FakeOrderBroker:
+    """OrderExecutorPort stand-in recording the delegated write calls."""
+
+    def __init__(self) -> None:
+        self.placed: list[OrderRequest] = []
+        self.status_queries: list[str] = []
+        self.cancels: list[str] = []
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        self.placed.append(request)
+        return OrderResult(
+            idempotency_key=request.idempotency_key,
+            asset=request.asset,
+            broker_order_id="ODNO-1",
+            status=OrderStatus.PENDING,
+            filled_quantity=Decimal(0),
+            filled_price=None,
+            submitted_at=UTC_NOW,
+            filled_at=None,
+        )
+
+    def get_order_status(self, idempotency_key: str) -> OrderResult | None:
+        self.status_queries.append(idempotency_key)
+        return None
+
+    def cancel_order(self, broker_order_id: str) -> bool:
+        self.cancels.append(broker_order_id)
+        return True
+
+
+class TestDbPositionBrokerViewWriteDelegation:
+    """Stage 8-4 — writes route to the injected KIS order_broker."""
+
+    def _view(self, conn, order_broker):
+        return DbPositionBrokerView(
+            positions=SqlitePositionRepo(conn),
+            balance_source=_FakeBalanceSource("1000000"),
+            order_broker=order_broker,
+        )
+
+    def test_place_order_delegates_to_order_broker(self, conn):
+        ob = _FakeOrderBroker()
+        view = self._view(conn, ob)
+        req = _buy_request(_asset())
+        result = view.place_order(req)
+        assert ob.placed == [req]
+        assert result.status is OrderStatus.PENDING
+        assert result.broker_order_id == "ODNO-1"
+
+    def test_get_order_status_delegates_to_order_broker(self, conn):
+        ob = _FakeOrderBroker()
+        view = self._view(conn, ob)
+        assert view.get_order_status("KRX:069500:2026-05-21:buy:1") is None
+        assert ob.status_queries == ["KRX:069500:2026-05-21:buy:1"]
+
+    def test_cancel_order_delegates_to_order_broker(self, conn):
+        ob = _FakeOrderBroker()
+        view = self._view(conn, ob)
+        assert view.cancel_order("ODNO-1") is True
+        assert ob.cancels == ["ODNO-1"]
+
+    def test_get_holdings_still_not_delegated(self, conn):
+        # get_holdings is the reconciler's concern (KIS broker directly), not
+        # the view's — even with an order_broker present.
+        view = self._view(conn, _FakeOrderBroker())
         with pytest.raises(NotImplementedError):
             view.get_holdings()

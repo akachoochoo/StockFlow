@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from src.ports.market_data import MarketDataPort
     from src.ports.notifications import NotifierPort
     from src.ports.reentry_strategy import ReentryPriceStrategyPort
+    from src.use_cases.pending_settler import PendingSettler
     from src.use_cases.reconciliation import Reconciler
 
 
@@ -315,6 +316,208 @@ def build_reconciler(
         clock=clk,
     )
     return reconciler, conn.close, kis.config
+
+
+@dataclass
+class LiveComponents:
+    """Wired live-trading component graph (Phase 1.1 Stage 8-4).
+
+    The runner (Stage 8-5) drives the day with:
+        settle = components.settler.settle(today)          # PENDING→FILLED
+        recon  = components.reconciler.reconcile()         # in-process matched
+        assert_armed_for_live(recon=recon, ...)            # arming gate (8-3)
+        decisions = components.orchestrator.run_for_date(today)
+        ...
+        components.close()
+
+    ``broker`` is the write-enabled KIS broker (also the reconciler's holdings
+    source + the settler's status source). The orchestrator's ``self._broker``
+    is a :class:`~src.adapters.db_position_broker_view.DbPositionBrokerView`
+    (DB positions + KIS balance + KIS write delegation) — the KIS broker never
+    attaches to the orchestrator directly (collaborator substitution, ADR 0012
+    Stage 8 Option B). **No CLI wires this yet** — 실주문 zero until Stage 8-5
+    behind the arming gate + D16.
+    """
+
+    orchestrator: DailyOrchestrator
+    settler: PendingSettler
+    reconciler: Reconciler
+    broker: KISBroker
+    market_data: KISMarketData
+    notifier: NotifierPort
+    config: KISConfig
+    clock: Callable[[], datetime]
+    close: Callable[[], None]
+
+
+def build_live_components(
+    *,
+    assets: list[Asset],
+    db_path: Path | str,
+    strategy_config: SplitStrategyConfig,
+    environ: Mapping[str, str] | None = None,
+    sell_strategy_config: SellStrategyConfig | None = None,
+    reentry_strategy_name: str = "hybrid",
+    reentry_parameters: dict[str, Any] | None = None,
+    buy_strategy_name: str = "price_drop",
+    explicit_holidays: frozenset[date] = frozenset(),
+    http: HttpClient | None = None,
+    clock: Callable[[], datetime] | None = None,
+    notifier: NotifierPort | None = None,
+    halt: Callable[[str], None] | None = None,
+    max_pending_age_business_days: int = 1,
+) -> LiveComponents:
+    """Wire the live-trading component graph (Phase 1.1 Stage 8-4).
+
+    Composition root for the future ``trading live`` command (Stage 8-5). Wires:
+
+    - a **write-enabled** ``KISBroker`` — ``order_store`` injected
+      (``SqliteKISOrderStore`` over the shared connection) so ``place_order`` /
+      ``get_order_status`` / ``cancel_order`` work (idempotency dedup + org_no
+      해석). A read-only construction would ``RuntimeError`` on any write — money
+      cannot move through it (Option C boundary, ADR 0012).
+    - ``KISMarketData`` (live ``get_price`` / ``get_ohlcv``).
+    - ``PendingSettler`` (Stage 8-2) over the KIS broker's ``get_order_status``.
+    - ``DbPositionBrokerView`` (Stage 8-1.5) as the orchestrator's
+      ``self._broker``: split-slot positions restored from the DB + cash from
+      KIS + write delegation to the KIS broker (resolves the 8-1.5 write stubs).
+    - ``Reconciler`` (Stage 3.3) over the KIS broker's ``get_holdings``.
+    - ``DailyOrchestrator`` + ``NullSignal`` + ``ProfitTargetSell``; the live
+      sell threshold defaults to **+15%** (ADR 0012 D7).
+
+    DI per CLAUDE.md §1.2: ``http`` / ``clock`` / ``notifier`` / ``halt`` are
+    injectable so tests stay network-free + sentinel-free (mirrors
+    :func:`build_reconciler`). Reads credentials via ``KISConfig.from_env`` —
+    missing required vars raise ``ConfigurationError`` (no silent fallback).
+
+    Returns a :class:`LiveComponents`. **Building the graph places no orders** —
+    only the runner's ``orchestrator.run_for_date`` (behind the Stage 8-3 arming
+    gate) does, and no CLI invokes that yet (실주문 zero).
+    """
+    if not assets:
+        raise ValueError("assets must be a non-empty list")
+
+    # Local imports keep the adapter / telegram dependency off the module-import
+    # path for the paper-trading callers (mirrors build_kis_read_components).
+    from src.adapters.db_position_broker_view import DbPositionBrokerView
+    from src.adapters.kis._client import KISClient
+    from src.adapters.kis._http import RequestsHttpClient
+    from src.adapters.kis.auth import KISAuth
+    from src.adapters.kis.broker import KISBroker
+    from src.adapters.kis.config import KISConfig
+    from src.adapters.kis.market_data import KISMarketData
+    from src.adapters.kis.order_store import SqliteKISOrderStore
+    from src.adapters.telegram.notifier import build_notifier
+    from src.infrastructure.repositories.sqlite_order_repo import SqliteOrderRepo
+    from src.infrastructure.repositories.sqlite_position_repo import (
+        SqlitePositionRepo,
+    )
+    from src.use_cases.pending_settler import PendingSettler
+    from src.use_cases.reconciliation import Reconciler
+
+    config = KISConfig.from_env(environ)
+    http_client: HttpClient = http if http is not None else RequestsHttpClient()
+    utc_clock: Callable[[], datetime] = (
+        clock if clock is not None else (lambda: datetime.now(UTC))
+    )
+
+    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    client = KISClient(
+        config=config, http=http_client, auth=auth, clock=utc_clock
+    )
+
+    conn = connect(db_path)
+
+    def uow_factory() -> SqliteUnitOfWork:
+        return SqliteUnitOfWork(conn)
+
+    # Write-enabled KIS broker: order_store over the SHARED connection so dedup
+    # (find_by_idempotency_key) + cancel routing (find_by_broker_order_id) read
+    # committed orders.
+    order_store = SqliteKISOrderStore(orders=SqliteOrderRepo(conn))
+    kis_broker = KISBroker(
+        client=client, order_store=order_store, clock=utc_clock
+    )
+    market_data = KISMarketData(
+        client=client, explicit_holidays=explicit_holidays
+    )
+
+    # Orchestrator's self._broker: DB positions + KIS balance + KIS write
+    # delegation (DbPositionBrokerView — the KIS broker never attaches directly).
+    broker_view = DbPositionBrokerView(
+        positions=SqlitePositionRepo(conn),
+        balance_source=kis_broker,
+        order_broker=kis_broker,
+    )
+
+    slot_model = slot_model_for_buy_strategy(buy_strategy_name)
+    settler = PendingSettler(
+        uow_factory=uow_factory,
+        broker=kis_broker,
+        slot_model=slot_model,
+        max_pending_age_business_days=max_pending_age_business_days,
+    )
+
+    notif: NotifierPort = notifier or build_notifier(environ)
+    halt_cb: Callable[[str], None] = halt or _default_halt
+    reconciler = Reconciler(
+        uow_factory=uow_factory,
+        broker=kis_broker,  # get_holdings (read) — HoldingsReaderPort
+        notifier=notif,
+        halt=halt_cb,
+        clock=utc_clock,
+    )
+
+    # Live sell threshold default = +15% (ADR 0012 D7); Phase 0 paper uses +10%.
+    effective_sell_config = sell_strategy_config or SellStrategyConfig(
+        profit_target_pct=Decimal("15.0"),
+        max_sells_per_day=7,
+    )
+    effective_reentry_params = (
+        dict(reentry_parameters)
+        if reentry_parameters is not None
+        else {"cooldown_days": 60}
+    )
+    reentry = (
+        create_reentry_strategy(
+            reentry_strategy_name,
+            market_data=market_data,
+            **effective_reentry_params,
+        )
+        if buy_strategy_name == "price_drop"
+        else None
+    )
+    buy_strategy = create_buy_strategy(buy_strategy_name, reentry=reentry)
+    asset_contexts = [
+        AssetContext(
+            asset=asset,
+            strategy=buy_strategy,
+            config=strategy_config,
+            sell_strategy=ProfitTargetSell(),
+            sell_config=effective_sell_config,
+        )
+        for asset in assets
+    ]
+    orchestrator = DailyOrchestrator(
+        broker=broker_view,
+        market_data=market_data,
+        signal=NullSignal(),
+        asset_contexts=asset_contexts,
+        clock=utc_clock,
+        uow_factory=uow_factory,
+    )
+
+    return LiveComponents(
+        orchestrator=orchestrator,
+        settler=settler,
+        reconciler=reconciler,
+        broker=kis_broker,
+        market_data=market_data,
+        notifier=notif,
+        config=config,
+        clock=utc_clock,
+        close=conn.close,
+    )
 
 
 def check_snapshot_position_sync(

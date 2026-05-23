@@ -63,6 +63,26 @@ class OrderStatusReaderPort(Protocol):
         ...
 
 
+class OrderExecutorPort(OrderStatusReaderPort, Protocol):
+    """Order write surface (Interface Segregation, Phase 1.1 Stage 8-4).
+
+    The narrow surface ``DbPositionBrokerView`` delegates to for live order
+    execution — place / status / cancel, no balance or positions. A
+    write-capable ``KISBroker`` (with its order store) satisfies it; the view
+    serves positions / balance itself and routes only these writes to the KIS
+    broker (collaborator composition). Extends :class:`OrderStatusReaderPort`
+    so ``get_order_status`` is part of the same delegated surface.
+    """
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        """Submit an order. Idempotent on ``request.idempotency_key``."""
+        ...
+
+    def cancel_order(self, broker_order_id: str) -> bool:
+        """Request cancellation. Returns True if accepted."""
+        ...
+
+
 class BrokerPort(Protocol):
     """Order execution and account state.
 
