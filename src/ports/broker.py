@@ -17,6 +17,21 @@ if TYPE_CHECKING:
     )
 
 
+class BalanceReaderPort(Protocol):
+    """Read-only cash balance accessor (Interface Segregation).
+
+    The narrow surface a Position-source view depends on — it only ever reads
+    the broker's available cash, never positions or orders. A read-subset
+    adapter (e.g. ``KISBroker``) satisfies this without pretending to be a
+    full ``BrokerPort``. Any full ``BrokerPort`` implementation also satisfies
+    it structurally.
+    """
+
+    def get_balance(self) -> Balance:
+        """Return current available cash balance."""
+        ...
+
+
 class HoldingsReaderPort(Protocol):
     """Read-only broker holdings accessor (Interface Segregation).
 
