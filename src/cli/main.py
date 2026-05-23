@@ -12,7 +12,7 @@ Multi-asset CSV mapping (0.7.1.f):
 from __future__ import annotations
 
 from datetime import time
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,11 +22,13 @@ from click.core import ParameterSource
 from src.application.backtest_runner import BacktestRunner
 from src.cli import composition, output_formatter, safety
 from src.domain.models import Currency, Money
+from src.domain.strategies.grid import GridConfig
 from src.domain.strategies.price_drop import SplitStrategyConfig
 from src.domain.strategies.profit_target import SellStrategyConfig
 from src.infrastructure.csv_market_data_loader import load_ohlcv_csv
 from src.infrastructure.yaml_strategy_config_loader import load_strategy_config
 from src.use_cases.asset_context import AssetPolicyOverride
+from src.use_cases.grid_runner import GridRunner
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -37,6 +39,28 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 def _krw(amount: int) -> Money:
     return Money(amount=Decimal(amount), currency=Currency.KRW)
+
+
+def _max_drawdown(values: list[Decimal]) -> Decimal:
+    """최대 낙폭 (음수 또는 0). peak 대비 최저 하락률."""
+    peak = values[0]
+    mdd = Decimal("0")
+    for v in values:
+        if v > peak:
+            peak = v
+        if peak > 0:
+            dd = (v - peak) / peak
+            if dd < mdd:
+                mdd = dd
+    return mdd
+
+
+def _won(v: Decimal) -> str:
+    return f"{v.quantize(Decimal('1'), rounding=ROUND_DOWN):,} KRW"
+
+
+def _pct(v: Decimal) -> str:
+    return f"{v.quantize(Decimal('0.01'))}%"
 
 
 def _parse_csv_paths(
@@ -502,6 +526,177 @@ def backtest(
         )
         result = runner.run(start_date.date(), end_date.date())
     click.echo(output_formatter.format_backtest_result(result, as_json=as_json))
+
+
+@main.command("grid-backtest")
+@click.option(
+    "--csv",
+    "csv_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="OHLCV CSV 경로 (단일 종목).",
+)
+@click.option("--code", required=True, help="KRX 종목코드 (assets.yaml/레지스트리 등록).")
+@click.option(
+    "--start",
+    "start_date",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="시작일 (YYYY-MM-DD, 포함).",
+)
+@click.option(
+    "--end",
+    "end_date",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="종료일 (YYYY-MM-DD, 포함).",
+)
+@click.option(
+    "--capital",
+    type=int,
+    default=25_000_000,
+    show_default=True,
+    help="초기 KRW 자본 (DGT 종목당 ~2,500만원 권장).",
+)
+@click.option("--grid-count", "grid_count", type=int, default=11, show_default=True)
+@click.option(
+    "--rebalance",
+    type=click.Choice(["daily", "on_breach"]),
+    default="daily",
+    show_default=True,
+)
+@click.option(
+    "--measure",
+    type=click.Choice(["atr", "adr"]),
+    default="adr",
+    show_default=True,
+)
+@click.option("--multiplier", default="1.0", show_default=True, help="변동성 x multiplier = k.")
+@click.option("--k-min", "k_min", default="0.005", show_default=True)
+@click.option("--k-max", "k_max", default="0.05", show_default=True)
+@click.option("--fallback-k", "fallback_k", default="0.05", show_default=True)
+@click.option("--atr-period", "atr_period", type=int, default=14, show_default=True)
+@click.option(
+    "--volume-gate/--no-volume-gate", "volume_gate", default=True, show_default=True
+)
+@click.option("--volume-period", "volume_period", type=int, default=10, show_default=True)
+@click.option("--volume-mult", "volume_mult", default="1.5", show_default=True)
+@click.option(
+    "--json", "as_json", is_flag=True, default=False, help="JSON 출력."
+)
+def grid_backtest(
+    csv_path: str,
+    code: str,
+    start_date: datetime,
+    end_date: datetime,
+    capital: int,
+    grid_count: int,
+    rebalance: str,
+    measure: str,
+    multiplier: str,
+    k_min: str,
+    k_max: str,
+    fallback_k: str,
+    atr_period: int,
+    volume_gate: bool,
+    volume_period: int,
+    volume_mult: str,
+    as_json: bool,
+) -> None:
+    """과거 OHLCV 를 DGT GridRunner 로 재생 (ADR 0022 — MDD 방어 도구).
+
+    역할 = MDD 방어·횡보 수확 (절대수익/B&H 상회 아님, D2). B&H 대비 수익/MDD
+    비교 출력. backtest/paper 전용 — live 주문은 별도 승인 증분.
+    """
+    try:
+        asset = composition.asset_from_code(code)
+    except KeyError as exc:
+        raise click.ClickException(f"미등록 종목코드: {exc}") from exc
+
+    bars = load_ohlcv_csv(Path(csv_path), asset)
+    start = start_date.date()
+    end = end_date.date()
+    window = [b for b in bars if start <= b.trade_date <= end]
+    if not window:
+        raise click.ClickException("선택 기간에 데이터가 없습니다.")
+
+    config = GridConfig(
+        grid_count=grid_count,
+        fallback_k=Decimal(fallback_k),
+        rebalance_mode=rebalance,  # type: ignore[arg-type]
+        volatility_measure=measure,  # type: ignore[arg-type]
+        atr_period=atr_period,
+        multiplier=Decimal(multiplier),
+        k_min=Decimal(k_min),
+        k_max=Decimal(k_max),
+        volume_gate=volume_gate,
+        volume_gate_period=volume_period,
+        volume_gate_multiplier=Decimal(volume_mult),
+    )
+    result = GridRunner().run(
+        asset=asset, bars=window, config=config, initial_capital=_krw(capital)
+    )
+
+    init = Decimal(capital)
+    dgt_mdd = _max_drawdown([d.total_value for d in result.daily_values])
+    dgt_return = (result.final_value - init) / init * 100
+
+    # Buy & Hold (floor-shares) 벤치마크.
+    first_close = window[0].close
+    bh_shares = (init / first_close).quantize(Decimal("1"), rounding=ROUND_DOWN)
+    bh_cash = init - bh_shares * first_close
+    bh_values = [bh_cash + bh_shares * b.close for b in window]
+    bh_final = bh_values[-1]
+    bh_return = (bh_final - init) / init * 100
+    bh_mdd = _max_drawdown(bh_values)
+
+    if as_json:
+        import json
+
+        click.echo(
+            json.dumps(
+                {
+                    "asset": asset.fqn,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "trading_days": len(window),
+                    "initial_capital": str(init),
+                    "dgt": {
+                        "final_value": str(result.final_value),
+                        "return_pct": str(dgt_return),
+                        "max_drawdown_pct": str(dgt_mdd * 100),
+                        "trades": len(result.trades),
+                        "final_holdings": str(result.final_holdings),
+                    },
+                    "buy_and_hold": {
+                        "final_value": str(bh_final),
+                        "return_pct": str(bh_return),
+                        "max_drawdown_pct": str(bh_mdd * 100),
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    click.echo(f"DGT grid-backtest — {asset.fqn} ({asset.name})")
+    click.echo(f"기간: {start} → {end} ({len(window)} 거래일), 초기 {_won(init)}")
+    click.echo(
+        f"그리드: n={grid_count} {rebalance} {measure} "
+        f"k=[{k_min},{k_max}]x{multiplier} vol_gate={'on' if volume_gate else 'off'}"
+    )
+    click.echo(
+        f"DGT      : 최종 {_won(result.final_value)} / 수익 {_pct(dgt_return)} / "
+        f"MDD {_pct(dgt_mdd * 100)} / 거래 {len(result.trades)} / 보유 {result.final_holdings}"
+    )
+    click.echo(
+        f"Buy&Hold : 최종 {_won(bh_final)} / 수익 {_pct(bh_return)} / "
+        f"MDD {_pct(bh_mdd * 100)}"
+    )
+    click.echo(
+        "주의: DGT = MDD 방어·횡보 수확 도구. 강세장 B&H 미달은 설계상 trade-off (ADR 0022 D2)."
+    )
 
 
 @main.command()
