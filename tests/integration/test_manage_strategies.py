@@ -626,3 +626,88 @@ class TestSetInteractive:
     def test_set_requires_param_or_interactive(self, strat_path: Path):
         rc = main(["set", str(strat_path), "--all"])  # neither --param nor -i
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# add: full pykrx auto-fill + batch confirmation
+# ---------------------------------------------------------------------------
+def _full_lookup(_code: str) -> LookupResult:
+    return LookupResult(
+        found=True,
+        name="카카오",
+        market="KOSPI",
+        earliest_date=date(2017, 7, 10),
+        asset_class="KR_STOCK",
+    )
+
+
+class TestAddAutofill:
+    def test_add_autofills_all_metadata_non_tty(
+        self, strat_path: Path, assets_path: Path, monkeypatch
+    ):
+        import scripts.manage_strategies as m
+
+        monkeypatch.setattr(m, "pykrx_lookup", _full_lookup)
+        # non-TTY (pytest): no confirmation prompt; only --code given.
+        rc = main(
+            ["add", str(strat_path), "--code", "035720",
+             "--assets-yaml", str(assets_path)]
+        )
+        assert rc == 0
+        entry = load_assets_data(assets_path)["assets"]["035720"]
+        assert entry["market"] == "KOSPI"
+        assert entry["asset_class"] == "KR_STOCK"
+        assert entry["listed_at"] == date(2017, 7, 10)
+
+    def test_add_interactive_confirm_yes(
+        self, strat_path: Path, assets_path: Path, monkeypatch
+    ):
+        import scripts.manage_strategies as m
+
+        monkeypatch.setattr(m, "pykrx_lookup", _full_lookup)
+        monkeypatch.setattr(m.sys.stdin, "isatty", lambda: True)
+        _feed(monkeypatch, ["y"])  # confirm
+        rc = main(
+            ["add", str(strat_path), "--code", "035720",
+             "--assets-yaml", str(assets_path)]
+        )
+        assert rc == 0
+        assert "035720" in load_assets_data(assets_path)["assets"]
+
+    def test_add_interactive_cancel(
+        self, strat_path: Path, assets_path: Path, monkeypatch
+    ):
+        import scripts.manage_strategies as m
+
+        before = strat_path.read_text(encoding="utf-8")
+        monkeypatch.setattr(m, "pykrx_lookup", _full_lookup)
+        monkeypatch.setattr(m.sys.stdin, "isatty", lambda: True)
+        _feed(monkeypatch, ["n"])  # decline
+        rc = main(
+            ["add", str(strat_path), "--code", "035720",
+             "--assets-yaml", str(assets_path)]
+        )
+        assert rc == 0  # clean cancel
+        assert strat_path.read_text(encoding="utf-8") == before  # untouched
+        assert "035720" not in load_assets_data(assets_path)["assets"]
+
+    def test_add_missing_metadata_no_verify_errors(
+        self, strat_path: Path, assets_path: Path
+    ):
+        # --no-verify (no lookup), no metadata flags, non-TTY → cannot resolve.
+        rc = main(
+            ["add", str(strat_path), "--code", "035720", "--no-verify",
+             "--assets-yaml", str(assets_path)]
+        )
+        assert rc == 1
+        assert "035720" not in load_yaml(strat_path)["assets"]
+
+
+class TestVerifyAssetClass:
+    def test_asset_class_mismatch_warns(self):
+        r = LookupResult(
+            found=True, name="카카오", market="KOSPI", asset_class="KR_ETF"
+        )
+        # _meta() default asset_class is KR_STOCK
+        w = verify_asset_metadata(_meta(), r)
+        assert any("자산구분 불일치" in x for x in w)

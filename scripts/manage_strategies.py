@@ -14,10 +14,13 @@
     uv run python scripts/manage_strategies.py list     <strategies.yaml>
     uv run python scripts/manage_strategies.py show     <strategies.yaml> [--code C]
     uv run python scripts/manage_strategies.py validate <strategies.yaml>
+    # 종목 추가 — 메타데이터(종목명/시장/자산구분/상장일)는 pykrx 로 자동 조회.
+    # TTY 에서는 일괄 확인 프롬프트가 뜨고, 비대화식(CI)/`--yes` 는 건너뛴다.
+    # 플래그를 주면 자동값을 덮어쓴다(자동 조회 실패 시에만 필요).
     uv run python scripts/manage_strategies.py add      <strategies.yaml> \
-        --code C --market KOSPI --asset-class KR_STOCK --listed-at YYYY-MM-DD \
+        --code C [--market KOSPI] [--asset-class KR_STOCK] [--listed-at YYYY-MM-DD] \
         [--name N] [--tick T] [--lot L] [--template CODE] \
-        [--disabled] [--no-verify] [--assets-yaml PATH]
+        [--disabled] [--no-verify] [--yes] [--assets-yaml PATH]
     uv run python scripts/manage_strategies.py remove   <strategies.yaml> --code C
     uv run python scripts/manage_strategies.py enable   <strategies.yaml> --code C
     uv run python scripts/manage_strategies.py disable  <strategies.yaml> --code C
@@ -38,10 +41,10 @@
     (`_BuyParams` 등)를 introspect 해 얻는다 (하드코딩 zero → drift zero).
   - ``add`` 는 strategies + assets 양쪽을 갱신하기 **전에** 임시 파일로 검증해
     실패 시 어떤 파일도 건드리지 않는다 (부분 쓰기 방지). ``wizard`` 도 동일.
-  - ``add --verify`` (기본 ON) 는 pykrx 로 종목명/시장/데이터 가용성을 교차
-    확인한다 (best-effort — 네트워크/미설치 시 경고 후 진행). ``listed_at`` 은
-    pykrx 가 아니라 사용자 입력 + 경고로 다룬다(KRX/DART 공식 자료 확인 권장,
-    verify_phase_0_9_assets.py 규율 정합).
+  - ``add`` 메타데이터는 pykrx 로 종목명/시장/자산구분/데이터 시작일을 자동
+    조회한다 (best-effort — 네트워크/미설치 시 경고 후 수동 입력). ``listed_at``
+    은 pykrx 데이터 시작일을 *제안*하되 money-critical 이므로 확인 프롬프트에서
+    KRX/DART 공식 상장일 확인을 권고한다 (CLAUDE.md §5.1 / verify_phase_0_9 규율).
   - 균일성: ``wizard`` 는 선택한 모든 종목에 동일 파라미터를 적용한다 — 종목별
     차등은 로더 균일성 규칙(§7.3)상 ``allow_per_asset_params: true`` 필요.
   - YAML 쓰기는 pyyaml — 기존 주석은 제거되고 헤더는 자동 생성된다(사용자
@@ -162,6 +165,7 @@ class LookupResult:
     name: str = ""
     market: str | None = None
     earliest_date: date | None = None
+    asset_class: str | None = None  # "KR_ETF" | "KR_STOCK" (inferred)
 
 
 # A lookup callable: code -> LookupResult or None (None = totally unavailable).
@@ -196,6 +200,14 @@ def verify_asset_metadata(
         warnings.append(
             f"시장 불일치: 입력 {meta.market} ≠ KRX {result.market}."
         )
+    if (
+        result.asset_class
+        and meta.asset_class
+        and result.asset_class != meta.asset_class
+    ):
+        warnings.append(
+            f"자산구분 불일치: 입력 {meta.asset_class} ≠ KRX {result.asset_class}."
+        )
     if result.earliest_date is not None:
         gap = abs((meta.listed_at - result.earliest_date).days)
         if gap > 7:
@@ -221,15 +233,25 @@ def pykrx_lookup(code: str) -> LookupResult | None:
 
     today = _dt.date.today().strftime("%Y%m%d")
 
+    # Probe the ETF name first: a non-empty result both names the asset *and*
+    # classifies it as KR_ETF (stocks return "" here). Falling back to the
+    # equity getter classifies it as KR_STOCK. This lets asset_class be
+    # auto-filled instead of typed.
     name = ""
-    for getter in ("get_market_ticker_name", "get_etf_ticker_name"):
+    asset_class: str | None = None
+    try:
+        etf_name = stock.get_etf_ticker_name(code) or ""
+    except Exception:
+        etf_name = ""
+    if etf_name:
+        name, asset_class = etf_name, "KR_ETF"
+    else:
         try:
-            candidate = getattr(stock, getter)(code) or ""
+            stk_name = stock.get_market_ticker_name(code) or ""
         except Exception:
-            candidate = ""
-        if candidate:
-            name = candidate
-            break
+            stk_name = ""
+        if stk_name:
+            name, asset_class = stk_name, "KR_STOCK"
 
     market: str | None = None
     for mk in ("KOSPI", "KOSDAQ"):
@@ -251,7 +273,11 @@ def pykrx_lookup(code: str) -> LookupResult | None:
     if not name and market is None and earliest is None:
         return None
     return LookupResult(
-        found=bool(name), name=name, market=market, earliest_date=earliest
+        found=bool(name),
+        name=name,
+        market=market,
+        earliest_date=earliest,
+        asset_class=asset_class,
     )
 
 
@@ -816,38 +842,120 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_meta_summary(meta: AssetMeta, lookup: LookupResult | None) -> None:
+    """Show the resolved metadata before the write confirmation (batch check)."""
+    print("─ 추가할 종목 ─", file=sys.stderr)
+    print(f"  코드      : {meta.code}", file=sys.stderr)
+    print(f"  종목명    : {meta.name}", file=sys.stderr)
+    print(f"  시장      : {meta.market}", file=sys.stderr)
+    print(f"  자산구분  : {meta.asset_class}", file=sys.stderr)
+    note = ""
+    if lookup is not None and lookup.earliest_date == meta.listed_at:
+        # listed_at came from pykrx's data-start proxy — money-critical (§5.1).
+        note = " (⚠ pykrx 데이터 시작일 — KRX/DART 공식 상장일 확인 권장)"
+    print(f"  상장일    : {meta.listed_at}{note}", file=sys.stderr)
+    if meta.tick_size is not None:
+        print(f"  호가단위  : {meta.tick_size}", file=sys.stderr)
+
+
+def _prompt_missing_meta(
+    code: str,
+    name: str,
+    market: str | None,
+    asset_class: str | None,
+    listed_at: date | None,
+) -> tuple[str, str, str, date]:
+    """Fill any field pykrx could not auto-resolve, interactively."""
+    if not name:
+        name = _ask(f"  종목명 [{code}]: ").strip() or code
+    if not market:
+        market = prompt_choice("  시장", ["KOSPI", "KOSDAQ"], "KOSPI")
+    if not asset_class:
+        asset_class = prompt_choice("  자산구분", ["KR_ETF", "KR_STOCK"], "KR_STOCK")
+    if not listed_at:
+        for _ in range(_MAX_RETRY):
+            raw = _ask("  상장일 YYYY-MM-DD (KRX/DART 확인): ").strip()
+            try:
+                listed_at = date.fromisoformat(raw)
+                break
+            except ValueError:
+                print("    ⚠ YYYY-MM-DD 형식이 필요합니다.", file=sys.stderr)
+        else:
+            raise ValueError("상장일 입력 실패.")
+    return name, market, asset_class, listed_at
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     strategies_path = Path(args.strategies)
     assets_path = Path(args.assets_yaml)
     data = load_yaml(strategies_path)
     assets_data = load_assets_data(assets_path)
 
+    # 1) pykrx auto-fill (best-effort). Explicit flags always override.
+    lookup = None if args.no_verify else pykrx_lookup(args.code)
+    name = args.name or (lookup.name if lookup else "") or ""
+    market = args.market or (lookup.market if lookup else None)
+    asset_class = args.asset_class or (lookup.asset_class if lookup else None)
+    if args.listed_at:
+        listed_at: date | None = date.fromisoformat(args.listed_at)
+    elif lookup is not None and lookup.earliest_date is not None:
+        listed_at = lookup.earliest_date
+    else:
+        listed_at = None
+
+    interactive = sys.stdin.isatty() and not args.yes
+
+    # 2) Fill any remaining gaps: prompt when interactive, else require flags.
+    if interactive:
+        name, market, asset_class, listed_at = _prompt_missing_meta(
+            args.code, name, market, asset_class, listed_at
+        )
+    missing = [
+        flag
+        for flag, value in (
+            ("--name", name),
+            ("--market", market),
+            ("--asset-class", asset_class),
+            ("--listed-at", listed_at),
+        )
+        if not value
+    ]
+    if missing:
+        print(
+            f"메타데이터 부족: {missing} — pykrx 자동 조회 실패 시 해당 플래그를 "
+            "지정하거나 TTY 에서 대화식으로 입력하세요.",
+            file=sys.stderr,
+        )
+        return 1
+
     meta = AssetMeta(
         code=args.code,
-        market=args.market,
-        asset_class=args.asset_class,
-        listed_at=date.fromisoformat(args.listed_at),
-        name=args.name or "",
+        market=market,
+        asset_class=asset_class,
+        listed_at=listed_at,
+        name=name,
         tick_size=args.tick,
         lot_size=args.lot,
     )
 
-    # pykrx cross-verification (best-effort).
-    if not args.no_verify:
-        result = pykrx_lookup(meta.code)
-        if result is not None and result.name and not meta.name:
-            meta.name = result.name
-            print(f"  pykrx: 종목명 자동 채움 → {meta.name!r}")
-        for w in verify_asset_metadata(meta, result):
+    # 3) Cross-verification warnings (best-effort).
+    if lookup is not None:
+        for w in verify_asset_metadata(meta, lookup):
             print(f"  ⚠ {w}", file=sys.stderr)
-
-    if not meta.name:
+    elif not args.no_verify:
         print(
-            "종목명을 확인할 수 없습니다 — --name 으로 지정하거나 검증을 "
-            "켜고(--no-verify 제거) 다시 실행하세요.",
+            "  ⚠ pykrx 검증 불가 (네트워크 단절/미설치) — 종목명·시장·상장일을 "
+            "KRX/DART 로 확인하세요.",
             file=sys.stderr,
         )
-        return 1
+
+    # 4) Batch confirmation gate (interactive only; non-TTY/--yes skip → keeps
+    #    CI and existing flag-driven invocations non-blocking).
+    if interactive:
+        _print_meta_summary(meta, lookup)
+        if not confirm("이대로 추가할까요?", default=True):
+            print("취소됨 — 파일 변경 없음.")
+            return 0
 
     template_code, template_entry = find_template_entry(data, args.template)
     add_strategy_entry(
@@ -1141,20 +1249,28 @@ def build_parser() -> argparse.ArgumentParser:
     add_assets_yaml(sp)
     sp.set_defaults(func=cmd_validate)
 
-    sp = sub.add_parser("add", help="종목 추가 (전략 + 메타데이터 + pykrx 검증)")
+    sp = sub.add_parser(
+        "add",
+        help="종목 추가 (메타데이터 pykrx 자동 조회 + 일괄 확인 + 전략 상속)",
+    )
     sp.add_argument("strategies")
     sp.add_argument("--code", required=True)
-    sp.add_argument("--market", required=True, choices=["KOSPI", "KOSDAQ"])
+    # market/asset-class/listed-at/name 은 pykrx 로 자동 채움 → 모두 선택적.
+    # 플래그를 주면 자동값을 덮어쓰고, 자동 조회 실패 시에만 필요해진다.
+    sp.add_argument("--market", choices=["KOSPI", "KOSDAQ"], help="생략 시 pykrx 자동")
     sp.add_argument(
-        "--asset-class", required=True, choices=["KR_ETF", "KR_STOCK"]
+        "--asset-class", choices=["KR_ETF", "KR_STOCK"], help="생략 시 pykrx 자동"
     )
-    sp.add_argument("--listed-at", required=True, help="상장일 YYYY-MM-DD")
+    sp.add_argument("--listed-at", help="상장일 YYYY-MM-DD (생략 시 pykrx 데이터 시작일 제안)")
     sp.add_argument("--name", help="종목명 (생략 시 pykrx 자동 채움)")
     sp.add_argument("--tick", type=float, help="호가단위 (생략 시 클래스 기본값)")
     sp.add_argument("--lot", type=float, default=1, help="매매단위 (기본 1)")
     sp.add_argument("--template", help="정책을 상속할 기준 종목코드")
     sp.add_argument("--disabled", action="store_true", help="비활성 상태로 추가")
-    sp.add_argument("--no-verify", action="store_true", help="pykrx 검증 생략")
+    sp.add_argument("--no-verify", action="store_true", help="pykrx 검증/자동조회 생략")
+    sp.add_argument(
+        "--yes", action="store_true", help="TTY 일괄 확인 프롬프트 생략 (비대화식/CI)"
+    )
     add_assets_yaml(sp)
     sp.set_defaults(func=cmd_add)
 
