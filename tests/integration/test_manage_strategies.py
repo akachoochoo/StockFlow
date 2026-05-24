@@ -19,12 +19,19 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from scripts.manage_strategies import (  # noqa: E402
+    BUY_STRATEGIES,
+    REENTRY_STRATEGIES,
+    SELL_STRATEGIES,
     AssetMeta,
     LookupResult,
+    ParamSpec,
     _coerce_scalar,
     add_asset_meta,
     add_strategy_entry,
     available_codes,
+    buy_param_specs,
+    collect_strategy_params,
+    confirm,
     cross_check,
     find_template_entry,
     format_diff,
@@ -32,11 +39,23 @@ from scripts.manage_strategies import (  # noqa: E402
     load_assets_data,
     load_yaml,
     main,
+    parse_param_value,
+    prompt_choice,
+    prompt_param,
+    range_str,
+    reentry_param_specs,
     remove_entry,
+    sell_param_specs,
     set_enabled,
     set_param,
     verify_asset_metadata,
 )
+
+
+def _feed(monkeypatch, answers: list[str]) -> None:
+    """Drive interactive prompts: builtins.input returns each answer in turn."""
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
 
 _BASE_STRATEGIES = """\
 version: "0.5"
@@ -410,3 +429,200 @@ class TestMainToggleAndValidate:
         )
         assert rc == 1
         assert strat_path.read_text(encoding="utf-8") == before
+
+
+# ---------------------------------------------------------------------------
+# Parameter introspection (defaults/ranges from loader schemas — zero drift)
+# ---------------------------------------------------------------------------
+class TestParamSpecs:
+    def test_buy_specs_keys_and_skip(self):
+        keys = [s.key for s in buy_param_specs()]
+        assert keys == [
+            "drop_threshold_pct",
+            "max_split_count",
+            "per_split_amount",
+            "max_split_per_day",
+        ]
+        assert "max_loss_pct" not in keys  # Phase 1+ field excluded
+
+    def test_buy_specs_bounds_and_defaults(self):
+        by_key = {s.key: s for s in buy_param_specs()}
+        assert by_key["drop_threshold_pct"].kind == "decimal"
+        assert by_key["drop_threshold_pct"].required is True
+        assert by_key["drop_threshold_pct"].bounds == {"gt": 0}
+        assert by_key["max_split_count"].bounds == {"ge": 1, "le": 7}
+        assert by_key["max_split_per_day"].required is False
+        assert by_key["max_split_per_day"].default == 1
+
+    def test_sell_specs(self):
+        by_key = {s.key: s for s in sell_param_specs()}
+        assert by_key["profit_target_pct"].bounds == {"gt": 0, "lt": 100}
+        assert by_key["max_sells_per_day"].default == 7
+
+    def test_reentry_hybrid_requires_cooldown(self):
+        specs = reentry_param_specs("hybrid")
+        assert [s.key for s in specs] == ["cooldown_days"]
+        assert specs[0].required is True
+        assert specs[0].bounds == {"ge": 0, "le": 365}
+
+    def test_reentry_moving_average(self):
+        keys = [s.key for s in reentry_param_specs("moving_average")]
+        assert keys == ["window", "ma_type"]
+
+    def test_reentry_unknown_raises(self):
+        with pytest.raises(ValueError):
+            reentry_param_specs("nope")
+
+    def test_strategy_choices_mirror_loader(self):
+        assert BUY_STRATEGIES == ["price_drop", "support_level"]
+        assert SELL_STRATEGIES == ["profit_target"]
+        assert set(REENTRY_STRATEGIES) == {"moving_average", "hybrid"}
+
+
+class TestParseAndRange:
+    def test_range_str(self):
+        spec = ParamSpec("x", "int", None, True, {"ge": 1, "le": 7})
+        assert range_str(spec) == "≥1, ≤7"
+
+    def test_parse_decimal_returns_float(self):
+        spec = ParamSpec("drop", "decimal", None, True, {"gt": 0})
+        assert parse_param_value(spec, "5.0") == 5.0
+        assert isinstance(parse_param_value(spec, "5.0"), float)
+
+    def test_parse_int(self):
+        spec = ParamSpec("n", "int", None, True, {"ge": 1, "le": 7})
+        assert parse_param_value(spec, "7") == 7
+
+    def test_parse_bounds_violation(self):
+        spec = ParamSpec("n", "int", None, True, {"ge": 1, "le": 7})
+        with pytest.raises(ValueError):
+            parse_param_value(spec, "8")
+
+    def test_parse_type_error(self):
+        spec = ParamSpec("n", "int", None, True, {})
+        with pytest.raises(ValueError):
+            parse_param_value(spec, "abc")
+
+    def test_parse_str_passthrough(self):
+        spec = ParamSpec("ma_type", "str", "sma", False, {})
+        assert parse_param_value(spec, "ema") == "ema"
+
+
+# ---------------------------------------------------------------------------
+# Interactive prompt helpers (builtins.input monkeypatched)
+# ---------------------------------------------------------------------------
+class TestPrompts:
+    def test_prompt_param_keeps_current_on_empty(self, monkeypatch):
+        _feed(monkeypatch, [""])
+        spec = ParamSpec("drop", "decimal", None, True, {"gt": 0})
+        assert prompt_param(spec, current=5.0) == 5.0
+
+    def test_prompt_param_uses_default_on_empty(self, monkeypatch):
+        _feed(monkeypatch, [""])
+        spec = ParamSpec("m", "int", 1, False, {"ge": 1})
+        assert prompt_param(spec) == 1
+
+    def test_prompt_param_parses_value(self, monkeypatch):
+        _feed(monkeypatch, ["6.5"])
+        spec = ParamSpec("drop", "decimal", None, True, {"gt": 0})
+        assert prompt_param(spec) == 6.5
+
+    def test_prompt_param_retries_on_invalid(self, monkeypatch):
+        _feed(monkeypatch, ["abc", "99", "7"])  # type err, bounds err, ok
+        spec = ParamSpec("n", "int", None, True, {"ge": 1, "le": 7})
+        assert prompt_param(spec) == 7
+
+    def test_prompt_param_required_empty_then_value(self, monkeypatch):
+        _feed(monkeypatch, ["", "3"])  # required no default: empty re-asks
+        spec = ParamSpec("n", "int", None, True, {"ge": 1, "le": 7})
+        assert prompt_param(spec) == 3
+
+    def test_prompt_choice_default_and_pick(self, monkeypatch):
+        _feed(monkeypatch, [""])
+        assert prompt_choice("x", ["a", "b"], "a") == "a"
+        _feed(monkeypatch, ["bad", "b"])
+        assert prompt_choice("x", ["a", "b"], "a") == "b"
+
+    @pytest.mark.parametrize(
+        "raw,default,expected",
+        [("y", False, True), ("n", True, False), ("", True, True), ("", False, False)],
+    )
+    def test_confirm(self, monkeypatch, raw, default, expected):
+        _feed(monkeypatch, [raw])
+        assert confirm("ok?", default=default) is expected
+
+    def test_collect_params_hybrid(self, monkeypatch):
+        # drop, max_split, per_split, max_split_per_day(keep), profit, sells(keep), cooldown
+        _feed(monkeypatch, ["5.0", "7", "5000000", "", "10.0", "", "60"])
+        out = collect_strategy_params("hybrid")
+        assert out["buy_parameters"]["drop_threshold_pct"] == 5.0
+        assert out["buy_parameters"]["max_split_per_day"] == 1  # default kept
+        assert out["sell_parameters"]["max_sells_per_day"] == 7  # default kept
+        assert out["reentry_parameters"]["cooldown_days"] == 60
+
+
+# ---------------------------------------------------------------------------
+# wizard (interactive new-file creation)
+# ---------------------------------------------------------------------------
+class TestWizard:
+    def test_wizard_creates_valid_file(
+        self, tmp_path: Path, assets_path: Path, monkeypatch
+    ):
+        dest = tmp_path / "new_strategies.yaml"
+        _feed(
+            monkeypatch,
+            [
+                "",          # allocation → EQUAL
+                "",          # buy_strategy → price_drop
+                "",          # reentry → hybrid
+                "5.0", "7", "5000000", "",   # buy params (max_split_per_day default)
+                "10.0", "",  # sell params (max_sells default)
+                "60",        # cooldown_days
+                "all",       # include all registered assets
+            ],
+        )
+        rc = main(["wizard", str(dest), "--assets-yaml", str(assets_path)])
+        assert rc == 0
+        data = load_yaml(dest)
+        assert set(data["assets"]) == {"069500", "132030"}
+        assert data["assets"]["069500"]["buy_parameters"]["drop_threshold_pct"] == 5.0
+        # the produced file passes the real loader + registry cross-check
+        assert main(["validate", str(dest), "--assets-yaml", str(assets_path)]) == 0
+
+    def test_wizard_refuses_existing_dest(self, strat_path: Path, assets_path: Path):
+        rc = main(["wizard", str(strat_path), "--assets-yaml", str(assets_path)])
+        assert rc == 1  # dest already exists → no overwrite
+
+    def test_wizard_subset_of_assets(
+        self, tmp_path: Path, assets_path: Path, monkeypatch
+    ):
+        dest = tmp_path / "subset.yaml"
+        _feed(
+            monkeypatch,
+            ["", "", "", "5.0", "7", "5000000", "", "10.0", "", "60", "069500"],
+        )
+        rc = main(["wizard", str(dest), "--assets-yaml", str(assets_path)])
+        assert rc == 0
+        assert set(load_yaml(dest)["assets"]) == {"069500"}
+
+
+# ---------------------------------------------------------------------------
+# set --interactive
+# ---------------------------------------------------------------------------
+class TestSetInteractive:
+    def test_set_interactive_all_uniform(
+        self, strat_path: Path, assets_path: Path, monkeypatch
+    ):
+        # change drop→6.0 and profit→15.0, keep the rest (Enter)
+        _feed(monkeypatch, ["6.0", "", "", "", "15.0", "", ""])
+        rc = main(["set", str(strat_path), "--interactive", "--all"])
+        assert rc == 0
+        data = load_yaml(strat_path)
+        for code in ("069500", "132030"):
+            assert data["assets"][code]["buy_parameters"]["drop_threshold_pct"] == 6.0
+            assert data["assets"][code]["sell_parameters"]["profit_target_pct"] == 15.0
+        assert main(["validate", str(strat_path), "--assets-yaml", str(assets_path)]) == 0
+
+    def test_set_requires_param_or_interactive(self, strat_path: Path):
+        rc = main(["set", str(strat_path), "--all"])  # neither --param nor -i
+        assert rc == 1

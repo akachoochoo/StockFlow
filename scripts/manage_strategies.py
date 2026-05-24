@@ -23,18 +23,27 @@
     uv run python scripts/manage_strategies.py disable  <strategies.yaml> --code C
     uv run python scripts/manage_strategies.py set      <strategies.yaml> \
         --param buy.drop_threshold_pct --value 6.0 [--code C | --all]
+    # 대화식 편집 — 각 파라미터의 기본값·허용 범위를 안내하며 입력받는다.
+    uv run python scripts/manage_strategies.py set      <strategies.yaml> \
+        --interactive [--code C | --all]
     uv run python scripts/manage_strategies.py new      <dest.yaml> --from <src.yaml>
+    # 새 전략 파일을 백지에서 대화식 생성 (전략 선택 → 범위 안내 → 종목 선택).
+    uv run python scripts/manage_strategies.py wizard   <dest.yaml> [--assets-yaml PATH]
     uv run python scripts/manage_strategies.py diff     <a.yaml> <b.yaml>
 
 설계 노트:
   - 검증은 실제 로더(``load_strategy_config`` / ``load_asset_registry``)를
-    재사용한다 — 스키마를 재구현하지 않으므로 drift 가 없다.
+    재사용한다 — 스키마를 재구현하지 않으므로 drift 가 없다. 마찬가지로
+    ``wizard`` / ``set --interactive`` 의 기본값·허용 범위는 로더의 raw 스키마
+    (`_BuyParams` 등)를 introspect 해 얻는다 (하드코딩 zero → drift zero).
   - ``add`` 는 strategies + assets 양쪽을 갱신하기 **전에** 임시 파일로 검증해
-    실패 시 어떤 파일도 건드리지 않는다 (부분 쓰기 방지).
+    실패 시 어떤 파일도 건드리지 않는다 (부분 쓰기 방지). ``wizard`` 도 동일.
   - ``add --verify`` (기본 ON) 는 pykrx 로 종목명/시장/데이터 가용성을 교차
     확인한다 (best-effort — 네트워크/미설치 시 경고 후 진행). ``listed_at`` 은
     pykrx 가 아니라 사용자 입력 + 경고로 다룬다(KRX/DART 공식 자료 확인 권장,
     verify_phase_0_9_assets.py 규율 정합).
+  - 균일성: ``wizard`` 는 선택한 모든 종목에 동일 파라미터를 적용한다 — 종목별
+    차등은 로더 균일성 규칙(§7.3)상 ``allow_per_asset_params: true`` 필요.
   - YAML 쓰기는 pyyaml — 기존 주석은 제거되고 헤더는 자동 생성된다(사용자
     승인된 trade-off).
 """
@@ -46,8 +55,9 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import yaml
 
@@ -61,6 +71,17 @@ from src.infrastructure.yaml_asset_loader import (  # noqa: E402
 )
 from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
     load_strategy_config,
+)
+
+# Private raw-YAML schemas reused for parameter introspection (default / range).
+# Importing them — rather than re-listing constraints here — keeps the wizard's
+# defaults/ranges in lock-step with the loader (zero drift, same discipline as
+# `validate` reusing the real loaders).
+from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
+    _AssetEntry as _LoaderAssetEntry,
+    _BuyParams as _LoaderBuyParams,
+    _ReentryParams as _LoaderReentryParams,
+    _SellParams as _LoaderSellParams,
 )
 
 _DEFAULT_ASSETS_YAML = _REPO_ROOT / "config" / "assets.yaml"
@@ -514,6 +535,235 @@ def format_diff(a: dict[str, Any], b: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Strategy parameter introspection (single source of truth = loader schemas)
+# ---------------------------------------------------------------------------
+def _literal_choices(field: str) -> list[str]:
+    """Strategy TYPE choices straight from the loader's Literal[...] (zero drift)."""
+    return list(get_args(_LoaderAssetEntry.model_fields[field].annotation))
+
+
+BUY_STRATEGIES = _literal_choices("buy_strategy")
+SELL_STRATEGIES = _literal_choices("sell_strategy")
+REENTRY_STRATEGIES = _literal_choices("reentry_strategy")
+ALLOCATION_POLICIES = ["EQUAL", "INV_VOL", "VOL"]
+
+
+@dataclass
+class ParamSpec:
+    """One configurable parameter: its YAML key, kind, default, and bounds.
+
+    Built by introspecting the loader's raw pydantic schemas so defaults and
+    valid ranges never drift from the validator that ultimately accepts them.
+    """
+
+    key: str
+    kind: str  # "int" | "decimal" | "str"
+    default: Any | None  # None when the field is required (no usable default)
+    required: bool
+    bounds: dict[str, Any]  # subset of {"gt","ge","lt","le"}
+
+
+# Phase 1+/structural fields excluded from interactive entry.
+_BUY_SKIP = frozenset({"max_loss_pct"})
+
+
+def _kind_of(annotation: Any) -> str:
+    """Map a (possibly Optional) annotation to 'int'/'decimal'/'str'."""
+    base = annotation
+    args = [a for a in get_args(annotation) if a is not type(None)]
+    if args:
+        base = args[0]
+    if base is Decimal:
+        return "decimal"
+    if base is int:
+        return "int"
+    return "str"
+
+
+def _bounds_of(field_info: Any) -> dict[str, Any]:
+    """Extract gt/ge/lt/le constraints from a pydantic FieldInfo."""
+    bounds: dict[str, Any] = {}
+    for meta in field_info.metadata:
+        for op in ("gt", "ge", "lt", "le"):
+            value = getattr(meta, op, None)
+            if value is not None:
+                bounds[op] = value
+    return bounds
+
+
+def _specs_from(model: Any, skip: frozenset[str] = frozenset()) -> list[ParamSpec]:
+    specs: list[ParamSpec] = []
+    for name, field_info in model.model_fields.items():
+        if name in skip:
+            continue
+        specs.append(
+            ParamSpec(
+                key=name,
+                kind=_kind_of(field_info.annotation),
+                default=None if field_info.is_required() else field_info.default,
+                required=field_info.is_required(),
+                bounds=_bounds_of(field_info),
+            )
+        )
+    return specs
+
+
+def buy_param_specs() -> list[ParamSpec]:
+    return _specs_from(_LoaderBuyParams, _BUY_SKIP)
+
+
+def sell_param_specs() -> list[ParamSpec]:
+    return _specs_from(_LoaderSellParams)
+
+
+def reentry_param_specs(strategy: str) -> list[ParamSpec]:
+    """Reentry params relevant to ``strategy`` (the chosen policy decides which).
+
+    The loader schema lists both policies' fields as Optional; the
+    ``_check_reentry_consistency`` validator then *requires* the matching one,
+    so we mark the relevant field required here too.
+    """
+    by_key = {s.key: s for s in _specs_from(_LoaderReentryParams)}
+    if strategy == "hybrid":
+        spec = by_key["cooldown_days"]
+        spec.required = True
+        return [spec]
+    if strategy == "moving_average":
+        window = by_key["window"]
+        window.required = True
+        return [window, by_key["ma_type"]]
+    raise ValueError(f"알 수 없는 reentry 전략: {strategy!r}")
+
+
+def range_str(spec: ParamSpec) -> str:
+    """Human-readable bound hint, e.g. '>0, <100' or '≥1, ≤7'."""
+    sym = {"gt": ">", "ge": "≥", "lt": "<", "le": "≤"}
+    parts = [f"{sym[op]}{spec.bounds[op]}" for op in ("gt", "ge", "lt", "le") if op in spec.bounds]
+    return ", ".join(parts) if parts else "제약 없음"
+
+
+def _check_bounds(spec: ParamSpec, value: Any) -> None:
+    b = spec.bounds
+    if (
+        ("gt" in b and not value > b["gt"])
+        or ("ge" in b and not value >= b["ge"])
+        or ("lt" in b and not value < b["lt"])
+        or ("le" in b and not value <= b["le"])
+    ):
+        raise ValueError(f"{spec.key}={value}: 허용 범위 {range_str(spec)} 위반")
+
+
+def parse_param_value(spec: ParamSpec, raw: str) -> Any:
+    """Parse a raw string into the storage type (int/float/str), bounds-checked.
+
+    Decimal params are stored as ``float`` to match existing config files and
+    the ``set`` command; the loader re-coerces via ``Decimal(str(...))``.
+    """
+    raw = raw.strip()
+    if spec.kind == "int":
+        try:
+            value: Any = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"{spec.key}: 정수가 필요합니다 ({raw!r}).") from exc
+        _check_bounds(spec, value)
+        return value
+    if spec.kind == "decimal":
+        try:
+            dval = Decimal(raw)
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{spec.key}: 숫자가 필요합니다 ({raw!r}).") from exc
+        _check_bounds(spec, dval)
+        return float(dval)
+    return raw
+
+
+# ---------------------------------------------------------------------------
+# Interactive prompt helpers (stdlib input(); tests monkeypatch builtins.input)
+# ---------------------------------------------------------------------------
+_MAX_RETRY = 5
+
+
+def _ask(prompt: str) -> str:
+    return input(prompt)
+
+
+def prompt_param(spec: ParamSpec, current: Any | None = None) -> Any:
+    """Prompt for one parameter. Empty input keeps ``current`` (edit flow) or
+    the schema default (wizard flow); required fields with neither re-ask."""
+    keep = current if current is not None else spec.default
+    keep_txt = f"현재 {current}" if current is not None else (
+        f"기본 {spec.default}" if spec.default is not None else "필수"
+    )
+    label = f"  {spec.key} ({spec.kind} {range_str(spec)}) [{keep_txt}]: "
+    for _ in range(_MAX_RETRY):
+        raw = _ask(label).strip()
+        if raw == "":
+            if keep is not None:
+                return keep
+            print("    값이 필요합니다 (기본값 없음).", file=sys.stderr)
+            continue
+        try:
+            return parse_param_value(spec, raw)
+        except ValueError as exc:
+            print(f"    ⚠ {exc} — 다시 입력하세요.", file=sys.stderr)
+    raise ValueError(f"{spec.key}: 유효한 값 입력 실패 ({_MAX_RETRY}회 초과).")
+
+
+def prompt_choice(label: str, choices: list[str], default: str) -> str:
+    opts = "/".join(f"{c}*" if c == default else c for c in choices)
+    for _ in range(_MAX_RETRY):
+        raw = _ask(f"{label} ({opts}) [{default}]: ").strip()
+        if raw == "":
+            return default
+        if raw in choices:
+            return raw
+        print(f"    ⚠ {choices} 중 선택하세요.", file=sys.stderr)
+    raise ValueError(f"{label}: 유효한 선택 실패 ({_MAX_RETRY}회 초과).")
+
+
+def confirm(label: str, default: bool = True) -> bool:
+    hint = "Y/n" if default else "y/N"
+    raw = _ask(f"{label} [{hint}]: ").strip().lower()
+    if raw == "":
+        return default
+    return raw in ("y", "yes")
+
+
+def collect_strategy_params(
+    reentry_strategy: str,
+    current: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Interactively gather buy/sell/reentry parameter dicts.
+
+    ``current`` pre-fills prompts (the ``set`` edit flow); ``None`` = fresh
+    wizard. The same uniform values are applied to every asset by the caller —
+    per-asset divergence is blocked by the loader's uniformity rule.
+    """
+    cur = current or {}
+    out: dict[str, dict[str, Any]] = {
+        "buy_parameters": {},
+        "sell_parameters": {},
+        "reentry_parameters": {},
+    }
+    print("매수 파라미터:")
+    for spec in buy_param_specs():
+        out["buy_parameters"][spec.key] = prompt_param(
+            spec, cur.get("buy_parameters", {}).get(spec.key)
+        )
+    print("매도 파라미터:")
+    for spec in sell_param_specs():
+        out["sell_parameters"][spec.key] = prompt_param(
+            spec, cur.get("sell_parameters", {}).get(spec.key)
+        )
+    print(f"재진입 파라미터 ({reentry_strategy}):")
+    for spec in reentry_param_specs(reentry_strategy):
+        out["reentry_parameters"][spec.key] = prompt_param(
+            spec, cur.get("reentry_parameters", {}).get(spec.key)
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Command handlers (I/O glue)
 # ---------------------------------------------------------------------------
 def _warn_comment_loss(path: Path) -> None:
@@ -668,9 +918,64 @@ def cmd_disable(args: argparse.Namespace) -> int:
     return _toggle(args, False)
 
 
+def _cmd_set_interactive(
+    args: argparse.Namespace, data: dict[str, Any], strategies_path: Path
+) -> int:
+    """Interactively retune the uniform policy (Enter keeps the current value)."""
+    assets = _assets_map(data)
+    if args.all:
+        targets = list(assets)
+    elif args.code:
+        if args.code not in assets:
+            print(f"종목 {args.code!r} 이(가) 전략 파일에 없습니다.", file=sys.stderr)
+            return 1
+        targets = [args.code]
+    else:
+        print("오류: --all 또는 --code 를 지정하세요.", file=sys.stderr)
+        return 1
+
+    ref = assets[targets[0]]
+    reentry_strategy = ref.get("reentry_strategy", "hybrid")
+    current = {
+        "buy_parameters": ref.get("buy_parameters", {}),
+        "sell_parameters": ref.get("sell_parameters", {}),
+        "reentry_parameters": ref.get("reentry_parameters", {}),
+    }
+    print(f"대화식 파라미터 편집 — 대상 {targets} (Enter = 현재값 유지)")
+    params = collect_strategy_params(reentry_strategy, current)
+
+    for code in targets:
+        for section, values in params.items():
+            assets[code].setdefault(section, {})
+            for key, value in values.items():
+                assets[code][section][key] = value
+
+    try:
+        _validate_strategies(data)
+    except Exception as e:
+        print(
+            f"검증 실패 — 변경하지 않았습니다 (종목별 차등은 "
+            f"allow_per_asset_params: true 필요): {e}",
+            file=sys.stderr,
+        )
+        return 1
+    _warn_comment_loss(strategies_path)
+    _dump_yaml(strategies_path, data, _STRATEGIES_HEADER)
+    print(f"설정됨 ✓ {targets} 파라미터 갱신.")
+    return 0
+
+
 def cmd_set(args: argparse.Namespace) -> int:
     strategies_path = Path(args.strategies)
     data = load_yaml(strategies_path)
+    if getattr(args, "interactive", False):
+        return _cmd_set_interactive(args, data, strategies_path)
+    if not args.param or args.value is None:
+        print(
+            "오류: --param 과 --value 가 필요합니다 (또는 --interactive).",
+            file=sys.stderr,
+        )
+        return 1
     targets = set_param(data, args.param, args.value, args.code, args.all)
     try:
         _validate_strategies(data)
@@ -700,6 +1005,102 @@ def cmd_new(args: argparse.Namespace) -> int:
         return 1
     _dump_yaml(dest, data, _STRATEGIES_HEADER)
     print(f"생성됨 ✓ {dest} ({args.from_path} 복제).")
+    return 0
+
+
+def _prompt_asset_codes(codes: list[str]) -> list[str]:
+    """Pick which registered codes to include ('all' or a comma list)."""
+    for _ in range(_MAX_RETRY):
+        raw = _ask("포함할 종목 (쉼표 구분, 'all'=전체) [all]: ").strip()
+        if raw == "" or raw.lower() == "all":
+            return list(codes)
+        picked = [c.strip() for c in raw.split(",") if c.strip()]
+        unknown = [c for c in picked if c not in codes]
+        if unknown:
+            print(
+                f"    ⚠ assets.yaml 미등록 종목: {unknown} — 먼저 add 로 등록하세요.",
+                file=sys.stderr,
+            )
+            continue
+        if picked:
+            return picked
+    return []
+
+
+def cmd_wizard(args: argparse.Namespace) -> int:
+    """Create a new strategies.yaml interactively (uniform policy across assets).
+
+    Defaults and valid ranges are introspected from the loader schemas, so the
+    prompts can never drift from what the validator accepts. Per-asset parameter
+    divergence is intentionally unsupported here — the loader enforces a uniform
+    policy (CLAUDE.md §7.3); use `set` + ``allow_per_asset_params: true`` for that.
+    """
+    dest = Path(args.dest)
+    if dest.exists():
+        print(f"대상 파일이 이미 존재합니다: {dest}", file=sys.stderr)
+        return 1
+    assets_data = load_assets_data(args.assets_yaml)
+    codes = sorted(available_codes(assets_data))
+    if not codes:
+        print(
+            f"assets.yaml 에 등록된 종목이 없습니다 ({args.assets_yaml}) — "
+            "먼저 add 로 종목을 등록하세요.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"새 전략 파일 생성: {dest}")
+    print(f"등록된 종목: {', '.join(codes)}")
+    allocation = prompt_choice("자본 배분 정책", ALLOCATION_POLICIES, "EQUAL")
+    buy_strategy = prompt_choice("매수 전략", BUY_STRATEGIES, BUY_STRATEGIES[0])
+    sell_strategy = SELL_STRATEGIES[0]
+    if len(SELL_STRATEGIES) == 1:
+        print(f"  매도 전략: {sell_strategy} (현재 유일)")
+    else:  # pragma: no cover - single sell strategy today
+        sell_strategy = prompt_choice("매도 전략", SELL_STRATEGIES, SELL_STRATEGIES[0])
+    reentry_strategy = prompt_choice("재진입 전략", REENTRY_STRATEGIES, "hybrid")
+
+    params = collect_strategy_params(reentry_strategy)
+
+    chosen = _prompt_asset_codes(codes)
+    if not chosen:
+        print("종목을 하나 이상 선택해야 합니다 — 생성하지 않았습니다.", file=sys.stderr)
+        return 1
+
+    data: dict[str, Any] = {
+        "version": "0.5",
+        "allocation_policy": allocation,
+        "assets": {},
+    }
+    for code in chosen:
+        data["assets"][code] = {
+            "name": assets_data["assets"][code].get("name", code),
+            "enabled": True,
+            "buy_strategy": buy_strategy,
+            "buy_parameters": dict(params["buy_parameters"]),
+            "sell_strategy": sell_strategy,
+            "sell_parameters": dict(params["sell_parameters"]),
+            "reentry_strategy": reentry_strategy,
+            "reentry_parameters": dict(params["reentry_parameters"]),
+        }
+
+    try:
+        _validate_strategies(data)
+    except Exception as e:
+        print(f"검증 실패 — 생성하지 않았습니다: {e}", file=sys.stderr)
+        return 1
+    errors = cross_check(data, assets_data)
+    if errors:
+        print("교차검증 실패 — 생성하지 않았습니다:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
+
+    _dump_yaml(dest, data, _STRATEGIES_HEADER)
+    print(
+        f"생성됨 ✓ {dest} — {len(chosen)} 종목, "
+        f"{buy_strategy}/{sell_strategy}/{reentry_strategy}, allocation={allocation}."
+    )
     return 0
 
 
@@ -772,12 +1173,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--code", required=True)
     sp.set_defaults(func=cmd_disable)
 
-    sp = sub.add_parser("set", help="파라미터 변경")
+    sp = sub.add_parser("set", help="파라미터 변경 (--param/--value 또는 --interactive)")
     sp.add_argument("strategies")
+    sp.add_argument("--param", help="buy.<k> / sell.<k> / reentry.<k>")
+    sp.add_argument("--value")
     sp.add_argument(
-        "--param", required=True, help="buy.<k> / sell.<k> / reentry.<k>"
+        "--interactive",
+        action="store_true",
+        help="범위·기본값 안내와 함께 파라미터를 대화식으로 편집",
     )
-    sp.add_argument("--value", required=True)
     grp = sp.add_mutually_exclusive_group(required=True)
     grp.add_argument("--code")
     grp.add_argument("--all", action="store_true")
@@ -787,6 +1191,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("dest")
     sp.add_argument("--from", dest="from_path", required=True, help="복제 원본")
     sp.set_defaults(func=cmd_new)
+
+    sp = sub.add_parser(
+        "wizard", help="새 전략 파일을 대화식으로 생성 (전략 선택 + 범위 안내)"
+    )
+    sp.add_argument("dest")
+    add_assets_yaml(sp)
+    sp.set_defaults(func=cmd_wizard)
 
     sp = sub.add_parser("diff", help="두 전략 파일 비교")
     sp.add_argument("file_a")
