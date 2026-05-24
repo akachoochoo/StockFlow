@@ -31,10 +31,11 @@
     uv run python scripts/manage_strategies.py set      <strategies.yaml> \
         --interactive [--code C | --all]
     uv run python scripts/manage_strategies.py new      <dest.yaml> --from <src.yaml>
-    # 새 전략 파일을 백지에서 대화식 생성 (전략 선택 → 범위 안내 → 종목 선택).
+    # 새 config 를 대화식 생성 — 전략 종류(분할매수/DGT)를 먼저 고르고 분기.
+    #   분할매수 → strategies.yaml (trading backtest --config 로 구동)
+    #   DGT      → grid.yaml       (trading grid-backtest --config 로 구동)
     uv run python scripts/manage_strategies.py wizard   <dest.yaml> [--assets-yaml PATH]
-    # DGT grid config (별도 파일, ADR 0022 §11) — GridConfig 범위 안내 대화식 생성.
-    #   trading grid-backtest --config <dest> --csv CODE=path 로 구동.
+    # grid-wizard = wizard 의 DGT 분기 직행 단축 (아는 사람용).
     uv run python scripts/manage_strategies.py grid-wizard <dest.yaml> [--assets-yaml PATH]
     uv run python scripts/manage_strategies.py diff     <a.yaml> <b.yaml>
 
@@ -1291,13 +1292,12 @@ def _prompt_asset_codes(codes: list[str]) -> list[str]:
     return []
 
 
-def cmd_wizard(args: argparse.Namespace) -> int:
-    """Create a new strategies.yaml interactively (uniform policy across assets).
+def _wizard_setup(
+    args: argparse.Namespace,
+) -> tuple[Path, dict[str, Any], list[str]] | int:
+    """Shared wizard preamble: validate dest + load registered codes.
 
-    Defaults and valid ranges are introspected from the loader schemas, so the
-    prompts can never drift from what the validator accepts. Per-asset parameter
-    divergence is intentionally unsupported here — the loader enforces a uniform
-    policy (CLAUDE.md §7.3); use `set` + ``allow_per_asset_params: true`` for that.
+    Returns ``(dest, assets_data, codes)`` or an ``int`` exit code on failure.
     """
     dest = Path(args.dest)
     if dest.exists():
@@ -1312,8 +1312,18 @@ def cmd_wizard(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    return dest, assets_data, codes
 
-    print(f"새 전략 파일 생성: {dest}")
+
+def _wizard_split(
+    dest: Path, assets_data: dict[str, Any], codes: list[str]
+) -> int:
+    """분할매수(PriceDrop/SupportLevel) strategies.yaml 대화식 생성.
+
+    Defaults/ranges are introspected from the loader schemas (drift zero).
+    Per-asset divergence is unsupported (loader uniformity §7.3) — use `set`
+    + ``allow_per_asset_params: true`` for that.
+    """
     print(f"등록된 종목: {', '.join(codes)}")
     allocation = prompt_choice("자본 배분 정책", ALLOCATION_POLICIES, "EQUAL")
     buy_strategy = prompt_choice("매수 전략", BUY_STRATEGIES, BUY_STRATEGIES[0])
@@ -1360,35 +1370,22 @@ def cmd_wizard(args: argparse.Namespace) -> int:
 
     _dump_yaml(dest, data, _STRATEGIES_HEADER)
     print(
-        f"생성됨 ✓ {dest} — {len(chosen)} 종목, "
-        f"{buy_strategy}/{sell_strategy}/{reentry_strategy}, allocation={allocation}."
+        f"생성됨 ✓ {dest} — {len(chosen)} 종목 (분할매수), "
+        f"{buy_strategy}/{sell_strategy}/{reentry_strategy}, allocation={allocation}. "
+        f"'trading backtest --config {dest} --csv CODE=path' 로 구동."
     )
     return 0
 
 
-def cmd_grid_wizard(args: argparse.Namespace) -> int:
-    """Create a new DGT grid config interactively (ADR 0022 §11 D15).
+def _wizard_grid(
+    dest: Path, assets_data: dict[str, Any], codes: list[str]
+) -> int:
+    """DGT grid config 대화식 생성 (ADR 0022 §11 D15).
 
-    strategies.yaml(split 전략)과 분리된 grid 전용 config — ``grid-backtest
-    --config`` 가 쓴다. GridConfig 필드를 introspect 해 기본값·범위·Literal 선택을
-    안내한다(drift zero). 선택한 모든 종목에 동일 GridConfig 적용(종목별 차등은
-    파일 직접 편집 — grid 로더는 균일성 강제 없음).
+    strategies.yaml 과 분리된 grid 전용 config. GridConfig 를 introspect 해
+    기본값·범위·Literal·bool 을 안내(drift zero). 선택 종목에 동일 GridConfig
+    적용(종목별 차등은 파일 직접 편집 — grid 로더는 균일성 강제 없음).
     """
-    dest = Path(args.dest)
-    if dest.exists():
-        print(f"대상 파일이 이미 존재합니다: {dest}", file=sys.stderr)
-        return 1
-    assets_data = load_assets_data(args.assets_yaml)
-    codes = sorted(available_codes(assets_data))
-    if not codes:
-        print(
-            f"assets.yaml 에 등록된 종목이 없습니다 ({args.assets_yaml}) — "
-            "먼저 add 로 종목을 등록하세요.",
-            file=sys.stderr,
-        )
-        return 1
-
-    print(f"새 DGT grid config 생성: {dest}")
     print(f"등록된 종목: {', '.join(codes)}")
     grid_params = collect_grid_params()
     chosen = _prompt_asset_codes(codes)
@@ -1416,6 +1413,38 @@ def cmd_grid_wizard(args: argparse.Namespace) -> int:
         f"'trading grid-backtest --config {dest} --csv CODE=path' 로 구동."
     )
     return 0
+
+
+def cmd_wizard(args: argparse.Namespace) -> int:
+    """새 config 를 대화식 생성 — 전략 종류(분할매수/DGT)를 먼저 고르고 분기.
+
+    DGT 는 매수/매도가 한 엔진이라 분할매수와 다른 파일(grid)·명령(grid-backtest)
+    을 쓴다(ADR 0022 §11). 이 입구에서 분기해 알맞은 config 를 생성한다 —
+    사용자가 grid-wizard 존재를 몰라도 wizard 한 번으로 DGT 까지 도달한다.
+    """
+    setup = _wizard_setup(args)
+    if isinstance(setup, int):
+        return setup
+    dest, assets_data, codes = setup
+    print(f"새 config 생성: {dest}")
+    paradigm = prompt_choice(
+        "전략 종류 (split=분할매수 PriceDrop / dgt=그리드 DGT)",
+        ["split", "dgt"],
+        "split",
+    )
+    if paradigm == "dgt":
+        return _wizard_grid(dest, assets_data, codes)
+    return _wizard_split(dest, assets_data, codes)
+
+
+def cmd_grid_wizard(args: argparse.Namespace) -> int:
+    """grid-wizard = wizard 의 DGT 분기 직행 단축 명령 (ADR 0022 §11 D15)."""
+    setup = _wizard_setup(args)
+    if isinstance(setup, int):
+        return setup
+    dest, assets_data, codes = setup
+    print(f"새 DGT grid config 생성: {dest}")
+    return _wizard_grid(dest, assets_data, codes)
 
 
 def cmd_diff(args: argparse.Namespace) -> int:
@@ -1515,7 +1544,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_new)
 
     sp = sub.add_parser(
-        "wizard", help="새 전략 파일을 대화식으로 생성 (전략 선택 + 범위 안내)"
+        "wizard",
+        help="새 config 대화식 생성 — 전략 종류(분할매수/DGT) 분기 + 범위 안내",
     )
     sp.add_argument("dest")
     add_assets_yaml(sp)
@@ -1523,7 +1553,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "grid-wizard",
-        help="새 DGT grid config 를 대화식으로 생성 (GridConfig 범위 안내)",
+        help="DGT grid config 직행 생성 (= wizard 의 dgt 분기 단축)",
     )
     sp.add_argument("dest")
     add_assets_yaml(sp)

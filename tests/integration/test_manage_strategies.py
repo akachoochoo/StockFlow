@@ -575,6 +575,7 @@ class TestWizard:
         _feed(
             monkeypatch,
             [
+                "split",     # 패러다임 → 분할매수
                 "",          # allocation → EQUAL
                 "",          # buy_strategy → price_drop
                 "",          # reentry → hybrid
@@ -602,11 +603,27 @@ class TestWizard:
         dest = tmp_path / "subset.yaml"
         _feed(
             monkeypatch,
-            ["", "", "", "5.0", "7", "5000000", "", "10.0", "", "60", "069500"],
+            ["split", "", "", "", "5.0", "7", "5000000", "", "10.0", "", "60",
+             "069500"],
         )
         rc = main(["wizard", str(dest), "--assets-yaml", str(assets_path)])
         assert rc == 0
         assert set(load_yaml(dest)["assets"]) == {"069500"}
+
+    def test_wizard_dgt_branch_creates_grid_config(
+        self, tmp_path: Path, assets_path: Path, monkeypatch
+    ):
+        from src.infrastructure.yaml_grid_config_loader import load_grid_config
+
+        dest = tmp_path / "via_wizard_grid.yaml"
+        n = len(grid_param_specs())
+        # 패러다임=dgt → grid 분기 (grid_count/fallback_k + 나머지 기본 + 종목)
+        _feed(monkeypatch, ["dgt", "11", "0.05", *[""] * (n - 2), "069500"])
+        rc = main(["wizard", str(dest), "--assets-yaml", str(assets_path)])
+        assert rc == 0
+        loaded = load_grid_config(dest)
+        assert set(loaded) == {"069500"}
+        assert loaded["069500"].config.grid_count == 11
 
 
 # ---------------------------------------------------------------------------

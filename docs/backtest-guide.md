@@ -11,12 +11,17 @@
 | 무엇 | 하락 시 분할 매수 + 목표가 익절 + 재진입 | 그리드 레벨 통과 시 자동 매수/매도 (횡보 수확·MDD 방어) |
 | 매수·매도 | 매수/매도/재진입 = **3개 전략 조합** | **1개 엔진**이 매수+매도 모두 (재중심 내장) |
 | config 파일 | `config/strategies-*.yaml` | `config/grid-*.yaml` |
-| 만드는 명령 | `manage_strategies.py add` / `wizard` / `set` | `manage_strategies.py grid-wizard` |
+| 만드는 명령 | `manage_strategies.py add` / `wizard`(split) / `set` | `manage_strategies.py wizard`(dgt) / `grid-wizard` |
 | 파라미터 | drop_threshold / max_split / profit_target / cooldown … | grid_count / k_min·k_max / measure(adr) / volume_gate … |
 | 백테스트 | `trading backtest --config` | `trading grid-backtest --config` |
 
-**핵심**: DGT는 `buy_strategy` 선택지가 **아닙니다**. `wizard`/`add`의 매수 전략
-목록에 DGT가 없는 건 정상입니다 — DGT는 별도 `grid-*.yaml` + `grid-backtest`로 갑니다.
+**가장 쉬운 시작**: `manage_strategies.py wizard <파일>` 을 실행하면 **맨 처음
+"split=분할매수 / dgt=그리드"를 물어보고** 알맞은 config 파일을 만들어 줍니다.
+어느 명령·파일을 쓸지 외울 필요 없이 wizard 하나로 양쪽 다 됩니다. (`grid-wizard`
+는 DGT 로 바로 가는 단축 명령일 뿐입니다.)
+
+**핵심**: DGT는 `buy_strategy` 선택지가 **아닙니다**. `add`의 매수 전략 목록에
+DGT가 없는 건 정상입니다 — DGT는 별도 `grid-*.yaml` + `grid-backtest`로 갑니다.
 
 잘못된 짝을 넣으면(예: `trading backtest --config grid-X.yaml`) 그냥 깨지지 않고
 **올바른 명령을 안내**합니다.
@@ -64,7 +69,9 @@ trading backtest --config config/strategies-X.yaml \
 
 ```bash
 # 1) DGT config 대화식 생성 (GridConfig 범위·기본값 안내)
-uv run python scripts/manage_strategies.py grid-wizard config/grid-X.yaml
+#    wizard 에서 'dgt' 를 골라도 되고, grid-wizard 로 바로 가도 됩니다.
+uv run python scripts/manage_strategies.py wizard config/grid-X.yaml   # → dgt 선택
+#   (또는) uv run python scripts/manage_strategies.py grid-wizard config/grid-X.yaml
 
 # 2) 데이터 받기 (위와 동일)
 uv run python scripts/download_kr_assets.py --code 069500 --start 2019-01-02 --end 2024-12-30
