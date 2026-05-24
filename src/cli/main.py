@@ -320,16 +320,23 @@ def _resolve_strategy_configs(
     max_sells_per_day: int,
     reentry_strategy: str,
     cooldown_days: int,
-) -> tuple[list[str], SplitStrategyConfig, SellStrategyConfig, str, dict[str, Any]]:
+) -> tuple[
+    list[str], SplitStrategyConfig, SellStrategyConfig, str, dict[str, Any], str
+]:
     """Resolve strategy configs from either --config or flags.
 
     Returns ``(asset_codes, buy_config, sell_config, reentry_name,
-    reentry_params)``.
+    reentry_params, buy_strategy_name)``.
 
     - ``asset_codes``: ordered list of enabled asset codes from YAML, or
       ``["069500"]`` for the flag-only (backward-compat) path.
     - Policy fields come from the first enabled bundle (uniformity
       validated by the YAML loader — ADR 0003 §7.3).
+    - ``buy_strategy_name``: the YAML ``buy_strategy`` (``price_drop`` /
+      ``support_level``); ``price_drop`` for the flag-only path. Callers must
+      forward this to the runner/component builders so a ``--config`` actually
+      dispatches its declared buy strategy (ADR 0022 §11 D16 — previously the
+      name was dropped here and every ``--config`` ran ``price_drop``).
 
     Raises ``click.UsageError`` on conflict (--config + strategy flag) or
     moving_average requested without --config.
@@ -354,6 +361,7 @@ def _resolve_strategy_configs(
             bundle.sell_config,
             bundle.reentry_strategy_name,
             dict(bundle.reentry_parameters),
+            bundle.buy_strategy_name,
         )
 
     # Flag-only path: KODEX 200 backward compat (single asset).
@@ -378,6 +386,7 @@ def _resolve_strategy_configs(
         ),
         "hybrid",
         {"cooldown_days": cooldown_days},
+        "price_drop",
     )
 
 
@@ -496,7 +505,7 @@ def backtest(
 ) -> None:
     """Replay historical OHLCV through the strategy + mock adapters."""
     with safety.lock_file():
-        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params, buy_strategy_name = (
             _resolve_strategy_configs(
                 ctx,
                 config_path,
@@ -517,6 +526,7 @@ def backtest(
         runner = BacktestRunner(
             assets=assets,
             strategy_config=buy_config,
+            buy_strategy_name=buy_strategy_name,
             sell_strategy_config=sell_config,
             reentry_strategy_name=reentry_name,
             reentry_parameters=reentry_params,
@@ -771,7 +781,7 @@ def paper(
         # CLAUDE.md §3.3 — verify clock sync before any live trade. Fail-closed
         # (raises ClockSkewError → halt). Backtest skips this (historical data).
         safety.verify_ntp_sync()
-        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params, buy_strategy_name = (
             _resolve_strategy_configs(
                 ctx,
                 config_path,
@@ -797,6 +807,7 @@ def paper(
             db_path=db_path,
             initial_capital=_krw(capital),
             strategy_config=buy_config,
+            buy_strategy_name=buy_strategy_name,
             sell_strategy_config=sell_config,
             reentry_strategy_name=reentry_name,
             reentry_parameters=reentry_params,
@@ -1068,7 +1079,7 @@ def dry_run(
     today = trade_date.date() if trade_date is not None else _dt.now(KST).date()
 
     with safety.lock_file():
-        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params, buy_strategy_name = (
             _resolve_strategy_configs(
                 ctx,
                 config_path,
@@ -1116,6 +1127,7 @@ def dry_run(
             db_path=db_path,
             initial_capital=_krw(capital),
             strategy_config=buy_config,
+            buy_strategy_name=buy_strategy_name,
             sell_strategy_config=sell_config,
             reentry_strategy_name=reentry_name,
             reentry_parameters=reentry_params,
@@ -1320,7 +1332,7 @@ def live(
             )
             raise click.exceptions.Exit(1) from exc
 
-        asset_codes, buy_config, sell_config, reentry_name, reentry_params = (
+        asset_codes, buy_config, sell_config, reentry_name, reentry_params, buy_strategy_name = (
             _resolve_strategy_configs(
                 ctx,
                 config_path,
@@ -1366,6 +1378,7 @@ def live(
                 assets=assets,
                 db_path=db_path,
                 strategy_config=buy_config,
+                buy_strategy_name=buy_strategy_name,
                 sell_strategy_config=sell_config,
                 reentry_strategy_name=reentry_name,
                 reentry_parameters=reentry_params,
