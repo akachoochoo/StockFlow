@@ -31,6 +31,22 @@ DGT가 없는 건 정상입니다 — DGT는 별도 `grid-*.yaml` + `grid-backte
 
 ---
 
+## 가장 쉽게: 데이터+백테스트 한 번에 (파이프라인)
+
+config만 있으면 **데이터 자동 다운로드 → 백테스트**를 한 명령으로:
+
+```bash
+uv run python scripts/run_backtest.py --config config/my.yaml \
+  --start 2025-12-02 --end 2026-05-20 --capital 10000000
+```
+- config의 종목들을 읽어 **없는 기간 데이터만 pykrx로 받고**(있으면 스킵),
+- `trading backtest --config ...`로 위임 → 분할매수/DGT 자동 라우팅.
+
+> 네트워크(pykrx)는 이 `scripts/` 파이프라인에만 있습니다. 본 `trading` CLI는
+> 오프라인 재생 전용(네트워크 없음)이라, 데이터 준비는 의도적으로 분리돼 있습니다.
+
+아래는 단계를 직접 밟는 방법입니다(데이터를 따로 받아두고 여러 번 돌릴 때).
+
 ## 공통 전제: 종목은 `config/assets.yaml`에 등록돼야 함
 
 두 패러다임 모두 종목코드가 `config/assets.yaml`(레지스트리)에 있어야 동작합니다.
