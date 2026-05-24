@@ -40,7 +40,11 @@ uv run python scripts/run_backtest.py --config config/my.yaml \
   --start 2025-12-02 --end 2026-05-20 --capital 10000000
 ```
 - config의 종목들을 읽어 **없는 기간 데이터만 pykrx로 받고**(있으면 스킵),
-- `trading backtest --config ...`로 위임 → 분할매수/DGT 자동 라우팅.
+- `trading backtest --config ...`로 위임 → 분할매수/DGT 자동 라우팅,
+- **백테스트 후 차트/리포트를 자동 생성** → `reports/<config>_<start>_<end>/`:
+  DGT는 **인터랙티브 차트**(`<종목>.html`, lightweight-charts 캔들+그리드+거래마커),
+  분할매수는 **episode HTML 리포트**(`index.html` + 구간별). `--no-report`로 끌 수 있고,
+  `--report-dir`로 위치 지정.
 
 > 네트워크(pykrx)는 이 `scripts/` 파이프라인에만 있습니다. 본 `trading` CLI는
 > 오프라인 재생 전용(네트워크 없음)이라, 데이터 준비는 의도적으로 분리돼 있습니다.

@@ -25,6 +25,7 @@ import sys
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -38,6 +39,168 @@ from src.infrastructure.asset_csv import derive_csv_path  # noqa: E402
 # Injection seams (tests override; defaults touch network / run the real CLI).
 Downloader = Callable[[str, date, date, Path], None]
 Runner = Callable[[list[str]], int]
+Reporter = Callable[..., None]
+
+
+def _krw(amount: int) -> Any:
+    from src.domain.models import Currency, Money
+
+    return Money(amount=__import__("decimal").Decimal(amount), currency=Currency.KRW)
+
+
+class _MarkerView:
+    """Adapt a domain GridTrade to the duck-type _serialize_markers expects
+    (``trade_date`` / ``side`` / ``grid_level_price``)."""
+
+    def __init__(self, trade: Any) -> None:
+        self.trade_date = trade.trade_date
+        self.side = "BUY" if str(trade.side) in ("BUY", "OrderSide.BUY") else (
+            trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+        )
+        self.grid_level_price = trade.level_price
+
+
+def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) -> str:
+    """도메인 GridRunResult → lightweight-charts 인터랙티브 HTML.
+
+    캔들 + 거래량 + 매수/매도 마커 + 초기 그리드 라인. 시변(time-varying) 그리드
+    엔벨로프는 research 결과 shape 의존이라 본 버전에서는 제외(초기 그리드만).
+    """
+    from html import escape
+
+    from src.domain.strategies.grid_math import adaptive_k, grid_levels
+    from src.research.dgt._interactive_chart import (
+        _serialize_grid_levels,
+        _serialize_markers,
+        _serialize_ohlcv,
+        _serialize_volume,
+        build_interactive_chart_html,
+    )
+
+    date_set = {b.trade_date.strftime("%Y-%m-%d") for b in bars}
+    markers = _serialize_markers([_MarkerView(t) for t in result.trades], date_set)
+
+    reference = bars[0].close
+    k0 = adaptive_k(
+        bars, 0, reference,
+        period=config.atr_period, multiplier=config.multiplier,
+        k_min=config.k_min, k_max=config.k_max, fallback_k=config.fallback_k,
+        measure=config.volatility_measure,
+    )
+    levels = grid_levels(config.grid_count, reference, k0, config.levels_above)
+    # _serialize_grid_levels is duck-typed (dict or object) — use a dict.
+    grid_artifact = {"grid_levels": list(levels), "reference_price": reference}
+
+    return build_interactive_chart_html(
+        title=f"{escape(asset.name)} ({escape(asset.code)}) — DGT 백테스트",
+        ohlcv=_serialize_ohlcv(bars),
+        volume=_serialize_volume(bars),
+        marker_groups=[{"label": asset.code, "markers": markers}],
+        grid_levels=_serialize_grid_levels(grid_artifact),
+    )
+
+
+def _report_grid(
+    config_path: Path, csv_map: dict[str, Path], start: date, end: date,
+    capital: int, report_dir: Path,
+) -> None:
+    """DGT config → 종목별 인터랙티브 차트 HTML 생성."""
+    from src.application.grid_portfolio_backtest import (
+        GridAssetInput,
+        run_grid_portfolio,
+    )
+    from src.cli import composition
+    from src.infrastructure.csv_market_data_loader import load_ohlcv_csv
+    from src.infrastructure.yaml_grid_config_loader import load_grid_config
+
+    enabled = [
+        (c, b) for c, b in load_grid_config(config_path).items() if b.enabled
+    ]
+    inputs: list[Any] = []
+    metas: list[tuple] = []
+    for code, bundle in enabled:
+        asset = composition.asset_from_code(code)
+        bars = [
+            bar
+            for bar in load_ohlcv_csv(csv_map[code], asset)
+            if start <= bar.trade_date <= end
+        ]
+        if not bars:
+            print(f"  [{code}] 기간 데이터 없음 — 차트 스킵", file=sys.stderr)
+            continue
+        inputs.append(GridAssetInput(asset=asset, bars=bars, config=bundle.config))
+        metas.append((asset, bars, bundle.config))
+    if not inputs:
+        return
+    port = run_grid_portfolio(inputs, initial_capital=_krw(capital))
+    report_dir.mkdir(parents=True, exist_ok=True)
+    for (asset, bars, cfg), run in zip(metas, port.per_asset, strict=True):
+        html = build_dgt_chart_html(asset, bars, cfg, run.result)
+        out = report_dir / f"{asset.code}.html"
+        out.write_text(html, encoding="utf-8")
+        print(f"  인터랙티브 차트: {out}")
+
+
+def _report_split(
+    config_path: Path, csv_map: dict[str, Path], start: date, end: date,
+    capital: int, report_dir: Path,
+) -> None:
+    """분할매수 config → drawdown episode HTML 리포트 생성."""
+    import click
+
+    from src.application.backtest_runner import BacktestRunner
+    from src.application.reporting.report import generate_episode_report
+    from src.cli.main import (
+        _resolve_assets_and_bars,
+        _resolve_per_asset_overrides,
+        _resolve_strategy_configs,
+    )
+    from src.cli.main import (
+        main as _trading_main,
+    )
+
+    codes, buy_config, sell_config, reentry_name, reentry_params, buy_name = (
+        _resolve_strategy_configs(
+            click.Context(_trading_main), config_path,
+            drop_pct="5.0", max_split=7, per_split_amount=500000,
+            max_split_per_day=1, profit_target_pct="10.0", max_sells_per_day=7,
+            reentry_strategy="hybrid", cooldown_days=60,
+        )
+    )
+    assets, ohlcv_by_asset = _resolve_assets_and_bars(
+        codes, {code: csv_map[code] for code in codes}
+    )
+    result = BacktestRunner(
+        assets=assets,
+        strategy_config=buy_config,
+        buy_strategy_name=buy_name,
+        sell_strategy_config=sell_config,
+        reentry_strategy_name=reentry_name,
+        reentry_parameters=reentry_params,
+        initial_capital=_krw(capital),
+        ohlcv_by_asset=ohlcv_by_asset,
+        per_asset_overrides=_resolve_per_asset_overrides(config_path),
+    ).run(start, end)
+    rep = generate_episode_report(
+        backtest_result=result,
+        strategy_id=buy_name,
+        output_dir=report_dir,
+        bars_by_asset={a.code: ohlcv_by_asset[a] for a in assets},
+    )
+    print(f"  episode 리포트: {rep.index_html_path} ({len(rep.episodes)} 구간)")
+
+
+def _default_reporter(
+    config_path: Path, csv_map: dict[str, Path], start: date, end: date,
+    capital: int, report_dir: Path,
+) -> None:
+    """config 종류에 맞는 리포트 생성 (DGT 인터랙티브 / split episode HTML)."""
+    from src.cli.main import _detect_config_kind
+
+    if _detect_config_kind(config_path) == "grid":
+        _report_grid(config_path, csv_map, start, end, capital, report_dir)
+    else:
+        _report_split(config_path, csv_map, start, end, capital, report_dir)
 
 
 def enabled_codes(config_path: Path | str) -> list[str]:
@@ -116,20 +279,29 @@ def run_pipeline(
     *,
     as_json: bool = False,
     data_dir: Path | None = None,
+    report_dir: Path | None = None,
+    report: bool = True,
     downloader: Downloader = _default_downloader,
     runner: Runner = _default_runner,
+    reporter: Reporter = _default_reporter,
 ) -> int:
-    """데이터 확보 → ``trading backtest`` 위임. CLI exit code 반환."""
+    """데이터 확보 → ``trading backtest`` 위임 → (기본) 리포트/차트 생성.
+
+    ``report=True`` (기본): 백테스트 후 결과로 인터랙티브 차트(DGT) 또는 episode
+    HTML(split)을 ``report_dir`` 에 생성한다. config 종류는 자동 판별.
+    """
     codes = enabled_codes(config_path)
     if not codes:
         print(f"{config_path} 에 enabled 종목이 없습니다.", file=sys.stderr)
         return 1
 
+    csv_map: dict[str, Path] = {}
     csv_args: list[str] = []
     for code in codes:
         csv = ensure_data(
             code, start, end, data_dir=data_dir, downloader=downloader
         )
+        csv_map[code] = csv
         csv_args += ["--csv", f"{code}={csv}"]
 
     args = [
@@ -147,7 +319,17 @@ def run_pipeline(
     if as_json:
         args.append("--json")
     print(f"실행: trading {' '.join(args)}")
-    return runner(args)
+    rc = runner(args)
+    if rc != 0 or not report:
+        return rc
+
+    rdir = report_dir or (
+        _REPO_ROOT / "reports"
+        / f"{config_path.stem}_{start.isoformat()}_{end.isoformat()}"
+    )
+    print(f"리포트 생성 → {rdir}")
+    reporter(config_path, csv_map, start, end, capital, rdir)
+    return rc
 
 
 def _parse_iso(s: str) -> date:
@@ -173,6 +355,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="CSV 저장 디렉터리 (기본 data/historical)",
     )
+    p.add_argument(
+        "--report-dir",
+        type=Path,
+        default=None,
+        help="리포트/차트 출력 디렉터리 (기본 reports/<config>_<start>_<end>)",
+    )
+    p.add_argument(
+        "--no-report",
+        action="store_true",
+        help="백테스트 후 차트/리포트 생성 생략",
+    )
     return p
 
 
@@ -186,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
             args.capital,
             as_json=args.json,
             data_dir=args.data_dir,
+            report_dir=args.report_dir,
+            report=not args.no_report,
         )
     except (ValueError, FileNotFoundError) as exc:
         print(f"오류: {exc}", file=sys.stderr)

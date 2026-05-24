@@ -96,7 +96,7 @@ class TestRunPipeline:
 
         rc = run_pipeline(
             cfg, _START, _END, 10_000_000,
-            data_dir=data_dir, downloader=fake_dl, runner=fake_run,
+            data_dir=data_dir, downloader=fake_dl, runner=fake_run, report=False,
         )
         assert rc == 0
         # 없는 데이터 → 다운로드 1회 (069500), 경로 = data_dir/표준파일명
@@ -118,7 +118,7 @@ class TestRunPipeline:
         called: list = []
         run_pipeline(
             cfg, _START, _END, 10_000_000, data_dir=data_dir,
-            downloader=lambda *a: called.append(a), runner=lambda args: 0,
+            downloader=lambda *a: called.append(a), runner=lambda args: 0, report=False,
         )
         assert called == []  # 이미 있으므로 다운로드 스킵
 
@@ -130,7 +130,7 @@ class TestRunPipeline:
             cfg, _START, _END, 25_000_000, as_json=True, data_dir=data_dir,
             downloader=lambda c, s, e, out: out.parent.mkdir(parents=True, exist_ok=True)
             or out.write_text("x", encoding="utf-8"),
-            runner=lambda args: captured.update(args=args) or 0,
+            runner=lambda args: captured.update(args=args) or 0, report=False,
         )
         assert "--json" in captured["args"]
 
@@ -159,3 +159,112 @@ class TestCsvPathFor:
     def test_custom_dir(self, tmp_path):
         p = csv_path_for("069500", _START, _END, tmp_path)
         assert p == tmp_path / "KRX_069500_2025-2026.csv"
+
+
+# ---------------------------------------------------------------------------
+# Reporter (백테스트 후 차트/리포트 생성)
+# ---------------------------------------------------------------------------
+def _noop_dl(code, start, end, out):
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("x", encoding="utf-8")
+
+
+class TestReporterDispatch:
+    def test_reporter_called_on_success(self, tmp_path):
+        cfg = _grid_cfg(tmp_path / "g.yaml")
+        rec: dict = {}
+        run_pipeline(
+            cfg, _START, _END, 1_000_000, data_dir=tmp_path / "d",
+            downloader=_noop_dl, runner=lambda args: 0,
+            reporter=lambda *a: rec.update(args=a),
+        )
+        assert rec.get("args") is not None
+        assert rec["args"][0] == cfg  # config_path 전달
+        assert "069500" in rec["args"][1]  # csv_map
+
+    def test_reporter_skipped_when_runner_fails(self, tmp_path):
+        cfg = _grid_cfg(tmp_path / "g.yaml")
+        rec: list = []
+        rc = run_pipeline(
+            cfg, _START, _END, 1_000_000, data_dir=tmp_path / "d",
+            downloader=_noop_dl, runner=lambda args: 1,
+            reporter=lambda *a: rec.append(a),
+        )
+        assert rc == 1 and rec == []  # 실패 → 리포트 스킵
+
+    def test_reporter_skipped_when_disabled(self, tmp_path):
+        cfg = _grid_cfg(tmp_path / "g.yaml")
+        rec: list = []
+        run_pipeline(
+            cfg, _START, _END, 1_000_000, data_dir=tmp_path / "d", report=False,
+            downloader=_noop_dl, runner=lambda args: 0,
+            reporter=lambda *a: rec.append(a),
+        )
+        assert rec == []
+
+
+_RS, _RE = date(2024, 1, 1), date(2024, 1, 20)
+_CLOSES = [
+    35000, 36400, 38200, 37100, 34500, 32800, 31000, 33200, 35600, 38800,
+    41200, 39500, 36900, 34100, 31500, 29800, 32400, 35100, 37800, 40500,
+]
+
+
+def _write_ohlcv(path: Path) -> Path:
+    import datetime as _dt
+
+    lines = ["date,open,high,low,close,volume"]
+    for i, c in enumerate(_CLOSES):
+        opn = _CLOSES[i - 1] if i > 0 else c
+        hi, lo = max(opn, c) + 400, min(opn, c) - 400
+        d = _RS + _dt.timedelta(days=i)
+        lines.append(f"{d.isoformat()},{opn},{hi},{lo},{c},1000000")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+class TestReporterE2E:
+    def test_build_dgt_chart_html(self):
+        import tempfile
+        from decimal import Decimal
+
+        from scripts.run_backtest import build_dgt_chart_html
+
+        from src.cli.composition import asset_from_code
+        from src.domain.models import Currency, Money
+        from src.domain.strategies.grid import GridConfig
+        from src.infrastructure.csv_market_data_loader import load_ohlcv_csv
+        from src.use_cases.grid_runner import GridRunner
+
+        asset = asset_from_code("069500")
+        with tempfile.TemporaryDirectory() as d:
+            csv = _write_ohlcv(__import__("pathlib").Path(d) / "x.csv")
+            bars = load_ohlcv_csv(csv, asset)
+        cfg = GridConfig(grid_count=11, fallback_k=Decimal("0.05"))
+        result = GridRunner().run(
+            asset=asset, bars=bars, config=cfg,
+            initial_capital=Money(amount=Decimal("10000000"), currency=Currency.KRW),
+        )
+        html = build_dgt_chart_html(asset, bars, cfg, result)
+        assert "lightweight-charts" in html.lower() or "candlestick" in html.lower()
+        assert "069500" in html
+
+    def test_report_grid_writes_interactive_chart(self, tmp_path):
+        from scripts.run_backtest import _report_grid
+
+        csv = _write_ohlcv(tmp_path / "x.csv")
+        cfg = _grid_cfg(tmp_path / "g.yaml")
+        rdir = tmp_path / "rpt"
+        _report_grid(cfg, {"069500": csv}, _RS, _RE, 10_000_000, rdir)
+        chart = rdir / "069500.html"
+        assert chart.exists()
+        assert "lightweight-charts" in chart.read_text(encoding="utf-8").lower()
+
+    def test_report_split_writes_episode_index(self, tmp_path):
+        from scripts.run_backtest import _report_split
+
+        csv = _write_ohlcv(tmp_path / "x.csv")
+        cfg = _strategies_cfg(tmp_path / "s.yaml")
+        rdir = tmp_path / "rpt"
+        _report_split(cfg, {"069500": csv}, _RS, _RE, 10_000_000, rdir)
+        assert (rdir / "index.html").exists()
