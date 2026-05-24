@@ -33,6 +33,9 @@
     uv run python scripts/manage_strategies.py new      <dest.yaml> --from <src.yaml>
     # 새 전략 파일을 백지에서 대화식 생성 (전략 선택 → 범위 안내 → 종목 선택).
     uv run python scripts/manage_strategies.py wizard   <dest.yaml> [--assets-yaml PATH]
+    # DGT grid config (별도 파일, ADR 0022 §11) — GridConfig 범위 안내 대화식 생성.
+    #   trading grid-backtest --config <dest> --csv CODE=path 로 구동.
+    uv run python scripts/manage_strategies.py grid-wizard <dest.yaml> [--assets-yaml PATH]
     uv run python scripts/manage_strategies.py diff     <a.yaml> <b.yaml>
 
 설계 노트:
@@ -65,7 +68,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, Literal, get_args, get_origin
 
 import yaml
 
@@ -74,11 +77,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from src.domain.strategies.grid import GridConfig  # noqa: E402
 from src.infrastructure.yaml_asset_loader import (  # noqa: E402
     load_asset_registry,
 )
-from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
-    load_strategy_config,
+from src.infrastructure.yaml_grid_config_loader import (  # noqa: E402
+    load_grid_config,
 )
 
 # Private raw-YAML schemas reused for parameter introspection (default / range).
@@ -87,9 +91,18 @@ from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
 # `validate` reusing the real loaders).
 from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
     _AssetEntry as _LoaderAssetEntry,
+)
+from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
     _BuyParams as _LoaderBuyParams,
+)
+from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
     _ReentryParams as _LoaderReentryParams,
+)
+from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
     _SellParams as _LoaderSellParams,
+)
+from src.infrastructure.yaml_strategy_config_loader import (  # noqa: E402
+    load_strategy_config,
 )
 
 _DEFAULT_ASSETS_YAML = _REPO_ROOT / "config" / "assets.yaml"
@@ -132,6 +145,11 @@ _ASSETS_HEADER = (
     "# config/assets.yaml — 데이터 주도 자산 메타데이터 레지스트리.\n"
     "# scripts/manage_strategies.py 로 갱신됨 (pyyaml 재작성, 원본 주석 제거).\n"
     "# money-critical 필드(tick_size / listed_at)는 KRX/DART 공식 자료 확인.\n"
+)
+_GRID_HEADER = (
+    "# DGT grid config — scripts/manage_strategies.py grid-wizard 로 생성 (ADR 0022\n"
+    "# §11). 'trading grid-backtest --config <이파일> --csv CODE=path' 로 구동.\n"
+    "# grid_parameters = GridConfig 필드 (생략 시 기본값). backtest/paper 전용.\n"
 )
 
 
@@ -455,6 +473,14 @@ def _validate_assets(data: dict[str, Any]) -> None:
         load_asset_registry(p)
 
 
+def _validate_grid(data: dict[str, Any]) -> None:
+    """Run the real grid loader on ``data`` (raises on invalid) — drift-free."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "grid.yaml"
+        _dump_yaml(p, data, "")
+        load_grid_config(p)
+
+
 def available_codes(assets_data: dict[str, Any]) -> set[str]:
     """All resolvable codes (assets.yaml = 단일 정본, ADR 0021 §7.1)."""
     return set(assets_data.get("assets", {}))
@@ -588,10 +614,11 @@ class ParamSpec:
     """
 
     key: str
-    kind: str  # "int" | "decimal" | "str"
+    kind: str  # "int" | "decimal" | "bool" | "str"
     default: Any | None  # None when the field is required (no usable default)
     required: bool
     bounds: dict[str, Any]  # subset of {"gt","ge","lt","le"}
+    choices: list[str] | None = None  # Literal[...] options (e.g. atr/adr)
 
 
 # Phase 1+/structural fields excluded from interactive entry.
@@ -599,16 +626,27 @@ _BUY_SKIP = frozenset({"max_loss_pct"})
 
 
 def _kind_of(annotation: Any) -> str:
-    """Map a (possibly Optional) annotation to 'int'/'decimal'/'str'."""
+    """Map a (possibly Optional) annotation to 'int'/'decimal'/'bool'/'str'."""
+    if get_origin(annotation) is Literal:
+        return "str"  # choices carried separately (see _choices_of)
     base = annotation
     args = [a for a in get_args(annotation) if a is not type(None)]
     if args:
         base = args[0]
+    if base is bool:  # before int — bool is an int subclass
+        return "bool"
     if base is Decimal:
         return "decimal"
     if base is int:
         return "int"
     return "str"
+
+
+def _choices_of(annotation: Any) -> list[str] | None:
+    """Literal[...] members as strings, else None (for choice prompts)."""
+    if get_origin(annotation) is Literal:
+        return [str(a) for a in get_args(annotation)]
+    return None
 
 
 def _bounds_of(field_info: Any) -> dict[str, Any]:
@@ -634,9 +672,15 @@ def _specs_from(model: Any, skip: frozenset[str] = frozenset()) -> list[ParamSpe
                 default=None if field_info.is_required() else field_info.default,
                 required=field_info.is_required(),
                 bounds=_bounds_of(field_info),
+                choices=_choices_of(field_info.annotation),
             )
         )
     return specs
+
+
+def grid_param_specs() -> list[ParamSpec]:
+    """DGT GridConfig fields (single source of truth — ADR 0022 §11 D15)."""
+    return _specs_from(GridConfig)
 
 
 def buy_param_specs() -> list[ParamSpec]:
@@ -705,6 +749,13 @@ def parse_param_value(spec: ParamSpec, raw: str) -> Any:
             raise ValueError(f"{spec.key}: 숫자가 필요합니다 ({raw!r}).") from exc
         _check_bounds(spec, dval)
         return float(dval)
+    if spec.kind == "bool":
+        low = raw.lower()
+        if low in ("true", "yes", "y", "1"):
+            return True
+        if low in ("false", "no", "n", "0"):
+            return False
+        raise ValueError(f"{spec.key}: true/false 가 필요합니다 ({raw!r}).")
     return raw
 
 
@@ -720,8 +771,16 @@ def _ask(prompt: str) -> str:
 
 def prompt_param(spec: ParamSpec, current: Any | None = None) -> Any:
     """Prompt for one parameter. Empty input keeps ``current`` (edit flow) or
-    the schema default (wizard flow); required fields with neither re-ask."""
+    the schema default (wizard flow); required fields with neither re-ask.
+
+    Bool fields → yes/no prompt; Literal fields → choice prompt (Enter=keep).
+    """
     keep = current if current is not None else spec.default
+    if spec.kind == "bool":
+        return confirm(f"  {spec.key}", default=bool(keep))
+    if spec.choices:
+        default_choice = str(keep) if keep is not None else spec.choices[0]
+        return prompt_choice(f"  {spec.key}", spec.choices, default_choice)
     keep_txt = f"현재 {current}" if current is not None else (
         f"기본 {spec.default}" if spec.default is not None else "필수"
     )
@@ -791,6 +850,21 @@ def collect_strategy_params(
         out["reentry_parameters"][spec.key] = prompt_param(
             spec, cur.get("reentry_parameters", {}).get(spec.key)
         )
+    return out
+
+
+def collect_grid_params() -> dict[str, Any]:
+    """Interactively gather a DGT ``GridConfig`` as a grid_parameters dict.
+
+    Required fields (grid_count / fallback_k) are always emitted; optional
+    fields only when changed from the GridConfig default → minimal YAML.
+    """
+    print("그리드 파라미터 (Enter=기본값):")
+    out: dict[str, Any] = {}
+    for spec in grid_param_specs():
+        value = prompt_param(spec)
+        if spec.required or value != spec.default:
+            out[spec.key] = value
     return out
 
 
@@ -1292,6 +1366,58 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_grid_wizard(args: argparse.Namespace) -> int:
+    """Create a new DGT grid config interactively (ADR 0022 §11 D15).
+
+    strategies.yaml(split 전략)과 분리된 grid 전용 config — ``grid-backtest
+    --config`` 가 쓴다. GridConfig 필드를 introspect 해 기본값·범위·Literal 선택을
+    안내한다(drift zero). 선택한 모든 종목에 동일 GridConfig 적용(종목별 차등은
+    파일 직접 편집 — grid 로더는 균일성 강제 없음).
+    """
+    dest = Path(args.dest)
+    if dest.exists():
+        print(f"대상 파일이 이미 존재합니다: {dest}", file=sys.stderr)
+        return 1
+    assets_data = load_assets_data(args.assets_yaml)
+    codes = sorted(available_codes(assets_data))
+    if not codes:
+        print(
+            f"assets.yaml 에 등록된 종목이 없습니다 ({args.assets_yaml}) — "
+            "먼저 add 로 종목을 등록하세요.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"새 DGT grid config 생성: {dest}")
+    print(f"등록된 종목: {', '.join(codes)}")
+    grid_params = collect_grid_params()
+    chosen = _prompt_asset_codes(codes)
+    if not chosen:
+        print("종목을 하나 이상 선택해야 합니다 — 생성하지 않았습니다.", file=sys.stderr)
+        return 1
+
+    data: dict[str, Any] = {"version": "1.0", "assets": {}}
+    for code in chosen:
+        data["assets"][code] = {
+            "name": assets_data["assets"][code].get("name", code),
+            "enabled": True,
+            "grid_parameters": dict(grid_params),
+        }
+
+    try:
+        _validate_grid(data)
+    except Exception as e:
+        print(f"검증 실패 — 생성하지 않았습니다: {e}", file=sys.stderr)
+        return 1
+
+    _dump_yaml(dest, data, _GRID_HEADER)
+    print(
+        f"생성됨 ✓ {dest} — {len(chosen)} 종목 (DGT grid). "
+        f"'trading grid-backtest --config {dest} --csv CODE=path' 로 구동."
+    )
+    return 0
+
+
 def cmd_diff(args: argparse.Namespace) -> int:
     print(format_diff(load_yaml(args.file_a), load_yaml(args.file_b)))
     return 0
@@ -1394,6 +1520,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("dest")
     add_assets_yaml(sp)
     sp.set_defaults(func=cmd_wizard)
+
+    sp = sub.add_parser(
+        "grid-wizard",
+        help="새 DGT grid config 를 대화식으로 생성 (GridConfig 범위 안내)",
+    )
+    sp.add_argument("dest")
+    add_assets_yaml(sp)
+    sp.set_defaults(func=cmd_grid_wizard)
 
     sp = sub.add_parser("diff", help="두 전략 파일 비교")
     sp.add_argument("file_a")

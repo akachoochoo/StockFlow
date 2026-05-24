@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -30,12 +31,14 @@ from scripts.manage_strategies import (  # noqa: E402
     add_strategy_entry,
     available_codes,
     buy_param_specs,
+    collect_grid_params,
     collect_strategy_params,
     confirm,
     cross_check,
     find_template_entry,
     format_diff,
     format_list,
+    grid_param_specs,
     load_assets_data,
     load_yaml,
     main,
@@ -839,3 +842,64 @@ class TestAddBootstrap:
         )
         assert rc == 0  # clean cancel
         assert not strat.exists()
+
+
+# ---------------------------------------------------------------------------
+# grid config introspection + grid-wizard (ADR 0022 §11 D15)
+# ---------------------------------------------------------------------------
+class TestGridParamSpecs:
+    def test_includes_bool_and_literal(self):
+        by = {s.key: s for s in grid_param_specs()}
+        assert by["grid_count"].required and by["grid_count"].kind == "int"
+        assert by["fallback_k"].required and by["fallback_k"].kind == "decimal"
+        assert by["volume_gate"].kind == "bool"
+        assert by["rebalance_mode"].choices == ["on_breach", "daily"]
+        assert by["volatility_measure"].choices == ["atr", "adr"]
+
+    def test_parse_bool(self):
+        spec = ParamSpec("x", "bool", False, False, {})
+        assert parse_param_value(spec, "true") is True
+        assert parse_param_value(spec, "n") is False
+        with pytest.raises(ValueError):
+            parse_param_value(spec, "maybe")
+
+
+class TestCollectGridParams:
+    def test_defaults_only_emit_required(self, monkeypatch):
+        n = len(grid_param_specs())
+        _feed(monkeypatch, ["11", "0.05", *[""] * (n - 2)])
+        assert collect_grid_params() == {"grid_count": 11, "fallback_k": 0.05}
+
+    def test_changed_optional_emitted(self, monkeypatch):
+        answers = []
+        for s in grid_param_specs():
+            answers.append(
+                {"grid_count": "11", "fallback_k": "0.05",
+                 "volatility_measure": "atr", "volume_gate": "y"}.get(s.key, "")
+            )
+        _feed(monkeypatch, answers)
+        out = collect_grid_params()
+        assert out["volatility_measure"] == "atr"
+        assert out["volume_gate"] is True
+        assert "atr_period" not in out  # unchanged default → skipped
+
+
+class TestGridWizard:
+    def test_creates_valid_grid_config(self, tmp_path, assets_path, monkeypatch):
+        from src.infrastructure.yaml_grid_config_loader import load_grid_config
+
+        dest = tmp_path / "grid.yaml"
+        n = len(grid_param_specs())
+        _feed(monkeypatch, ["11", "0.05", *[""] * (n - 2), "069500"])
+        rc = main(["grid-wizard", str(dest), "--assets-yaml", str(assets_path)])
+        assert rc == 0
+        loaded = load_grid_config(dest)
+        assert set(loaded) == {"069500"}
+        assert loaded["069500"].config.grid_count == 11
+        assert loaded["069500"].config.fallback_k == Decimal("0.05")
+
+    def test_refuses_existing_dest(self, strat_path, assets_path):
+        rc = main(
+            ["grid-wizard", str(strat_path), "--assets-yaml", str(assets_path)]
+        )
+        assert rc == 1
