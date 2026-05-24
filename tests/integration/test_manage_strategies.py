@@ -920,3 +920,31 @@ class TestGridWizard:
             ["grid-wizard", str(strat_path), "--assets-yaml", str(assets_path)]
         )
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# 파라미터 의미/영향 안내 (_PARAM_HELP)
+# ---------------------------------------------------------------------------
+class TestParamHelp:
+    def test_help_covers_all_specs(self):
+        from scripts.manage_strategies import _PARAM_HELP
+
+        keys: set[str] = set()
+        for spec in buy_param_specs():
+            keys.add(spec.key)
+        for spec in sell_param_specs():
+            keys.add(spec.key)
+        for spec in reentry_param_specs("hybrid"):
+            keys.add(spec.key)
+        for spec in reentry_param_specs("moving_average"):
+            keys.add(spec.key)
+        for spec in grid_param_specs():
+            keys.add(spec.key)
+        missing = keys - set(_PARAM_HELP)
+        assert not missing, f"_PARAM_HELP 누락: {missing}"
+
+    def test_prompt_param_prints_help(self, monkeypatch, capsys):
+        _feed(monkeypatch, ["11"])
+        spec = next(s for s in grid_param_specs() if s.key == "grid_count")
+        assert prompt_param(spec) == 11
+        assert "그리드 레벨 수" in capsys.readouterr().out  # _PARAM_HELP 발췌

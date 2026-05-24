@@ -770,13 +770,72 @@ def _ask(prompt: str) -> str:
     return input(prompt)
 
 
+# 파라미터 의미 + 영향도 (wizard UX 소유 — 범위/기본값은 introspect, 설명은 prose).
+# 새 파라미터 추가 시 여기도 채울 것 (test_param_help_covers_all_specs 가 강제).
+_PARAM_HELP: dict[str, str] = {
+    # 선택지(전략 TYPE)
+    "paradigm": "split=하락 분할매수+익절(추세장 유리) / dgt=그리드 자동매매"
+    "(횡보 수확·MDD 방어, 강세장은 B&H 미달이 설계상 trade-off).",
+    "allocation_policy": "종목 간 자본 배분. EQUAL=균등 / VOL=변동성 비례 / "
+    "INV_VOL=역변동성(변동 큰 종목에 덜).",
+    "buy_strategy": "매수 전략. price_drop=하락률 기준 분할매수 / "
+    "support_level=지지선 기반 매수.",
+    "sell_strategy": "매도 전략 (현재 profit_target=차수별 목표수익 익절만).",
+    "reentry_strategy": "전량 매도 후 재진입 정책. hybrid=쿨다운 기반 / "
+    "moving_average=이동평균 기반.",
+    # 분할매수 파라미터
+    "drop_threshold_pct": "전일 종가 대비 하락률 임계치(%). 이 값 이상 떨어진 날 "
+    "분할 매수. 낮을수록 자주·일찍 매수(거래·분산↑), 높을수록 큰 하락에만.",
+    "max_split_count": "최대 분할 횟수(1~7). 한 종목을 몇 번에 나눠 살지. 클수록 "
+    "더 깊은 하락까지 대응(자본 분산), 작을수록 빨리 소진.",
+    "per_split_amount": "1회 분할 매수 금액(KRW). 클수록 회당 비중↑(자본 빨리 소진), "
+    "작을수록 잘게 분산.",
+    "max_split_per_day": "하루 최대 분할 체결 수(기본 1=하루 한 번).",
+    "profit_target_pct": "차수별 익절 목표 수익률(%). 각 매수분이 +이 % 도달 시 매도. "
+    "낮을수록 자주 익절(회전↑·추세 못 먹음), 높을수록 길게 보유.",
+    "max_sells_per_day": "하루 최대 매도 차수(기본 7=상한, 보통 그대로).",
+    "cooldown_days": "전량 매도 후 재매수까지 대기일(0~365). 길수록 과매매 억제.",
+    "window": "이동평균 재진입 판단 기간(일). moving_average 전용.",
+    "ma_type": "이동평균 종류(sma 등). moving_average 전용.",
+    # DGT 그리드 파라미터
+    "grid_count": "그리드 레벨 수 n(≥2, 보통 11). 클수록 촘촘히 매매"
+    "(회당 소량·거래 잦음), 작을수록 듬성.",
+    "fallback_k": "변동성 산출 불가 시 격자 간격 비율(예 0.05=5%). 격자 한 칸 폭.",
+    "rebalance_mode": "격자 재중심 방식. daily=매일 현재가 기준 재중심 / "
+    "on_breach=격자 이탈 시에만.",
+    "volatility_measure": "격자 폭 산출 지표. adr=일중 범위(갭 무시, 상승장 거래↑) / "
+    "atr=갭 포함 변동성.",
+    "atr_period": "변동성(ADR/ATR) 산출 기간(일, 기본 14). 길수록 격자 폭이 천천히 변함.",
+    "multiplier": "변동성 x 이 배수 = 격자 간격 k. 클수록 넓어짐(거래 뜸·큰 변동만), "
+    "작을수록 촘촘.",
+    "k_min": "격자 간격 하한(예 0.005=0.5%). 너무 촘촘한 과매매 방지.",
+    "k_max": "격자 간격 상한(예 0.05=5%). 너무 넓어 기회 놓침 방지.",
+    "slope_gate": "추세 게이트 on/off. on이면 급등 시 매도·급락 시 매수 스킵(역행 억제).",
+    "slope_gate_period": "추세 게이트 기울기 산출 기간(일).",
+    "slope_gate_threshold": "추세 게이트 발동 기울기 임계치.",
+    "volume_gate": "거래량 게이트 on/off. on이면 거래량 급증+상승 시 매도 스킵"
+    "(수익 보유 연장), 급증+하락 시 매수 스킵.",
+    "volume_gate_period": "거래량 평균 산출 기간(일, 기본 10/20).",
+    "volume_gate_multiplier": "평균 거래량 x 이 배수 초과 시 '급증' 판정(예 1.5).",
+}
+
+
+def _print_help(key: str) -> None:
+    """프롬프트 직전, 해당 파라미터의 의미+영향 한 줄 안내 (있을 때만)."""
+    desc = _PARAM_HELP.get(key)
+    if desc:
+        print(f"  ↳ {desc}")
+
+
 def prompt_param(spec: ParamSpec, current: Any | None = None) -> Any:
     """Prompt for one parameter. Empty input keeps ``current`` (edit flow) or
     the schema default (wizard flow); required fields with neither re-ask.
 
     Bool fields → yes/no prompt; Literal fields → choice prompt (Enter=keep).
+    각 파라미터 의미/영향은 입력 직전에 ``_PARAM_HELP`` 로 안내한다.
     """
     keep = current if current is not None else spec.default
+    _print_help(spec.key)
     if spec.kind == "bool":
         return confirm(f"  {spec.key}", default=bool(keep))
     if spec.choices:
@@ -1325,13 +1384,16 @@ def _wizard_split(
     + ``allow_per_asset_params: true`` for that.
     """
     print(f"등록된 종목: {', '.join(codes)}")
+    _print_help("allocation_policy")
     allocation = prompt_choice("자본 배분 정책", ALLOCATION_POLICIES, "EQUAL")
+    _print_help("buy_strategy")
     buy_strategy = prompt_choice("매수 전략", BUY_STRATEGIES, BUY_STRATEGIES[0])
     sell_strategy = SELL_STRATEGIES[0]
     if len(SELL_STRATEGIES) == 1:
         print(f"  매도 전략: {sell_strategy} (현재 유일)")
     else:  # pragma: no cover - single sell strategy today
         sell_strategy = prompt_choice("매도 전략", SELL_STRATEGIES, SELL_STRATEGIES[0])
+    _print_help("reentry_strategy")
     reentry_strategy = prompt_choice("재진입 전략", REENTRY_STRATEGIES, "hybrid")
 
     params = collect_strategy_params(reentry_strategy)
@@ -1427,6 +1489,7 @@ def cmd_wizard(args: argparse.Namespace) -> int:
         return setup
     dest, assets_data, codes = setup
     print(f"새 config 생성: {dest}")
+    _print_help("paradigm")
     paradigm = prompt_choice(
         "전략 종류 (split=분할매수 PriceDrop / dgt=그리드 DGT)",
         ["split", "dgt"],
