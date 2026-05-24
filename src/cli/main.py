@@ -543,8 +543,21 @@ def backtest(
     reentry_strategy: str,
     cooldown_days: int,
 ) -> None:
-    """Replay historical OHLCV through the strategy + mock adapters."""
+    """Replay historical OHLCV through the strategy + mock adapters.
+
+    단일 진입점: ``--config`` 가 분할매수면 BacktestRunner, DGT grid config 면
+    자동으로 그리드 백테스트로 라우팅한다 (ADR 0022 §11.7 — wizard 와 동형). DGT
+    전용 명령 `grid-backtest` 도 그대로 쓸 수 있다. 단 자동 라우팅은 backtest
+    한정 — paper/dry-run/live 는 grid config 를 계속 거부한다(실거래 안전 D14).
+    """
     with safety.lock_file():
+        if config_path is not None and _detect_config_kind(config_path) == "grid":
+            click.echo("DGT grid config 감지 → 그리드 백테스트로 실행합니다.")
+            _run_grid_backtest_config(
+                config_path, csv_values, start_date.date(), end_date.date(),
+                capital, as_json=as_json,
+            )
+            return
         asset_codes, buy_config, sell_config, reentry_name, reentry_params, buy_strategy_name = (
             _resolve_strategy_configs(
                 ctx,

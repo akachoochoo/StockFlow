@@ -152,9 +152,9 @@ class TestBacktestDispatchesToRunner:
 
 
 class TestConfigKindGuard:
-    """ADR 0022 §11 onboarding — 잘못된 config 타입 → 올바른 명령 안내(신호등)."""
+    """ADR 0022 §11.7 — backtest 는 단일 진입점(grid config 자동 라우팅)."""
 
-    def test_backtest_rejects_grid_config(self, csv_path, tmp_path):
+    def test_backtest_autoroutes_grid_config(self, csv_path, tmp_path):
         grid = tmp_path / "grid.yaml"
         grid.write_text(
             'version: "1.0"\nassets:\n  "069500":\n    name: "KODEX 200"\n'
@@ -166,5 +166,6 @@ class TestConfigKindGuard:
             ["backtest", "--config", str(grid), "--csv", f"069500={csv_path}",
              "--start", "2026-04-27", "--end", "2026-04-30"],
         )
-        assert result.exit_code != 0
-        assert "grid-backtest" in result.output  # points to the right command
+        assert result.exit_code == 0, result.output
+        assert "DGT grid config 감지" in result.output  # 자동 라우팅 안내
+        assert "DGT" in result.output  # 그리드 백테스트 실행됨

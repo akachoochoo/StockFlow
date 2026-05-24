@@ -13,7 +13,7 @@
 | config 파일 | `config/strategies-*.yaml` | `config/grid-*.yaml` |
 | 만드는 명령 | `manage_strategies.py add` / `wizard`(split) / `set` | `manage_strategies.py wizard`(dgt) / `grid-wizard` |
 | 파라미터 | drop_threshold / max_split / profit_target / cooldown … | grid_count / k_min·k_max / measure(adr) / volume_gate … |
-| 백테스트 | `trading backtest --config` | `trading grid-backtest --config` |
+| 백테스트 | `trading backtest --config` | `trading grid-backtest --config` (또는 `backtest` 가 자동 감지) |
 
 **가장 쉬운 시작**: `manage_strategies.py wizard <파일>` 을 실행하면 **맨 처음
 "split=분할매수 / dgt=그리드"를 물어보고** 알맞은 config 파일을 만들어 줍니다.
@@ -23,8 +23,11 @@
 **핵심**: DGT는 `buy_strategy` 선택지가 **아닙니다**. `add`의 매수 전략 목록에
 DGT가 없는 건 정상입니다 — DGT는 별도 `grid-*.yaml` + `grid-backtest`로 갑니다.
 
-잘못된 짝을 넣으면(예: `trading backtest --config grid-X.yaml`) 그냥 깨지지 않고
-**올바른 명령을 안내**합니다.
+**단일 진입점**: `trading backtest --config <파일>` 은 파일 종류를 자동 감지해
+분할매수면 그대로, **DGT면 그리드 백테스트로 자동 라우팅**합니다 (wizard 와 동형).
+즉 백테스트는 `backtest` 하나만 기억하면 됩니다. `grid-backtest` 는 명시적 DGT
+진입으로 그대로 쓸 수 있습니다. (단 자동 라우팅은 backtest 한정 — paper/live 는
+실거래 안전상 grid config 를 거부하고 안내합니다.)
 
 ---
 
