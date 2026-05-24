@@ -16,7 +16,8 @@
     uv run python scripts/manage_strategies.py validate <strategies.yaml>
     # 종목 추가 — 메타데이터(종목명/시장/자산구분/상장일)는 pykrx 로 자동 조회.
     # TTY 에서는 일괄 확인 프롬프트가 뜨고, 비대화식(CI)/`--yes` 는 건너뛴다.
-    # 플래그를 주면 자동값을 덮어쓴다(자동 조회 실패 시에만 필요).
+    # 플래그를 주면 자동값을 덮어쓴다(자동 조회 실패 시에만 필요). 파일이 없거나
+    # 비어 있으면(=cold start) 첫 종목의 전략 정책을 대화식으로 입력받아 생성한다.
     uv run python scripts/manage_strategies.py add      <strategies.yaml> \
         --code C [--market KOSPI] [--asset-class KR_STOCK] [--listed-at YYYY-MM-DD] \
         [--name N] [--tick T] [--lot L] [--template CODE] \
@@ -47,6 +48,10 @@
     KRX/DART 공식 상장일 확인을 권고한다 (CLAUDE.md §5.1 / verify_phase_0_9 규율).
   - 균일성: ``wizard`` 는 선택한 모든 종목에 동일 파라미터를 적용한다 — 종목별
     차등은 로더 균일성 규칙(§7.3)상 ``allow_per_asset_params: true`` 필요.
+  - Cold start: 상속할 기존 종목이 없으면(파일 없음/빈 assets) ``add`` 는 첫
+    종목의 전략 TYPE·파라미터를 ``wizard`` 와 동일한 프롬프트로 입력받아 파일을
+    생성한다. 정책 입력이 필요하므로 이 경우는 대화식(TTY) 전용 — 비대화식/
+    ``--yes`` 는 거부한다. 둘째 종목부터는 기존처럼 템플릿 상속.
   - YAML 쓰기는 pyyaml — 기존 주석은 제거되고 헤더는 자동 생성된다(사용자
     승인된 trade-off).
 """
@@ -885,10 +890,55 @@ def _prompt_missing_meta(
     return name, market, asset_class, listed_at
 
 
+def _make_asset_entry(
+    name: str,
+    enabled: bool,
+    buy_strategy: str,
+    sell_strategy: str,
+    reentry_strategy: str,
+    params: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Assemble one strategies.yaml asset entry from a TYPE + parameter set."""
+    return {
+        "name": name,
+        "enabled": enabled,
+        "buy_strategy": buy_strategy,
+        "buy_parameters": dict(params["buy_parameters"]),
+        "sell_strategy": sell_strategy,
+        "sell_parameters": dict(params["sell_parameters"]),
+        "reentry_strategy": reentry_strategy,
+        "reentry_parameters": dict(params["reentry_parameters"]),
+    }
+
+
+def _prompt_first_entry(meta: AssetMeta, enabled: bool) -> dict[str, Any]:
+    """Collect strategy TYPE + params for the first asset (no template to inherit).
+
+    Reuses the same wizard prompts so a cold-start ``add`` and ``wizard`` stay
+    behaviourally identical for the policy itself.
+    """
+    print("첫 종목 — 상속할 기존 종목이 없어 전략 정책을 입력받습니다:")
+    buy_strategy = prompt_choice("매수 전략", BUY_STRATEGIES, BUY_STRATEGIES[0])
+    sell_strategy = SELL_STRATEGIES[0]
+    if len(SELL_STRATEGIES) > 1:  # pragma: no cover - single sell strategy today
+        sell_strategy = prompt_choice("매도 전략", SELL_STRATEGIES, SELL_STRATEGIES[0])
+    else:
+        print(f"  매도 전략: {sell_strategy} (현재 유일)")
+    reentry_strategy = prompt_choice("재진입 전략", REENTRY_STRATEGIES, "hybrid")
+    params = collect_strategy_params(reentry_strategy)
+    return _make_asset_entry(
+        meta.name, enabled, buy_strategy, sell_strategy, reentry_strategy, params
+    )
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     strategies_path = Path(args.strategies)
     assets_path = Path(args.assets_yaml)
-    data = load_yaml(strategies_path)
+    # Bootstrap-safe: a missing strategies file (cold start — no template to
+    # inherit) is not an error here; the first asset's policy is collected
+    # interactively below (data_missing → True).
+    data_missing = not strategies_path.exists()
+    data = {} if data_missing else load_yaml(strategies_path)
     assets_data = load_assets_data(assets_path)
 
     # 1) pykrx auto-fill (best-effort). Explicit flags always override.
@@ -949,7 +999,27 @@ def cmd_add(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    # 4) Batch confirmation gate (interactive only; non-TTY/--yes skip → keeps
+    # 4) Bootstrap detection: no asset exists yet to inherit a policy from
+    #    (missing file OR a file with an empty assets map → cold start).
+    existing_assets = data.get("assets") or {}
+    bootstrap = not existing_assets
+    if bootstrap and args.template is not None:
+        print(
+            f"--template {args.template!r} 를 상속할 수 없습니다 — 전략 파일에 "
+            "종목이 없습니다 (첫 종목은 정책을 직접 입력).",
+            file=sys.stderr,
+        )
+        return 1
+    if bootstrap and not interactive:
+        print(
+            "첫 종목(상속할 기존 종목 없음)은 전략 정책 입력이 필요합니다 — "
+            "TTY 에서 대화식으로 실행하거나 `wizard` 를 사용하세요 "
+            "(--yes/비대화식 불가).",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 5) Batch confirmation gate (interactive only; non-TTY/--yes skip → keeps
     #    CI and existing flag-driven invocations non-blocking).
     if interactive:
         _print_meta_summary(meta, lookup)
@@ -957,10 +1027,22 @@ def cmd_add(args: argparse.Namespace) -> int:
             print("취소됨 — 파일 변경 없음.")
             return 0
 
-    template_code, template_entry = find_template_entry(data, args.template)
-    add_strategy_entry(
-        data, meta.code, meta.name, not args.disabled, template_entry
-    )
+    # 6) Build the strategy entry: inherit from a template, or — when this is
+    #    the very first asset — collect the policy interactively.
+    if bootstrap:
+        if data_missing:
+            allocation = prompt_choice("자본 배분 정책", ALLOCATION_POLICIES, "EQUAL")
+            data = {"version": "0.5", "allocation_policy": allocation, "assets": {}}
+        data.setdefault("assets", {})[meta.code] = _prompt_first_entry(
+            meta, not args.disabled
+        )
+        policy_note = "전략 정책 신규 입력 (첫 종목)"
+    else:
+        template_code, template_entry = find_template_entry(data, args.template)
+        add_strategy_entry(
+            data, meta.code, meta.name, not args.disabled, template_entry
+        )
+        policy_note = f"전략은 {template_code!r} 정책 상속"
     add_asset_meta(assets_data, meta)
 
     # Validate the proposed result BEFORE writing anything (no partial writes).
@@ -982,7 +1064,7 @@ def cmd_add(args: argparse.Namespace) -> int:
     _dump_yaml(strategies_path, data, _STRATEGIES_HEADER)
     _dump_yaml(assets_path, assets_data, _ASSETS_HEADER)
     print(
-        f"추가됨 ✓ {meta.code} ({meta.name}) — 전략은 {template_code!r} 정책 상속, "
+        f"추가됨 ✓ {meta.code} ({meta.name}) — {policy_note}, "
         f"메타데이터는 assets.yaml 기록. enabled={not args.disabled}."
     )
     return 0
@@ -1181,16 +1263,14 @@ def cmd_wizard(args: argparse.Namespace) -> int:
         "assets": {},
     }
     for code in chosen:
-        data["assets"][code] = {
-            "name": assets_data["assets"][code].get("name", code),
-            "enabled": True,
-            "buy_strategy": buy_strategy,
-            "buy_parameters": dict(params["buy_parameters"]),
-            "sell_strategy": sell_strategy,
-            "sell_parameters": dict(params["sell_parameters"]),
-            "reentry_strategy": reentry_strategy,
-            "reentry_parameters": dict(params["reentry_parameters"]),
-        }
+        data["assets"][code] = _make_asset_entry(
+            assets_data["assets"][code].get("name", code),
+            True,
+            buy_strategy,
+            sell_strategy,
+            reentry_strategy,
+            params,
+        )
 
     try:
         _validate_strategies(data)

@@ -711,3 +711,131 @@ class TestVerifyAssetClass:
         # _meta() default asset_class is KR_STOCK
         w = verify_asset_metadata(_meta(), r)
         assert any("자산구분 불일치" in x for x in w)
+
+
+# ---------------------------------------------------------------------------
+# add bootstrap (cold start — first asset, no template to inherit)
+# ---------------------------------------------------------------------------
+def _interactive(monkeypatch) -> None:
+    import scripts.manage_strategies as m
+
+    monkeypatch.setattr(m, "pykrx_lookup", _full_lookup)
+    monkeypatch.setattr(m.sys.stdin, "isatty", lambda: True)
+
+
+# confirm → allocation → buy_strategy → reentry_strategy → 7 params
+_COLD_START_INPUTS = [
+    "y", "", "", "", "5.0", "7", "5000000", "", "10.0", "", "60",
+]
+
+
+class TestAddBootstrap:
+    def test_cold_start_creates_both_files(self, tmp_path: Path, monkeypatch):
+        strat = tmp_path / "strategies-new.yaml"
+        assets = tmp_path / "assets-new.yaml"  # neither file exists yet
+        _interactive(monkeypatch)
+        _feed(monkeypatch, _COLD_START_INPUTS)
+        rc = main(
+            ["add", str(strat), "--code", "035720", "--assets-yaml", str(assets)]
+        )
+        assert rc == 0
+        data = load_yaml(strat)
+        assert data["version"] == "0.5"
+        assert data["allocation_policy"] == "EQUAL"
+        assert set(data["assets"]) == {"035720"}
+        entry = data["assets"]["035720"]
+        assert entry["buy_strategy"] == "price_drop"
+        assert entry["buy_parameters"]["drop_threshold_pct"] == 5.0
+        assert entry["reentry_parameters"]["cooldown_days"] == 60
+        # registry written + whole thing passes the real loader/cross-check
+        assert load_assets_data(assets)["assets"]["035720"]["market"] == "KOSPI"
+        assert main(["validate", str(strat), "--assets-yaml", str(assets)]) == 0
+
+    def test_cold_start_then_second_add_inherits(
+        self, tmp_path: Path, monkeypatch
+    ):
+        strat = tmp_path / "s.yaml"
+        assets = tmp_path / "a.yaml"
+        _interactive(monkeypatch)
+        _feed(monkeypatch, _COLD_START_INPUTS)
+        assert main(
+            ["add", str(strat), "--code", "035720", "--assets-yaml", str(assets)]
+        ) == 0
+        # second add: a template now exists → inherits, no policy prompts
+        import scripts.manage_strategies as m
+
+        monkeypatch.setattr(
+            m, "pykrx_lookup",
+            lambda code: LookupResult(
+                found=True, name="네이버", market="KOSPI",
+                earliest_date=date(2008, 11, 28), asset_class="KR_STOCK",
+            ),
+        )
+        _feed(monkeypatch, ["y"])  # only the confirmation, no policy prompts
+        assert main(
+            ["add", str(strat), "--code", "035420", "--assets-yaml", str(assets)]
+        ) == 0
+        data = load_yaml(strat)
+        assert set(data["assets"]) == {"035720", "035420"}
+        # inherited policy is identical (uniformity holds)
+        assert (
+            data["assets"]["035420"]["buy_parameters"]
+            == data["assets"]["035720"]["buy_parameters"]
+        )
+        assert main(["validate", str(strat), "--assets-yaml", str(assets)]) == 0
+
+    def test_bootstrap_empty_assets_file_keeps_allocation(
+        self, tmp_path: Path, monkeypatch
+    ):
+        strat = tmp_path / "empty.yaml"
+        strat.write_text(
+            'version: "0.5"\nallocation_policy: VOL\nassets: {}\n', encoding="utf-8"
+        )
+        assets = tmp_path / "a.yaml"
+        _interactive(monkeypatch)
+        # file exists → no allocation prompt; drop the leading allocation input
+        _feed(monkeypatch, ["y", "", "", "5.0", "7", "5000000", "", "10.0", "", "60"])
+        rc = main(
+            ["add", str(strat), "--code", "035720", "--assets-yaml", str(assets)]
+        )
+        assert rc == 0
+        data = load_yaml(strat)
+        assert data["allocation_policy"] == "VOL"  # preserved, not re-prompted
+        assert set(data["assets"]) == {"035720"}
+
+    def test_bootstrap_non_interactive_refused(self, tmp_path: Path, monkeypatch):
+        strat = tmp_path / "s.yaml"
+        assets = tmp_path / "a.yaml"
+        import scripts.manage_strategies as m
+
+        monkeypatch.setattr(m, "pykrx_lookup", _full_lookup)
+        # non-TTY (pytest default): cannot prompt for the first policy.
+        rc = main(
+            ["add", str(strat), "--code", "035720", "--assets-yaml", str(assets)]
+        )
+        assert rc == 1
+        assert not strat.exists()
+        assert not assets.exists()
+
+    def test_bootstrap_template_flag_refused(self, tmp_path: Path, monkeypatch):
+        strat = tmp_path / "s.yaml"
+        assets = tmp_path / "a.yaml"
+        _interactive(monkeypatch)
+        _feed(monkeypatch, [])  # error fires before any prompt
+        rc = main(
+            ["add", str(strat), "--code", "035720",
+             "--template", "069500", "--assets-yaml", str(assets)]
+        )
+        assert rc == 1
+        assert not strat.exists()
+
+    def test_bootstrap_cancel_at_confirm(self, tmp_path: Path, monkeypatch):
+        strat = tmp_path / "s.yaml"
+        assets = tmp_path / "a.yaml"
+        _interactive(monkeypatch)
+        _feed(monkeypatch, ["n"])  # decline before policy prompts
+        rc = main(
+            ["add", str(strat), "--code", "035720", "--assets-yaml", str(assets)]
+        )
+        assert rc == 0  # clean cancel
+        assert not strat.exists()
