@@ -97,3 +97,90 @@ class TestGridBacktestCLI:
         )
         assert result.exit_code == 0, result.output
         assert "on_breach atr" in result.output
+
+
+def _write_grid_config(tmp_path: Path, codes: list[str]) -> Path:
+    lines = ['version: "1.0"', "assets:"]
+    for c in codes:
+        lines += [
+            f'  "{c}":',
+            f'    name: "{c}"',
+            "    grid_parameters: {grid_count: 11, fallback_k: 0.05}",
+        ]
+    p = tmp_path / "grid.yaml"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def _two_csvs(tmp_path: Path) -> tuple[Path, Path]:
+    csv_a = _write_csv(tmp_path)  # 069500.csv
+    csv_b = tmp_path / "132030.csv"
+    csv_b.write_text(csv_a.read_text(encoding="utf-8"), encoding="utf-8")
+    return csv_a, csv_b
+
+
+class TestGridBacktestConfig:
+    def test_multi_asset_human_output(self, tmp_path: Path):
+        csv_a, csv_b = _two_csvs(tmp_path)
+        cfg = _write_grid_config(tmp_path, ["069500", "132030"])
+        result = CliRunner().invoke(
+            main,
+            ["grid-backtest", "--config", str(cfg),
+             "--csv", f"069500={csv_a}", "--csv", f"132030={csv_b}",
+             "--start", "2024-01-01", "--end", "2024-02-02",
+             "--capital", "100000000"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "멀티에셋" in result.output and "2 종목" in result.output
+        assert "KRX:069500" in result.output and "KRX:132030" in result.output
+        assert "Buy&Hold" in result.output
+
+    def test_json_output(self, tmp_path: Path):
+        csv_a, csv_b = _two_csvs(tmp_path)
+        cfg = _write_grid_config(tmp_path, ["069500", "132030"])
+        result = CliRunner().invoke(
+            main,
+            ["grid-backtest", "--config", str(cfg),
+             "--csv", f"069500={csv_a}", "--csv", f"132030={csv_b}",
+             "--start", "2024-01-01", "--end", "2024-02-02",
+             "--capital", "100000000", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "config"
+        assert len(payload["dgt"]["per_asset"]) == 2
+        assert payload["dgt"]["per_asset"][0]["allocated"] == "50000000"
+
+    def test_config_and_code_mutually_exclusive(self, tmp_path: Path):
+        csv_a, _ = _two_csvs(tmp_path)
+        cfg = _write_grid_config(tmp_path, ["069500"])
+        result = CliRunner().invoke(
+            main,
+            ["grid-backtest", "--config", str(cfg), "--code", "069500",
+             "--csv", f"069500={csv_a}",
+             "--start", "2024-01-01", "--end", "2024-02-02"],
+        )
+        assert result.exit_code != 0
+        assert "함께 쓸 수 없습니다" in result.output
+
+    def test_csv_code_mismatch_errors(self, tmp_path: Path):
+        csv_a, _ = _two_csvs(tmp_path)
+        cfg = _write_grid_config(tmp_path, ["069500", "132030"])
+        result = CliRunner().invoke(
+            main,
+            ["grid-backtest", "--config", str(cfg),
+             "--csv", f"069500={csv_a}",  # 132030 누락
+             "--start", "2024-01-01", "--end", "2024-02-02"],
+        )
+        assert result.exit_code != 0
+        assert "불일치" in result.output
+
+    def test_neither_config_nor_code_errors(self, tmp_path: Path):
+        csv = _write_csv(tmp_path)
+        result = CliRunner().invoke(
+            main,
+            ["grid-backtest", "--csv", str(csv),
+             "--start", "2024-01-01", "--end", "2024-02-02"],
+        )
+        assert result.exit_code != 0
+        assert "필요합니다" in result.output

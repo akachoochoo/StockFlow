@@ -20,18 +20,23 @@ import click
 from click.core import ParameterSource
 
 from src.application.backtest_runner import BacktestRunner
+from src.application.grid_portfolio_backtest import (
+    GridAssetInput,
+    run_grid_portfolio,
+)
 from src.cli import composition, output_formatter, safety
 from src.domain.models import Currency, Money
 from src.domain.strategies.grid import GridConfig
 from src.domain.strategies.price_drop import SplitStrategyConfig
 from src.domain.strategies.profit_target import SellStrategyConfig
 from src.infrastructure.csv_market_data_loader import load_ohlcv_csv
+from src.infrastructure.yaml_grid_config_loader import load_grid_config
 from src.infrastructure.yaml_strategy_config_loader import load_strategy_config
 from src.use_cases.asset_context import AssetPolicyOverride
 from src.use_cases.grid_runner import GridRunner
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    from datetime import date, datetime
 
 
 # ---------------------------------------------------------------------------
@@ -538,15 +543,171 @@ def backtest(
     click.echo(output_formatter.format_backtest_result(result, as_json=as_json))
 
 
+def _run_grid_backtest_config(
+    config_path: Path,
+    csv_values: tuple[str, ...],
+    start: date,
+    end: date,
+    capital: int,
+    *,
+    as_json: bool,
+) -> None:
+    """grid-backtest --config: 멀티에셋 DGT 포트폴리오 (ADR 0022 §11 D13).
+
+    종목별 GridConfig + 균등 자본 분할 → GridRunner 독립 실행(D9) → 일별 합산.
+    B&H 포트폴리오(종목별 균등 분할 floor-shares) 대비 수익/MDD 출력.
+    """
+    bundles = load_grid_config(config_path)
+    enabled = [(c, b) for c, b in bundles.items() if b.enabled]
+    if not enabled:
+        raise click.ClickException(f"{config_path} 에 enabled 종목이 없습니다.")
+    csv_map = _parse_csv_paths(csv_values)
+    if None in csv_map:
+        raise click.UsageError(
+            "--config 모드는 종목별 '--csv CODE=path.csv' 형식이 필요합니다."
+        )
+    yaml_codes = {c for c, _ in enabled}
+    if yaml_codes != set(csv_map):
+        missing = sorted(yaml_codes - set(csv_map))
+        extra = sorted(set(csv_map) - yaml_codes)
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing --csv for {missing}")
+        if extra:
+            parts.append(f"extra --csv codes {extra}")
+        raise click.UsageError(
+            f"종목 불일치: config enabled={sorted(yaml_codes)} vs "
+            f"--csv={sorted(csv_map)}. " + "; ".join(parts) + "."
+        )
+
+    inputs: list[GridAssetInput] = []
+    windows = []  # (asset, windowed bars) — B&H 벤치마크 재사용
+    for code, bundle in enabled:  # config 순서 보존
+        try:
+            asset = composition.asset_from_code(code)
+        except KeyError as exc:
+            raise click.ClickException(f"미등록 종목코드: {exc}") from exc
+        bars = load_ohlcv_csv(csv_map[code], asset)
+        window = [b for b in bars if start <= b.trade_date <= end]
+        if not window:
+            raise click.ClickException(f"{code}: 선택 기간에 데이터가 없습니다.")
+        inputs.append(
+            GridAssetInput(asset=asset, bars=window, config=bundle.config)
+        )
+        windows.append((asset, window))
+
+    port = run_grid_portfolio(inputs, initial_capital=_krw(capital))
+
+    init = Decimal(capital)
+    dgt_mdd = _max_drawdown([v for _, v in port.daily_values])
+    dgt_return = (port.final_value - init) / init * 100
+
+    # B&H 포트폴리오 = 종목별 균등 분할(floor shares), 공통일 정렬 + 미투자 현금.
+    per = init // len(inputs)
+    bh_by_asset = []
+    for _asset, window in windows:
+        first_close = window[0].close
+        shares = (per / first_close).quantize(Decimal("1"), rounding=ROUND_DOWN)
+        cash = per - shares * first_close
+        bh_by_asset.append({b.trade_date: cash + shares * b.close for b in window})
+    common_dates = [d for d, _ in port.daily_values]
+    bh_values = [
+        sum((s[d] for s in bh_by_asset), Decimal("0")) + port.unallocated
+        for d in common_dates
+    ]
+    bh_final = bh_values[-1]
+    bh_return = (bh_final - init) / init * 100
+    bh_mdd = _max_drawdown(bh_values)
+
+    if as_json:
+        import json
+
+        click.echo(
+            json.dumps(
+                {
+                    "mode": "config",
+                    "config": str(config_path),
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "assets": [a.fqn for a, _ in windows],
+                    "trading_days": len(common_dates),
+                    "initial_capital": str(init),
+                    "unallocated": str(port.unallocated),
+                    "dgt": {
+                        "final_value": str(port.final_value),
+                        "return_pct": str(dgt_return),
+                        "max_drawdown_pct": str(dgt_mdd * 100),
+                        "trades": sum(
+                            len(r.result.trades) for r in port.per_asset
+                        ),
+                        "per_asset": [
+                            {
+                                "asset": r.asset.fqn,
+                                "allocated": str(r.allocated.amount),
+                                "final_value": str(r.result.final_value),
+                                "trades": len(r.result.trades),
+                            }
+                            for r in port.per_asset
+                        ],
+                    },
+                    "buy_and_hold": {
+                        "final_value": str(bh_final),
+                        "return_pct": str(bh_return),
+                        "max_drawdown_pct": str(bh_mdd * 100),
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    click.echo(
+        f"DGT grid-backtest (멀티에셋) — {len(inputs)} 종목, config {config_path.name}"
+    )
+    click.echo(
+        f"기간: {start} → {end} ({len(common_dates)} 공통 거래일), 초기 {_won(init)}"
+    )
+    for r in port.per_asset:
+        rr = r.result
+        click.echo(
+            f"  {r.asset.fqn} ({r.asset.name}): 배분 {_won(r.allocated.amount)} / "
+            f"최종 {_won(rr.final_value)} / 거래 {len(rr.trades)}"
+        )
+    click.echo(
+        f"DGT      : 최종 {_won(port.final_value)} / 수익 {_pct(dgt_return)} / "
+        f"MDD {_pct(dgt_mdd * 100)}"
+    )
+    click.echo(
+        f"Buy&Hold : 최종 {_won(bh_final)} / 수익 {_pct(bh_return)} / "
+        f"MDD {_pct(bh_mdd * 100)}"
+    )
+    click.echo(
+        "주의: DGT = MDD 방어·횡보 수확 도구. 강세장 B&H 미달은 설계상 "
+        "trade-off (ADR 0022 D2)."
+    )
+
+
 @main.command("grid-backtest")
 @click.option(
-    "--csv",
-    "csv_path",
-    required=True,
-    type=click.Path(exists=True, dir_okay=False),
-    help="OHLCV CSV 경로 (단일 종목).",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="grid config YAML (멀티에셋 DGT). --code 와 배타 — 종목별 GridConfig.",
 )
-@click.option("--code", required=True, help="KRX 종목코드 (assets.yaml/레지스트리 등록).")
+@click.option(
+    "--csv",
+    "csv_values",
+    required=True,
+    multiple=True,
+    help="단일: '--csv path.csv'. --config 모드: '--csv CODE=path.csv' (종목별).",
+)
+@click.option(
+    "--code",
+    default=None,
+    help="KRX 종목코드 (단일 모드, assets.yaml 등록). --config 와 배타.",
+)
 @click.option(
     "--start",
     "start_date",
@@ -595,8 +756,9 @@ def backtest(
     "--json", "as_json", is_flag=True, default=False, help="JSON 출력."
 )
 def grid_backtest(
-    csv_path: str,
-    code: str,
+    config_path: Path | None,
+    csv_values: tuple[str, ...],
+    code: str | None,
     start_date: datetime,
     end_date: datetime,
     capital: int,
@@ -617,7 +779,33 @@ def grid_backtest(
 
     역할 = MDD 방어·횡보 수확 (절대수익/B&H 상회 아님, D2). B&H 대비 수익/MDD
     비교 출력. backtest/paper 전용 — live 주문은 별도 승인 증분.
+
+    두 모드 (ADR 0022 §11 D11/D13):
+    - 단일: ``--code C --csv path.csv`` + grid 플래그.
+    - 멀티: ``--config grid.yaml --csv CODE=path.csv ...`` (종목별 GridConfig +
+      균등 자본 분할, GridRunner 독립 실행 후 포트폴리오 집계).
     """
+    if config_path is not None:
+        if code is not None:
+            raise click.UsageError("--config 와 --code 는 함께 쓸 수 없습니다.")
+        _run_grid_backtest_config(
+            config_path, csv_values, start_date.date(), end_date.date(),
+            capital, as_json=as_json,
+        )
+        return
+
+    # 단일 모드 (기존). grid 플래그로 GridConfig 구성.
+    if code is None:
+        raise click.UsageError(
+            "--code (단일 모드) 또는 --config (멀티에셋) 중 하나가 필요합니다."
+        )
+    csv_map = _parse_csv_paths(csv_values)
+    if None not in csv_map or len(csv_map) != 1:
+        raise click.UsageError(
+            "단일 모드는 '--csv path.csv' 하나가 필요합니다 "
+            "('--csv CODE=path' 형식은 --config 전용)."
+        )
+    csv_path = csv_map[None]
     try:
         asset = composition.asset_from_code(code)
     except KeyError as exc:
