@@ -14,6 +14,7 @@
 ## 설계 문서
 
 - [멀티 자산 자동매매 시스템 설계](./docs/multi-asset-trading-system-design.md)
+- [백테스트 가이드 — 분할매수 vs DGT](./docs/backtest-guide.md) (처음 쓰는 사람용)
 - [개발 규칙 (CLAUDE.md)](./CLAUDE.md)
 
 ## 기술 스택

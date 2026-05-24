@@ -184,3 +184,28 @@ class TestGridBacktestConfig:
         )
         assert result.exit_code != 0
         assert "필요합니다" in result.output
+
+    def test_rejects_strategy_config(self, tmp_path: Path):
+        # 분할매수 strategies config 를 grid-backtest 에 잘못 넣으면 안내(신호등).
+        csv_a, _ = _two_csvs(tmp_path)
+        strat = tmp_path / "strat.yaml"
+        strat.write_text(
+            'version: "0.5"\nallocation_policy: EQUAL\nassets:\n'
+            '  "069500":\n    name: "KODEX 200"\n    enabled: true\n'
+            '    buy_strategy: "price_drop"\n'
+            "    buy_parameters: {drop_threshold_pct: 5.0, max_split_count: 7, "
+            "per_split_amount: 500000, max_split_per_day: 1}\n"
+            '    sell_strategy: "profit_target"\n'
+            "    sell_parameters: {profit_target_pct: 10.0, max_sells_per_day: 7}\n"
+            '    reentry_strategy: "hybrid"\n'
+            "    reentry_parameters: {cooldown_days: 60}\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            main,
+            ["grid-backtest", "--config", str(strat),
+             "--csv", f"069500={csv_a}",
+             "--start", "2024-01-01", "--end", "2024-02-02"],
+        )
+        assert result.exit_code != 0
+        assert "trading backtest" in result.output  # points to the right command

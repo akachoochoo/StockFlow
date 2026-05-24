@@ -149,3 +149,22 @@ class TestBacktestDispatchesToRunner:
              "--start", "2026-04-27", "--end", "2026-04-30"],
         )
         assert _SpyBacktestRunner.last.get("buy_strategy_name") == "price_drop"
+
+
+class TestConfigKindGuard:
+    """ADR 0022 §11 onboarding — 잘못된 config 타입 → 올바른 명령 안내(신호등)."""
+
+    def test_backtest_rejects_grid_config(self, csv_path, tmp_path):
+        grid = tmp_path / "grid.yaml"
+        grid.write_text(
+            'version: "1.0"\nassets:\n  "069500":\n    name: "KODEX 200"\n'
+            "    grid_parameters: {grid_count: 11, fallback_k: 0.05}\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            main,
+            ["backtest", "--config", str(grid), "--csv", f"069500={csv_path}",
+             "--start", "2026-04-27", "--end", "2026-04-30"],
+        )
+        assert result.exit_code != 0
+        assert "grid-backtest" in result.output  # points to the right command

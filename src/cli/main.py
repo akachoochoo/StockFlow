@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import click
+import yaml
 from click.core import ParameterSource
 
 from src.application.backtest_runner import BacktestRunner
@@ -313,6 +314,39 @@ def _check_mutually_exclusive_with_config(ctx: click.Context) -> None:
         )
 
 
+def _detect_config_kind(path: Path) -> str:
+    """Best-effort config-type sniff for signpost guards (ADR 0022 §11 onboarding).
+
+    Returns ``"grid"`` (DGT — has ``grid_parameters``), ``"strategy"`` (분할매수 —
+    has ``buy_strategy``), or ``"unknown"`` (let the real loader report). Only
+    used to redirect a user who passed the wrong file to the wrong command.
+    """
+    try:
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return "unknown"
+    assets = raw.get("assets") if isinstance(raw, dict) else None
+    if not isinstance(assets, dict):
+        return "unknown"
+    for entry in assets.values():
+        if isinstance(entry, dict):
+            if "grid_parameters" in entry:
+                return "grid"
+            if "buy_strategy" in entry:
+                return "strategy"
+    return "unknown"
+
+
+def _guard_not_grid_config(config_path: Path) -> None:
+    """Stop a DGT grid config from entering the split-strategy path (signpost)."""
+    if _detect_config_kind(config_path) == "grid":
+        raise click.UsageError(
+            f"{config_path} 는 DGT grid config 입니다 (grid_parameters 발견). "
+            "분할매수가 아니라 DGT 백테스트는 "
+            "'trading grid-backtest --config ...' 를 사용하세요."
+        )
+
+
 def _resolve_strategy_configs(
     ctx: click.Context,
     config_path: Path | None,
@@ -348,6 +382,7 @@ def _resolve_strategy_configs(
     """
     if config_path is not None:
         _check_mutually_exclusive_with_config(ctx)
+        _guard_not_grid_config(config_path)  # 잘못 넣은 DGT config → grid-backtest 안내
         bundles = load_strategy_config(config_path)
         enabled_items = [
             (code, b) for code, b in bundles.items() if b.enabled
@@ -557,6 +592,12 @@ def _run_grid_backtest_config(
     종목별 GridConfig + 균등 자본 분할 → GridRunner 독립 실행(D9) → 일별 합산.
     B&H 포트폴리오(종목별 균등 분할 floor-shares) 대비 수익/MDD 출력.
     """
+    if _detect_config_kind(config_path) == "strategy":
+        raise click.UsageError(
+            f"{config_path} 는 분할매수 strategies config 입니다 (buy_strategy 발견). "
+            "DGT 가 아니라 분할매수 백테스트는 "
+            "'trading backtest --config ...' 를 사용하세요."
+        )
     bundles = load_grid_config(config_path)
     enabled = [(c, b) for c, b in bundles.items() if b.enabled]
     if not enabled:
