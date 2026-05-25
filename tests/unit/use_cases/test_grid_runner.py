@@ -395,3 +395,109 @@ class TestPnlSplit:
         realized, unrealized = res.pnl_split()
         assert realized == Decimal("0")
         assert unrealized == _won_total(res)
+
+
+# ---------------------------------------------------------------------------
+# 매도 후 매수 쿨다운 (ADR 0022 §11.13)
+# ---------------------------------------------------------------------------
+def _buy_within_n_after_sell(trades: list, dates: list, n: int) -> bool:
+    """매도 bar 후 n 거래일 이내 매수가 있으면 True (쿨다운 위반)."""
+    idx = {d: i for i, d in enumerate(dates)}
+    sells = [idx[t.trade_date] for t in trades if t.side is OrderSide.SELL]
+    buys = [idx[t.trade_date] for t in trades if t.side is OrderSide.BUY]
+    return any(s < b <= s + n for s in sells for b in buys)
+
+
+# 타이트 진동 시퀀스 — on_breach 그리드 유지, 매수↔매도 교대 (쿨다운 노출).
+_OSC = [
+    "1000", "990", "980", "970", "980", "990", "1000", "1010", "1000", "990",
+    "980", "990", "1000", "1010", "1020", "1010", "1000", "990", "980", "990",
+]
+
+
+def _osc_bars() -> list[OHLCV]:
+    b0 = date(2024, 1, 1)
+    cl = [Decimal(c) for c in _OSC]
+    return [
+        OHLCV(
+            asset=_ASSET, trade_date=b0 + timedelta(days=i),
+            open=cl[i - 1] if i > 0 else c,
+            high=max(cl[i - 1] if i > 0 else c, c) * Decimal("1.01"),
+            low=min(cl[i - 1] if i > 0 else c, c) * Decimal("0.99"),
+            close=c, volume=Decimal("1000000"),
+        )
+        for i, c in enumerate(cl)
+    ]
+
+
+def _osc_cfg(**kw: object) -> GridConfig:
+    base = GridConfig(
+        grid_count=6, fallback_k=Decimal("0.01"), rebalance_mode="on_breach",
+        volatility_measure="adr", k_min=Decimal("0.005"), k_max=Decimal("0.02"),
+    )
+    return base.model_copy(update=kw)
+
+
+class TestSellCooldown:
+    def test_default_off(self):
+        assert _domain_config().sell_cooldown_bars == 0
+
+    def test_off_unchanged_regression(self):
+        bars = _osc_bars()
+        r1 = GridRunner().run(
+            asset=_ASSET, bars=bars, config=_osc_cfg(), initial_capital=_CAPITAL
+        )
+        r2 = GridRunner().run(
+            asset=_ASSET, bars=bars,
+            config=_osc_cfg(sell_cooldown_bars=0), initial_capital=_CAPITAL,
+        )
+        assert r1.final_value == r2.final_value
+        assert len(r1.trades) == len(r2.trades)
+
+    def test_blocks_buys_within_window(self):
+        bars = _osc_bars()
+        dates = [b.trade_date for b in bars]
+        base = GridRunner().run(
+            asset=_ASSET, bars=bars, config=_osc_cfg(), initial_capital=_CAPITAL
+        )
+        cd = GridRunner().run(
+            asset=_ASSET, bars=bars,
+            config=_osc_cfg(sell_cooldown_bars=5), initial_capital=_CAPITAL,
+        )
+        # 비자명성: 베이스라인엔 매도 후 5바 내 매수가 실제로 존재.
+        assert _buy_within_n_after_sell(base.trades, dates, 5)
+        # 불변: 쿨다운 run 은 매도 후 5바 내 매수 0.
+        assert not _buy_within_n_after_sell(cd.trades, dates, 5)
+        # 매수가 실제로 차단되어 줄어듦.
+        n_base = sum(t.side is OrderSide.BUY for t in base.trades)
+        n_cd = sum(t.side is OrderSide.BUY for t in cd.trades)
+        assert n_cd < n_base
+
+    def test_sells_not_blocked(self):
+        # 쿨다운은 매수만 막고 매도는 그대로 (방향 비대칭).
+        bars = _osc_bars()
+        base = GridRunner().run(
+            asset=_ASSET, bars=bars, config=_osc_cfg(), initial_capital=_CAPITAL
+        )
+        cd = GridRunner().run(
+            asset=_ASSET, bars=bars,
+            config=_osc_cfg(sell_cooldown_bars=5), initial_capital=_CAPITAL,
+        )
+        base_sells = [t.trade_date for t in base.trades if t.side is OrderSide.SELL]
+        cd_sells = [t.trade_date for t in cd.trades if t.side is OrderSide.SELL]
+        assert base_sells == cd_sells  # 매도는 쿨다운 영향 없음 (동일)
+
+    def test_longer_cooldown_blocks_more(self):
+        bars = _osc_bars()
+        runs = {
+            n: GridRunner().run(
+                asset=_ASSET, bars=bars,
+                config=_osc_cfg(sell_cooldown_bars=n), initial_capital=_CAPITAL,
+            )
+            for n in (0, 2, 10)
+        }
+        buys = {
+            n: sum(t.side is OrderSide.BUY for t in r.trades)
+            for n, r in runs.items()
+        }
+        assert buys[0] >= buys[2] >= buys[10]  # 긴 쿨다운일수록 매수 ≤

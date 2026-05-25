@@ -56,6 +56,10 @@ class GridConfig(DomainModel):
     # 매수가(avg_cost)인 SELL 을 스킵 — 손실 실현 방지. avg_cost 추적·게이트는
     # cost-aware 라 GridRunner(use_case)가 적용한다(전략은 cost-free 유지).
     profit_guard: bool = False
+    # sell_cooldown_bars (ADR 0022 §11.13): 매도 후 N 거래일 매수 금지 (whipsaw·
+    # 하락 재매수 연쇄 억제). 0 = off (회귀 zero). 매 매도마다 카운터 N 재설정,
+    # 비매도 bar 마다 1 감소. temporal·stateful 이라 GridRunner 가 적용(전략 무관).
+    sell_cooldown_bars: int = Field(default=0, ge=0)
 
     @property
     def levels_above(self) -> int:

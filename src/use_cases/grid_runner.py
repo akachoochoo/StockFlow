@@ -171,10 +171,13 @@ class GridRunner:
         trades: list[GridTrade] = []
         daily: list[GridDailyValue] = []
         gate_events: list[GridGateEvent] = []
+        cooldown_remaining = 0  # 매도 후 매수 금지 카운터 (ADR 0022 §11.13)
 
         for bar_idx, bar in enumerate(bars):
             # 이 바 거래에 적용된 그리드 (evaluate 의 reset 전) — 시변 차트용.
             active_grid = state.grid_levels
+            cooling = cooldown_remaining > 0  # 바 시작 시점 쿨다운 여부
+            sold_this_bar = False
             ev = self._strategy.evaluate(
                 asset=asset,
                 bars=bars,
@@ -186,6 +189,8 @@ class GridRunner:
             )
             for dec in ev.decisions:
                 if dec.side is OrderSide.BUY:
+                    if cooling:  # 매도 후 쿨다운 — 매수 금지 (ADR 0022 §11.13)
+                        continue
                     bc = self._cost_model.compute_buy_cost(
                         price=dec.level_price, quantity=dec.quantity, asset=asset
                     )
@@ -227,6 +232,7 @@ class GridRunner:
                         continue
                     cash += sc.net_proceeds
                     holdings -= dec.quantity
+                    sold_this_bar = True  # 쿨다운 트리거 (실제 체결된 매도만)
                     trades.append(
                         GridTrade(
                             trade_date=bar.trade_date,
@@ -240,6 +246,12 @@ class GridRunner:
                             cash_delta=sc.net_proceeds,
                         )
                     )
+            # 쿨다운 갱신 (ADR 0022 §11.13): 매도 발생 시 N 재설정, 아니면 1 감소.
+            if config.sell_cooldown_bars > 0:
+                if sold_this_bar:
+                    cooldown_remaining = config.sell_cooldown_bars
+                elif cooldown_remaining > 0:
+                    cooldown_remaining -= 1
             for gs in ev.gate_skips:
                 gate_events.append(
                     GridGateEvent(
