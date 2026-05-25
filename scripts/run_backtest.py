@@ -60,6 +60,39 @@ class _MarkerView:
         self.grid_level_price = trade.level_price
 
 
+def _gate_markers(result: Any, date_set: set[str]) -> list[dict[str, Any]]:
+    """게이트가 억제한 거래(``GridRunResult.gate_events``) → 회색 ⊘ 마커.
+
+    ADR 0022 §11.10 — '억제된 거래만'. 슬로프=등락률(%), 거래량=배수(x) 라벨.
+    SELL 억제=aboveBar(상향교차 매도 스킵), BUY 억제=belowBar. gate_events 미기록
+    (구버전 결과) 시 빈 리스트.
+    """
+    markers: list[dict[str, Any]] = []
+    for ev in getattr(result, "gate_events", ()) or ():
+        time_str = ev.trade_date.strftime("%Y-%m-%d")
+        if time_str not in date_set:
+            continue
+        side = ev.side.value if hasattr(ev.side, "value") else str(ev.side)
+        is_sell = "SELL" in side
+        r = ev.reasoning
+        gate = r.get("gate", "gate")
+        if "slope" in gate and "slope_roc" in r:
+            mag = f"slope {float(r['slope_roc']) * 100:+.1f}%"
+        elif "volume" in gate and "volume_ratio" in r:
+            mag = f"vol {float(r['volume_ratio']):.1f}x"
+        else:
+            mag = gate
+        markers.append({
+            "time": time_str,
+            "position": "aboveBar" if is_sell else "belowBar",
+            "shape": "circle",
+            "color": "#95a5a6",
+            "text": f"⊘{'S' if is_sell else 'B'} {mag}",
+        })
+    markers.sort(key=lambda m: m["time"])
+    return markers
+
+
 def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) -> str:
     """도메인 GridRunResult → lightweight-charts 인터랙티브 HTML.
 
@@ -85,6 +118,10 @@ def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) 
     ohlcv = _serialize_ohlcv(bars)
     volume = _serialize_volume(bars)
     marker_groups = [{"label": asset.code, "markers": markers}]
+    gate_markers = _gate_markers(result, date_set)
+    if gate_markers:
+        # 2 그룹 이상 → 렌더러가 자동으로 마커 토글 체크박스 표시 (_interactive_chart §toggle).
+        marker_groups.append({"label": f"{asset.code} ⊘gate", "markers": gate_markers})
     color = "#2e86c1"
 
     # 시변 그리드: 바별 활성 그리드 (리셋마다 계단식 이동).

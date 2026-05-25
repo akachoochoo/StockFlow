@@ -250,6 +250,48 @@ class TestReporterE2E:
         assert "069500" in html
         assert '"levelIndex"' in html  # 시변 그리드(LineSeries) 렌더 — ADR §11.8
 
+    def test_gate_markers_rendered_when_suppressed(self):
+        # 게이트 억제 이벤트 → 차트에 ⊘gate 마커 토글 그룹 (ADR 0022 §11.10).
+        from datetime import date as _date
+        from datetime import timedelta as _td
+        from decimal import Decimal
+
+        from scripts.run_backtest import build_dgt_chart_html
+
+        from src.cli.composition import asset_from_code
+        from src.domain.models import OHLCV, Currency, Money
+        from src.domain.strategies.grid import GridConfig
+        from src.use_cases.grid_runner import GridRunner
+
+        asset = asset_from_code("069500")
+        base = _date(2024, 1, 1)
+        closes = ["30000", "29000", "28000", "27000", "26000", "25000", "33000"]
+        bars = []
+        for i, c in enumerate(closes):
+            cc = Decimal(c)
+            opn = Decimal(closes[i - 1]) if i > 0 else cc
+            bars.append(
+                OHLCV(
+                    asset=asset, trade_date=base + _td(days=i), open=opn,
+                    high=max(opn, cc) * Decimal("1.01"),
+                    low=min(opn, cc) * Decimal("0.99"), close=cc,
+                    volume=Decimal("1000000"),
+                )
+            )
+        cfg = GridConfig(
+            grid_count=4, fallback_k=Decimal("0.05"), rebalance_mode="daily",
+            volatility_measure="adr", slope_gate=True, slope_gate_period=5,
+            slope_gate_threshold=Decimal("0.05"),
+        )
+        result = GridRunner().run(
+            asset=asset, bars=bars, config=cfg,
+            initial_capital=Money(amount=Decimal("100000000"), currency=Currency.KRW),
+        )
+        assert result.gate_events  # 데이터 유효성: 억제 이벤트 발생
+        html = build_dgt_chart_html(asset, bars, cfg, result)
+        assert "⊘gate" in html  # 게이트 마커 토글 그룹 라벨
+        assert "⊘S" in html or "⊘B" in html  # 마커 텍스트
+
     def test_report_grid_writes_interactive_chart(self, tmp_path):
         from scripts.run_backtest import _report_grid
 
