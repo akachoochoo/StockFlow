@@ -94,6 +94,9 @@ report/
 report-*/
 report-paper/
 
+# Local-only backtest config (not part of the committed asset/strategy registry)
+config/strategies-backtest.yaml
+
 # ---------------------------------------------------------------------------
 # Claude Code / OMC — entire directory is volatile / machine-local state
 # ---------------------------------------------------------------------------
