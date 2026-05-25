@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import ClassVar
 
 import pytest
 
@@ -268,3 +269,132 @@ class TestEvaluateGuards:
         # 35000, 37000 상향 교차 (36400<lvl<=38200) → 2 sells, 각 floor(120/12)=10
         assert all(isinstance(d, GridDecision) for d in sells)
         assert sells and sells[0].quantity == Decimal("10")
+
+
+def _bars_from_closes(
+    closes: list[str], vols: list[Decimal] | None = None
+) -> list[OHLCV]:
+    """종가 시퀀스 → OHLCV bars (gate 테스트용 통제 입력)."""
+    base = date(2024, 1, 1)
+    cl = [Decimal(c) for c in closes]
+    out: list[OHLCV] = []
+    for i, c in enumerate(cl):
+        opn = cl[i - 1] if i > 0 else c
+        out.append(
+            OHLCV(
+                asset=_ASSET,
+                trade_date=base + timedelta(days=i),
+                open=opn,
+                high=max(opn, c) * Decimal("1.01"),
+                low=min(opn, c) * Decimal("0.99"),
+                close=c,
+                volume=(vols[i] if vols else Decimal("1000000")),
+            )
+        )
+    return out
+
+
+class TestGateSkips:
+    """게이트 억제 이벤트 (ADR 0022 §11.10) — '억제된 거래만' 기록."""
+
+    # 6 bar flat(100) 후 jump/crash → bar_idx 6 에서 slope(period 5) 발화.
+    _RALLY: ClassVar[list[str]] = ["100", "100", "100", "100", "100", "100", "130"]
+    _CRASH: ClassVar[list[str]] = ["100", "100", "100", "100", "100", "100", "70"]
+
+    def _state(self) -> GridState:
+        return GridState(
+            reference_price=Decimal("110"),
+            grid_levels=(Decimal("90"), Decimal("110"), Decimal("130")),
+        )
+
+    def _cfg(self, **kw: object) -> GridConfig:
+        base: dict[str, object] = {
+            "grid_count": 2,
+            "fallback_k": Decimal("0.05"),
+            "rebalance_mode": "on_breach",
+            "volatility_measure": "adr",
+            "slope_gate": False,
+            "slope_gate_period": 5,
+            "slope_gate_threshold": Decimal("0.05"),
+            "volume_gate": False,
+            "volume_gate_period": 5,
+            "volume_gate_multiplier": Decimal("1.5"),
+        }
+        base.update(kw)
+        return GridConfig(**base)  # type: ignore[arg-type]
+
+    def _eval(
+        self, bars: list[OHLCV], cfg: GridConfig, *, holdings: Decimal,
+        cash: Decimal = Decimal("0"), state: GridState | None = None,
+    ):
+        return GridStrategy().evaluate(
+            asset=_ASSET, bars=bars, bar_idx=6, state=state or self._state(),
+            available_cash=Money(amount=cash, currency=Currency.KRW),
+            holdings=holdings, config=cfg,
+        )
+
+    def test_slope_gate_records_suppressed_sell(self):
+        ev = self._eval(
+            _bars_from_closes(self._RALLY), self._cfg(slope_gate=True),
+            holdings=Decimal("120"),
+        )
+        assert [d for d in ev.decisions if d.side is OrderSide.SELL] == []
+        assert len(ev.gate_skips) == 1
+        gs = ev.gate_skips[0]
+        assert gs.side is OrderSide.SELL
+        assert gs.reasoning["gate"] == "slope"
+        assert gs.level_prices == (Decimal("110"), Decimal("130"))
+        assert Decimal(gs.reasoning["slope_roc"]) > Decimal("0.05")
+
+    def test_slope_gate_records_suppressed_buy(self):
+        ev = self._eval(
+            _bars_from_closes(self._CRASH), self._cfg(slope_gate=True),
+            holdings=Decimal("0"), cash=Decimal("100000000"),
+        )
+        assert [d for d in ev.decisions if d.side is OrderSide.BUY] == []
+        assert len(ev.gate_skips) == 1
+        gs = ev.gate_skips[0]
+        assert gs.side is OrderSide.BUY
+        assert gs.reasoning["gate"] == "slope"
+        assert gs.level_prices == (Decimal("90"),)
+        assert Decimal(gs.reasoning["slope_roc"]) < Decimal("-0.05")
+
+    def test_volume_gate_records_suppressed_sell(self):
+        vols = [Decimal("1000000")] * 6 + [Decimal("5000000")]
+        ev = self._eval(
+            _bars_from_closes(self._RALLY, vols),
+            self._cfg(volume_gate=True),
+            holdings=Decimal("120"),
+        )
+        assert len(ev.gate_skips) == 1
+        gs = ev.gate_skips[0]
+        assert gs.reasoning["gate"] == "volume"
+        assert Decimal(gs.reasoning["volume_ratio"]) > Decimal("1.5")
+
+    def test_no_skip_when_no_holdings(self):
+        # 게이트 활성 + 상향 교차지만 보유분 0 → 가정 매도 없음 → 미기록.
+        ev = self._eval(
+            _bars_from_closes(self._RALLY), self._cfg(slope_gate=True),
+            holdings=Decimal("0"),
+        )
+        assert ev.gate_skips == []
+
+    def test_no_skip_when_no_crossing(self):
+        # 게이트 활성이지만 그리드가 전부 위(교차 없음) → 미기록.
+        far = GridState(
+            reference_price=Decimal("220"),
+            grid_levels=(Decimal("200"), Decimal("220"), Decimal("240")),
+        )
+        ev = self._eval(
+            _bars_from_closes(self._RALLY), self._cfg(slope_gate=True),
+            holdings=Decimal("120"), state=far,
+        )
+        assert ev.gate_skips == []
+
+    def test_no_skip_when_gates_off(self):
+        # 게이트 off → 억제 없음 + 매도 실제 발생 (would-trade 검증).
+        ev = self._eval(
+            _bars_from_closes(self._RALLY), self._cfg(), holdings=Decimal("120")
+        )
+        assert ev.gate_skips == []
+        assert [d for d in ev.decisions if d.side is OrderSide.SELL]

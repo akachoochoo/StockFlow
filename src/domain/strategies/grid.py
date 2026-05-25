@@ -88,15 +88,35 @@ class GridDecision(ValueObject):
     reasoning: dict[str, str]
 
 
+class GridGateSkip(ValueObject):
+    """게이트가 억제한 그리드 교차 (cost-free, 시각화·로깅용 — ADR 0022 §11.10).
+
+    **억제된 거래만** 기록: 게이트가 활성이고, 교차가 있고, 보유분/현금이 있어
+    가정 거래(``_sell_decision``/``_buy_decision``)가 실제로 emit 되었을 경우에만
+    생성. 게이트가 매일 활성이어도 가정 거래가 없으면 미기록 (노이즈 차단).
+
+    ``side`` = 억제된 방향 (SELL = 상향교차 매도 억제, BUY = 하향교차 매수 억제).
+    ``level_prices`` = 억제된 교차 레벨가 (오름/내림차순 그대로).
+    ``reasoning`` = ``gate`` (slope/volume/slope+volume) + ``slope_roc`` /
+    ``volume_ratio`` (라벨용) + ``count``.
+    """
+
+    side: OrderSide
+    level_prices: tuple[Decimal, ...] = Field(min_length=1)
+    reasoning: dict[str, str]
+
+
 class GridEvaluation(DomainModel):
     """GridStrategy.evaluate 출력 — 한 bar 의 그리드 결정 + 다음 그리드 상태.
 
     ``decisions`` 순서 = SELL(교차 오름차순) → BUY(교차 내림차순) (paper 자연
     순서). ``next_state`` = reset 후 그리드 (reset 없으면 입력 state 동일).
+    ``gate_skips`` = 게이트가 억제한 (가정) 거래 (기본 [] → 회귀 zero).
     """
 
     decisions: list[GridDecision]
     next_state: GridState
+    gate_skips: list[GridGateSkip] = Field(default_factory=list)
     reasoning: dict[str, str]
 
 
@@ -143,9 +163,9 @@ class GridStrategy:
             elif curr_close <= level < prev_close:
                 crossed_down.append((i, level))
 
-        # 2. Trade gates.
-        sb_slope, ss_slope = self._slope_gate(bars, bar_idx, config)
-        sb_vol, ss_vol = self._volume_gate(bars, bar_idx, config)
+        # 2. Trade gates (magnitude = 라벨용 roc/ratio, 비활성 시 None).
+        sb_slope, ss_slope, slope_roc = self._slope_gate(bars, bar_idx, config)
+        sb_vol, ss_vol, vol_ratio = self._volume_gate(bars, bar_idx, config)
         skip_buy = sb_slope or sb_vol
         skip_sell = ss_slope or ss_vol
 
@@ -167,6 +187,41 @@ class GridStrategy:
                 if dec is not None:
                     decisions.append(dec)
                     cash -= dec.rounded_price * dec.quantity
+
+        # 3b. 게이트 억제 이벤트 — **억제된 거래만**: 교차가 있고 게이트가 막았고
+        # 가정 거래가 실제로 emit 되었을 경우에만 (게이트가 막았으므로 hold/cash 는
+        # 미진화 = 원본 holdings/available_cash 기준으로 가정 거래 판정).
+        gate_skips: list[GridGateSkip] = []
+        if (
+            skip_sell
+            and crossed_up
+            and self._sell_decision(
+                asset, crossed_up[0][0], crossed_up[0][1], holdings, n
+            )
+            is not None
+        ):
+            gate_skips.append(
+                self._gate_skip(
+                    OrderSide.SELL, crossed_up,
+                    slope=ss_slope, slope_roc=slope_roc,
+                    volume=ss_vol, vol_ratio=vol_ratio,
+                )
+            )
+        if skip_buy and crossed_down:
+            first_i, first_level = next(iter(reversed(crossed_down)))
+            if (
+                self._buy_decision(
+                    asset, first_i, first_level, available_cash.amount, n
+                )
+                is not None
+            ):
+                gate_skips.append(
+                    self._gate_skip(
+                        OrderSide.BUY, crossed_down,
+                        slope=sb_slope, slope_roc=slope_roc,
+                        volume=sb_vol, vol_ratio=vol_ratio,
+                    )
+                )
 
         # 4. Grid reset (research run() 228-245 동일).
         should_reset = config.rebalance_mode == "daily" or (
@@ -195,6 +250,7 @@ class GridStrategy:
         return GridEvaluation(
             decisions=decisions,
             next_state=next_state,
+            gate_skips=gate_skips,
             reasoning={
                 "asset": asset.fqn,
                 "trade_date": bars[bar_idx].trade_date.isoformat(),
@@ -207,6 +263,7 @@ class GridStrategy:
                 "skip_sell": str(skip_sell),
                 "reset": str(should_reset),
                 "decisions": str(len(decisions)),
+                "gate_skips": str(len(gate_skips)),
             },
         )
 
@@ -215,25 +272,31 @@ class GridStrategy:
     # ------------------------------------------------------------------
     def _slope_gate(
         self, bars: list[OHLCV], bar_idx: int, config: GridConfig
-    ) -> tuple[bool, bool]:
-        """(skip_buy, skip_sell) — 급락 시 매수 skip, 급등 시 매도 skip."""
+    ) -> tuple[bool, bool, Decimal | None]:
+        """(skip_buy, skip_sell, roc) — 급락 시 매수 skip, 급등 시 매도 skip.
+
+        ``roc`` = period 등락률 (게이트 비활성 시 None — 라벨용).
+        """
         if not config.slope_gate or bar_idx < config.slope_gate_period:
-            return False, False
+            return False, False, None
         prev_close = bars[bar_idx - config.slope_gate_period].close
         curr_close = bars[bar_idx].close
         if prev_close <= 0:
-            return False, False
+            return False, False, None
         roc = (curr_close - prev_close) / prev_close
         skip_buy = roc < -config.slope_gate_threshold
         skip_sell = roc > config.slope_gate_threshold
-        return skip_buy, skip_sell
+        return skip_buy, skip_sell, roc
 
     def _volume_gate(
         self, bars: list[OHLCV], bar_idx: int, config: GridConfig
-    ) -> tuple[bool, bool]:
-        """(skip_buy, skip_sell) — 거래량 급증+상승 시 매도 skip, 급증+하락 시 매수 skip."""
+    ) -> tuple[bool, bool, Decimal | None]:
+        """(skip_buy, skip_sell, ratio) — 거래량 급증+상승 시 매도 skip, 급증+하락 시 매수 skip.
+
+        ``ratio`` = curr_vol / vol_avg (스킵 발생 시에만, else None — 라벨용).
+        """
         if not config.volume_gate or bar_idx < config.volume_gate_period:
-            return False, False
+            return False, False, None
         start = bar_idx - config.volume_gate_period + 1
         vol_sum = sum(
             (bars[i].volume for i in range(start, bar_idx + 1)), Decimal("0")
@@ -241,14 +304,43 @@ class GridStrategy:
         vol_avg = vol_sum / Decimal(config.volume_gate_period)
         curr_vol = bars[bar_idx].volume
         if vol_avg <= 0 or curr_vol <= vol_avg * config.volume_gate_multiplier:
-            return False, False
+            return False, False, None
+        ratio = curr_vol / vol_avg
         prev_close = bars[bar_idx - 1].close if bar_idx > 0 else bars[bar_idx].close
         curr_close = bars[bar_idx].close
         if curr_close > prev_close:
-            return False, True
+            return False, True, ratio
         if curr_close < prev_close:
-            return True, False
-        return False, False
+            return True, False, ratio
+        return False, False, None
+
+    @staticmethod
+    def _gate_skip(
+        side: OrderSide,
+        crossed: list[tuple[int, Decimal]],
+        *,
+        slope: bool,
+        slope_roc: Decimal | None,
+        volume: bool,
+        vol_ratio: Decimal | None,
+    ) -> GridGateSkip:
+        """억제 이벤트 조립 — 기여 게이트 + magnitude 를 reasoning 에 박제."""
+        gates: list[str] = []
+        reasoning: dict[str, str] = {"count": str(len(crossed))}
+        if slope:
+            gates.append("slope")
+            if slope_roc is not None:
+                reasoning["slope_roc"] = str(slope_roc)
+        if volume:
+            gates.append("volume")
+            if vol_ratio is not None:
+                reasoning["volume_ratio"] = str(vol_ratio)
+        reasoning["gate"] = "+".join(gates) if gates else "unknown"
+        return GridGateSkip(
+            side=side,
+            level_prices=tuple(level for _, level in crossed),
+            reasoning=reasoning,
+        )
 
     # ------------------------------------------------------------------
     # 매수/매도 결정 (research _maybe_buy / _maybe_sell 포팅, cost-free)
