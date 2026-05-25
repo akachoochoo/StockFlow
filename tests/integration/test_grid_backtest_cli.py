@@ -59,6 +59,7 @@ class TestGridBacktestCLI:
         assert "KRX:069500" in result.output
         assert "Buy&Hold" in result.output
         assert "MDD" in result.output
+        assert "실현" in result.output and "미실현" in result.output  # 손익 분해
 
     def test_json_output(self, tmp_path: Path):
         csv = _write_csv(tmp_path)
@@ -69,6 +70,8 @@ class TestGridBacktestCLI:
         assert "dgt" in payload and "buy_and_hold" in payload
         assert "max_drawdown_pct" in payload["dgt"]
         assert int(payload["dgt"]["trades"]) >= 0
+        assert "realized_pnl" in payload["dgt"]
+        assert "unrealized_pnl" in payload["dgt"]
 
     def test_unknown_code_errors(self, tmp_path: Path):
         csv = _write_csv(tmp_path)
@@ -134,6 +137,7 @@ class TestGridBacktestConfig:
         assert "멀티에셋" in result.output and "2 종목" in result.output
         assert "KRX:069500" in result.output and "KRX:132030" in result.output
         assert "Buy&Hold" in result.output
+        assert "실현" in result.output and "미실현" in result.output  # 손익 분해
 
     def test_json_output(self, tmp_path: Path):
         csv_a, csv_b = _two_csvs(tmp_path)
@@ -150,6 +154,8 @@ class TestGridBacktestConfig:
         assert payload["mode"] == "config"
         assert len(payload["dgt"]["per_asset"]) == 2
         assert payload["dgt"]["per_asset"][0]["allocated"] == "50000000"
+        assert "realized_pnl" in payload["dgt"] and "unrealized_pnl" in payload["dgt"]
+        assert "realized_pnl" in payload["dgt"]["per_asset"][0]
 
     def test_config_and_code_mutually_exclusive(self, tmp_path: Path):
         csv_a, _ = _two_csvs(tmp_path)

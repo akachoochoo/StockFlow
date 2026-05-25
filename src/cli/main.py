@@ -655,6 +655,10 @@ def _run_grid_backtest_config(
     init = Decimal(capital)
     dgt_mdd = _max_drawdown([v for _, v in port.daily_values])
     dgt_return = (port.final_value - init) / init * 100
+    # 실현/미실현 분해 — 종목별 1회 산출 후 포트폴리오 합산.
+    asset_splits = [r.result.pnl_split() for r in port.per_asset]
+    dgt_realized = sum((rl for rl, _ in asset_splits), Decimal("0"))
+    dgt_unrealized = sum((ur for _, ur in asset_splits), Decimal("0"))
 
     # B&H 포트폴리오 = 종목별 균등 분할(floor shares), 공통일 정렬 + 미투자 현금.
     per = init // len(inputs)
@@ -690,6 +694,8 @@ def _run_grid_backtest_config(
                     "dgt": {
                         "final_value": str(port.final_value),
                         "return_pct": str(dgt_return),
+                        "realized_pnl": str(dgt_realized),
+                        "unrealized_pnl": str(dgt_unrealized),
                         "max_drawdown_pct": str(dgt_mdd * 100),
                         "trades": sum(
                             len(r.result.trades) for r in port.per_asset
@@ -700,8 +706,12 @@ def _run_grid_backtest_config(
                                 "allocated": str(r.allocated.amount),
                                 "final_value": str(r.result.final_value),
                                 "trades": len(r.result.trades),
+                                "realized_pnl": str(realized),
+                                "unrealized_pnl": str(unrealized),
                             }
-                            for r in port.per_asset
+                            for r, (realized, unrealized) in zip(
+                                port.per_asset, asset_splits, strict=True
+                            )
                         ],
                     },
                     "buy_and_hold": {
@@ -722,15 +732,22 @@ def _run_grid_backtest_config(
     click.echo(
         f"기간: {start} → {end} ({len(common_dates)} 공통 거래일), 초기 {_won(init)}"
     )
-    for r in port.per_asset:
+    for r, (realized, unrealized) in zip(port.per_asset, asset_splits, strict=True):
         rr = r.result
         click.echo(
             f"  {r.asset.fqn} ({r.asset.name}): 배분 {_won(r.allocated.amount)} / "
-            f"최종 {_won(rr.final_value)} / 거래 {len(rr.trades)}"
+            f"최종 {_won(rr.final_value)} / 거래 {len(rr.trades)} / "
+            f"실현 {_won(realized)} / 미실현 {_won(unrealized)}"
         )
     click.echo(
         f"DGT      : 최종 {_won(port.final_value)} / 수익 {_pct(dgt_return)} / "
         f"MDD {_pct(dgt_mdd * 100)}"
+    )
+    click.echo(
+        f"           ├ 실현   {_won(dgt_realized)} ({_pct(dgt_realized / init * 100)})"
+    )
+    click.echo(
+        f"           └ 미실현 {_won(dgt_unrealized)} ({_pct(dgt_unrealized / init * 100)})"
     )
     click.echo(
         f"Buy&Hold : 최종 {_won(bh_final)} / 수익 {_pct(bh_return)} / "
@@ -916,6 +933,8 @@ def grid_backtest(
                     "dgt": {
                         "final_value": str(result.final_value),
                         "return_pct": str(dgt_return),
+                        "realized_pnl": str(result.pnl_split()[0]),
+                        "unrealized_pnl": str(result.pnl_split()[1]),
                         "max_drawdown_pct": str(dgt_mdd * 100),
                         "trades": len(result.trades),
                         "final_holdings": str(result.final_holdings),
@@ -938,9 +957,16 @@ def grid_backtest(
         f"그리드: n={grid_count} {rebalance} {measure} "
         f"k=[{k_min},{k_max}]x{multiplier} vol_gate={'on' if volume_gate else 'off'}"
     )
+    realized, unrealized = result.pnl_split()
     click.echo(
         f"DGT      : 최종 {_won(result.final_value)} / 수익 {_pct(dgt_return)} / "
         f"MDD {_pct(dgt_mdd * 100)} / 거래 {len(result.trades)} / 보유 {result.final_holdings}"
+    )
+    click.echo(
+        f"           ├ 실현   {_won(realized)} ({_pct(realized / init * 100)})"
+    )
+    click.echo(
+        f"           └ 미실현 {_won(unrealized)} ({_pct(unrealized / init * 100)})"
     )
     click.echo(
         f"Buy&Hold : 최종 {_won(bh_final)} / 수익 {_pct(bh_return)} / "
