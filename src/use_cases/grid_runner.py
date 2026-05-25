@@ -23,6 +23,8 @@ from datetime import date  # noqa: TC003 — pydantic 가 결과 모델 필드 �
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from pydantic import Field
+
 from src.domain.cost_model import KoreanMarketCostModel
 from src.domain.models import DomainModel, Money, OrderSide, ValueObject
 from src.domain.strategies.grid import GridState, GridStrategy
@@ -60,6 +62,19 @@ class GridDailyValue(ValueObject):
     grid_levels: tuple[Decimal, ...] = ()
 
 
+class GridGateEvent(ValueObject):
+    """게이트가 억제한 (가정) 거래 — 날짜 부착 (시각화·로깅용, ADR 0022 §11.10).
+
+    ``GridStrategy`` 의 cost-free ``GridGateSkip`` 에 ``trade_date`` 만 부착.
+    거래가 실제로 발생하지 않았으므로 cost 무관.
+    """
+
+    trade_date: date
+    side: OrderSide
+    level_prices: tuple[Decimal, ...]
+    reasoning: dict[str, str]
+
+
 class GridRunResult(DomainModel):
     """GridRunner.run 출력."""
 
@@ -70,6 +85,8 @@ class GridRunResult(DomainModel):
     final_value: Decimal
     trades: list[GridTrade]
     daily_values: list[GridDailyValue]
+    # 게이트 억제 이벤트 (기본 [] → 회귀 zero — 동치/determinism 테스트 무영향).
+    gate_events: list[GridGateEvent] = Field(default_factory=list)
 
 
 class GridRunner:
@@ -120,6 +137,7 @@ class GridRunner:
         avg_cost = Decimal("0")  # 가중평균 매수 체결가 (profit_guard, ADR 0022 D7)
         trades: list[GridTrade] = []
         daily: list[GridDailyValue] = []
+        gate_events: list[GridGateEvent] = []
 
         for bar_idx, bar in enumerate(bars):
             # 이 바 거래에 적용된 그리드 (evaluate 의 reset 전) — 시변 차트용.
@@ -189,6 +207,15 @@ class GridRunner:
                             cash_delta=sc.net_proceeds,
                         )
                     )
+            for gs in ev.gate_skips:
+                gate_events.append(
+                    GridGateEvent(
+                        trade_date=bar.trade_date,
+                        side=gs.side,
+                        level_prices=gs.level_prices,
+                        reasoning=gs.reasoning,
+                    )
+                )
             state = ev.next_state
             total = cash + holdings * bar.close
             daily.append(
@@ -211,4 +238,5 @@ class GridRunner:
             final_value=cash + holdings * final_close,
             trades=trades,
             daily_values=daily,
+            gate_events=gate_events,
         )

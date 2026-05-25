@@ -268,3 +268,61 @@ class TestDailyGridLevels:
         )
         distinct = {d.grid_levels for d in res.daily_values}
         assert len(distinct) > 1  # 리셋으로 그리드가 1개 이상 이동
+
+
+# ---------------------------------------------------------------------------
+# 게이트 억제 이벤트 표면화 (시각화용, ADR 0022 §11.10)
+# ---------------------------------------------------------------------------
+def _accumulate_then_jump_bars() -> list[OHLCV]:
+    """하락(매수 누적) 후 급등 → bar_idx 6 에서 slope 게이트가 매도 억제."""
+    base = date(2024, 1, 1)
+    closes = ["30000", "29000", "28000", "27000", "26000", "25000", "33000"]
+    out: list[OHLCV] = []
+    for i, c in enumerate(closes):
+        cc = Decimal(c)
+        opn = Decimal(closes[i - 1]) if i > 0 else cc
+        out.append(
+            OHLCV(
+                asset=_ASSET,
+                trade_date=base + timedelta(days=i),
+                open=opn,
+                high=max(opn, cc) * Decimal("1.01"),
+                low=min(opn, cc) * Decimal("0.99"),
+                close=cc,
+                volume=Decimal("1000000"),
+            )
+        )
+    return out
+
+
+class TestGateEvents:
+    def _cfg(self, **kw: object) -> GridConfig:
+        base: dict[str, object] = {
+            "grid_count": 4,
+            "fallback_k": Decimal("0.05"),
+            "rebalance_mode": "daily",
+            "volatility_measure": "adr",
+            "slope_gate": False,
+            "slope_gate_period": 5,
+            "slope_gate_threshold": Decimal("0.05"),
+            "volume_gate": False,
+        }
+        base.update(kw)
+        return GridConfig(**base)  # type: ignore[arg-type]
+
+    def test_slope_skip_surfaced_in_result(self):
+        res = GridRunner().run(
+            asset=_ASSET, bars=_accumulate_then_jump_bars(),
+            config=self._cfg(slope_gate=True), initial_capital=_CAPITAL,
+        )
+        sells = [e for e in res.gate_events if e.side is OrderSide.SELL]
+        assert sells  # 매도 억제가 결과에 표면화
+        assert sells[0].reasoning["gate"] == "slope"
+        assert sells[0].level_prices
+
+    def test_no_gate_events_when_gates_off(self):
+        res = GridRunner().run(
+            asset=_ASSET, bars=_accumulate_then_jump_bars(),
+            config=self._cfg(), initial_capital=_CAPITAL,
+        )
+        assert res.gate_events == []  # 게이트 off → 억제 이벤트 0 (회귀)
