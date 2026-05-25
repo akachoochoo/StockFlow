@@ -63,22 +63,44 @@ class _MarkerView:
 def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) -> str:
     """도메인 GridRunResult → lightweight-charts 인터랙티브 HTML.
 
-    캔들 + 거래량 + 매수/매도 마커 + 초기 그리드 라인. 시변(time-varying) 그리드
-    엔벨로프는 research 결과 shape 의존이라 본 버전에서는 제외(초기 그리드만).
+    캔들 + 거래량 + 매수/매도 마커 + **시변(time-varying) 그리드** (ADR 0022 §11.8).
+    바별 활성 그리드(``GridRunResult.daily_values[].grid_levels``)를 LineSeries 로
+    그려 on_breach 재중심이 계단식으로 보인다. grid_levels 미기록(구버전 결과) 시
+    초기 그리드 정적 라인으로 폴백.
     """
     from html import escape
 
-    from src.domain.strategies.grid_math import adaptive_k, grid_levels
     from src.research.dgt._interactive_chart import (
         _serialize_grid_levels,
+        _serialize_grid_series,
         _serialize_markers,
         _serialize_ohlcv,
         _serialize_volume,
         build_interactive_chart_html,
     )
 
+    title = f"{escape(asset.name)} ({escape(asset.code)}) — DGT 백테스트"
     date_set = {b.trade_date.strftime("%Y-%m-%d") for b in bars}
     markers = _serialize_markers([_MarkerView(t) for t in result.trades], date_set)
+    ohlcv = _serialize_ohlcv(bars)
+    volume = _serialize_volume(bars)
+    marker_groups = [{"label": asset.code, "markers": markers}]
+    color = "#2e86c1"
+
+    # 시변 그리드: 바별 활성 그리드 (리셋마다 계단식 이동).
+    dv = [d for d in result.daily_values if d.grid_levels]
+    if dv:
+        envelope = [list(d.grid_levels) for d in dv]
+        bar_dates = [d.trade_date for d in dv]
+        series = _serialize_grid_series(envelope, bar_dates, color=color)
+        return build_interactive_chart_html(
+            title=title, ohlcv=ohlcv, volume=volume, marker_groups=marker_groups,
+            grid_levels=[],
+            grid_groups=[{"label": asset.code, "color": color, "levels": series}],
+        )
+
+    # 폴백 — grid_levels 미기록 시 초기 그리드 정적 라인.
+    from src.domain.strategies.grid_math import adaptive_k, grid_levels
 
     reference = bars[0].close
     k0 = adaptive_k(
@@ -88,15 +110,10 @@ def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) 
         measure=config.volatility_measure,
     )
     levels = grid_levels(config.grid_count, reference, k0, config.levels_above)
-    # _serialize_grid_levels is duck-typed (dict or object) — use a dict.
-    grid_artifact = {"grid_levels": list(levels), "reference_price": reference}
-
+    artifact = {"grid_levels": list(levels), "reference_price": reference}
     return build_interactive_chart_html(
-        title=f"{escape(asset.name)} ({escape(asset.code)}) — DGT 백테스트",
-        ohlcv=_serialize_ohlcv(bars),
-        volume=_serialize_volume(bars),
-        marker_groups=[{"label": asset.code, "markers": markers}],
-        grid_levels=_serialize_grid_levels(grid_artifact),
+        title=title, ohlcv=ohlcv, volume=volume, marker_groups=marker_groups,
+        grid_levels=_serialize_grid_levels(artifact),
     )
 
 

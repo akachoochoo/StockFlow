@@ -55,6 +55,9 @@ class GridDailyValue(ValueObject):
     holdings: Decimal
     close_price: Decimal
     total_value: Decimal
+    # 그날 거래에 적용된 활성 그리드 레벨 (리셋 전). 시변 그리드 차트용
+    # (ADR 0022 §11.8 — on_breach 재중심을 차트에 반영). 기본 () = 미기록.
+    grid_levels: tuple[Decimal, ...] = ()
 
 
 class GridRunResult(DomainModel):
@@ -119,6 +122,8 @@ class GridRunner:
         daily: list[GridDailyValue] = []
 
         for bar_idx, bar in enumerate(bars):
+            # 이 바 거래에 적용된 그리드 (evaluate 의 reset 전) — 시변 차트용.
+            active_grid = state.grid_levels
             ev = self._strategy.evaluate(
                 asset=asset,
                 bars=bars,
@@ -193,6 +198,7 @@ class GridRunner:
                     holdings=holdings,
                     close_price=bar.close,
                     total_value=total,
+                    grid_levels=active_grid,
                 )
             )
 

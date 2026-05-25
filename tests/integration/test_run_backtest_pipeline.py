@@ -248,6 +248,7 @@ class TestReporterE2E:
         html = build_dgt_chart_html(asset, bars, cfg, result)
         assert "lightweight-charts" in html.lower() or "candlestick" in html.lower()
         assert "069500" in html
+        assert '"levelIndex"' in html  # 시변 그리드(LineSeries) 렌더 — ADR §11.8
 
     def test_report_grid_writes_interactive_chart(self, tmp_path):
         from scripts.run_backtest import _report_grid
@@ -258,7 +259,9 @@ class TestReporterE2E:
         _report_grid(cfg, {"069500": csv}, _RS, _RE, 10_000_000, rdir)
         chart = rdir / "069500.html"
         assert chart.exists()
-        assert "lightweight-charts" in chart.read_text(encoding="utf-8").lower()
+        content = chart.read_text(encoding="utf-8")
+        assert "lightweight-charts" in content.lower()
+        assert '"levelIndex"' in content  # 시변 그리드 렌더
 
     def test_report_split_writes_episode_index(self, tmp_path):
         from scripts.run_backtest import _report_split

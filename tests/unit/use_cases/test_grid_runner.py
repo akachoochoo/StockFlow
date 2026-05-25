@@ -245,3 +245,26 @@ class TestProfitGuard:
         )
         assert r1.final_value == r2.final_value
         assert len(r1.trades) == len(r2.trades)
+
+
+# ---------------------------------------------------------------------------
+# 바별 활성 그리드 기록 (시변 차트용, ADR 0022 §11.8 A)
+# ---------------------------------------------------------------------------
+class TestDailyGridLevels:
+    def test_each_daily_value_records_grid(self):
+        res = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=_domain_config(), initial_capital=_CAPITAL
+        )
+        assert len(res.daily_values) == len(_bars())
+        n_levels = _domain_config().grid_count + 1
+        for d in res.daily_values:
+            assert len(d.grid_levels) == n_levels  # 매 바 활성 그리드 기록
+
+    def test_on_breach_grid_moves_across_resets(self):
+        # on_breach: 가격이 envelope 이탈하면 재중심 → 바별 그리드가 달라짐.
+        cfg = _domain_config().model_copy(update={"rebalance_mode": "on_breach"})
+        res = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=cfg, initial_capital=_CAPITAL
+        )
+        distinct = {d.grid_levels for d in res.daily_values}
+        assert len(distinct) > 1  # 리셋으로 그리드가 1개 이상 이동
