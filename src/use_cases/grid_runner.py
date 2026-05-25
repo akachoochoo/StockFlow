@@ -20,7 +20,7 @@ models) 만 inward 의존. 외부 import 0, 시계 0 (시점 = bars 주입).
 from __future__ import annotations
 
 from datetime import date  # noqa: TC003 — pydantic 가 결과 모델 필드 타입을 런타임 해석
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -87,6 +87,39 @@ class GridRunResult(DomainModel):
     daily_values: list[GridDailyValue]
     # 게이트 억제 이벤트 (기본 [] → 회귀 zero — 동치/determinism 테스트 무영향).
     gate_events: list[GridGateEvent] = Field(default_factory=list)
+
+    def pnl_split(self) -> tuple[Decimal, Decimal]:
+        """(실현, 미실현) 손익 분해 (정수 원) — 합 = round(final_value - 초기자본).
+
+        실현 = 매도로 확정된 손익(순매도대금 - 매도분 평균원가). 미실현 = 보유분
+        평가손익(최종 종가 평가 - 잔여 원가)과 동치. 원가(cost basis)는 매수 수수료
+        포함(``cash_delta`` 기준 — BUY 는 -total_cost, SELL 은 +net_proceeds). KRW 은
+        원 단위 불가분이라 둘 다 정수 원으로 반올림하고 미실현을 *잔차*(반올림 총손익
+        - 반올림 실현)로 산출 — 평균원가 나눗셈의 sub-won 노이즈를 제거하면서 **합산
+        항등식을 정확히** 보장. 음수(손실) 가능.
+        """
+        hold = Decimal("0")
+        cost_basis = Decimal("0")  # 보유분 총 원가 (매수 gross + commission)
+        realized = Decimal("0")
+        for t in self.trades:
+            if t.side is OrderSide.BUY:
+                cost_basis += -t.cash_delta  # total_cost (gross + commission)
+                hold += t.quantity
+            else:  # SELL
+                basis_sold = (
+                    cost_basis / hold * t.quantity if hold > 0 else Decimal("0")
+                )
+                realized += t.cash_delta - basis_sold  # net_proceeds - 매도분 원가
+                cost_basis -= basis_sold
+                hold -= t.quantity
+        # KRW 은 원 단위 불가분 → 정수 원으로 반올림(평균원가 나눗셈의 sub-won 노이즈
+        # 제거). 미실현 = 반올림 총손익 - 반올림 실현 (잔차) → 합산 항등식 정확.
+        total = (self.final_value - self.initial_capital.amount).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+        realized = realized.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        unrealized = total - realized
+        return realized, unrealized
 
 
 class GridRunner:

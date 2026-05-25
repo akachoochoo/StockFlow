@@ -8,7 +8,7 @@ with-cost 스모크.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 
@@ -326,3 +326,72 @@ class TestGateEvents:
             config=self._cfg(), initial_capital=_CAPITAL,
         )
         assert res.gate_events == []  # 게이트 off → 억제 이벤트 0 (회귀)
+
+
+# ---------------------------------------------------------------------------
+# 실현/미실현 손익 분해 (수익 로그 — ADR 0022 §11.11)
+# ---------------------------------------------------------------------------
+def _won_total(res: object) -> Decimal:
+    """반올림 총손익 (정수 원) — pnl_split 합산 대상."""
+    return (res.final_value - _CAPITAL.amount).quantize(  # type: ignore[attr-defined]
+        Decimal("1"), rounding=ROUND_HALF_UP
+    )
+
+
+class TestPnlSplit:
+    def test_sums_to_total_with_cost(self):
+        # 핵심 불변: 실현 + 미실현 = round(final_value - 초기자본) (실비용에서도 정확).
+        res = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=_domain_config(),
+            initial_capital=_CAPITAL,
+        )
+        realized, unrealized = res.pnl_split()
+        assert realized + unrealized == _won_total(res)
+
+    def test_sums_to_total_zero_cost(self):
+        zero = KoreanMarketCostModel(
+            commission_rate=Decimal("0"),
+            etf_tax_rate=Decimal("0"),
+            stock_tax_rate=Decimal("0"),
+        )
+        res = GridRunner(cost_model=zero).run(
+            asset=_ASSET, bars=_bars(), config=_domain_config(),
+            initial_capital=_CAPITAL,
+        )
+        realized, unrealized = res.pnl_split()
+        assert realized + unrealized == _won_total(res)
+
+    def test_pnl_values_are_whole_won(self):
+        # KRW 불가분 — 실현/미실현 모두 정수 원.
+        res = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=_domain_config(),
+            initial_capital=_CAPITAL,
+        )
+        realized, unrealized = res.pnl_split()
+        assert realized == realized.quantize(Decimal("1"))
+        assert unrealized == unrealized.quantize(Decimal("1"))
+
+    def test_no_sells_means_zero_realized(self):
+        # 단조 하락 + daily rebalance → 매수만 → 실현 0, 미실현 = 전체 손익.
+        base = date(2024, 1, 1)
+        closes = ["30000", "29000", "28000", "27000", "26000", "25000", "24000"]
+        bars = [
+            OHLCV(
+                asset=_ASSET, trade_date=base + timedelta(days=i),
+                open=Decimal(closes[i - 1]) if i > 0 else Decimal(c),
+                high=max(Decimal(closes[i - 1]) if i > 0 else Decimal(c), Decimal(c))
+                * Decimal("1.01"),
+                low=min(Decimal(closes[i - 1]) if i > 0 else Decimal(c), Decimal(c))
+                * Decimal("0.99"),
+                close=Decimal(c), volume=Decimal("1000000"),
+            )
+            for i, c in enumerate(closes)
+        ]
+        cfg = _domain_config().model_copy(update={"volume_gate": False})
+        res = GridRunner().run(
+            asset=_ASSET, bars=bars, config=cfg, initial_capital=_CAPITAL
+        )
+        assert res.trades and all(t.side is OrderSide.BUY for t in res.trades)
+        realized, unrealized = res.pnl_split()
+        assert realized == Decimal("0")
+        assert unrealized == _won_total(res)
