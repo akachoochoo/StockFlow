@@ -72,3 +72,10 @@ assets:
     market: KOSPI
     asset_class: KR_STOCK
     listed_at: 2018-07-13
+  # 사용자 추가 (네오위즈, 백테스트 대상). listed_at = pykrx 데이터 시작일
+  # (⚠ KRX/DART 공식 상장일 확인 권장 — §5.1 money-critical).
+  "095660":
+    name: "네오위즈"
+    market: KOSDAQ
+    asset_class: KR_STOCK
+    listed_at: 2014-03-03
