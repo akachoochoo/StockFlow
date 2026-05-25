@@ -14,7 +14,7 @@ import pytest
 
 from src.cli.composition import asset_from_code
 from src.domain.cost_model import KoreanMarketCostModel
-from src.domain.models import OHLCV, Currency, Money
+from src.domain.models import OHLCV, Currency, Money, OrderSide
 from src.domain.strategies.grid import GridConfig
 from src.research.dgt.adaptive_runner import _AdaptiveConfig
 from src.research.dgt.cost_model import _KoreanMarketCostModel
@@ -189,3 +189,59 @@ class TestGuards:
                 config=_domain_config(),
                 initial_capital=Money(amount=Decimal("1000"), currency=Currency.USD),
             )
+
+
+# ---------------------------------------------------------------------------
+# profit_guard (ADR 0022 D7) — 평단 이하 매도 억제
+# ---------------------------------------------------------------------------
+def _below_avg_sells(trades: list) -> int:
+    """체결가 ≤ 그 시점 가중평균 매수가인 SELL 개수 (GridRunner avg_cost 미러)."""
+    hold = Decimal("0")
+    avg = Decimal("0")
+    count = 0
+    for t in trades:
+        if t.side is OrderSide.BUY:
+            avg = (avg * hold + t.rounded_price * t.quantity) / (hold + t.quantity)
+            hold += t.quantity
+        else:
+            if avg > 0 and t.rounded_price <= avg:
+                count += 1
+            hold -= t.quantity
+    return count
+
+
+class TestProfitGuard:
+    def test_default_off(self):
+        assert _domain_config().profit_guard is False
+
+    def test_on_skips_all_below_avg_sells(self):
+        # on_breach 모드 데이터엔 평단 이하 매도가 존재 (OFF 기준선).
+        base = _domain_config().model_copy(update={"rebalance_mode": "on_breach"})
+        off = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=base, initial_capital=_CAPITAL
+        )
+        assert _below_avg_sells(off.trades) > 0  # 데이터 유효성: OFF엔 평단 이하 매도 有
+
+        on = GridRunner().run(
+            asset=_ASSET, bars=_bars(),
+            config=base.model_copy(update={"profit_guard": True}),
+            initial_capital=_CAPITAL,
+        )
+        # 불변: profit_guard ON 이면 평단 이하 매도가 0
+        assert _below_avg_sells(on.trades) == 0
+        # guard 는 매도만 제거 (매수/총 매도 수 ≤ OFF)
+        n_off = sum(t.side is OrderSide.SELL for t in off.trades)
+        n_on = sum(t.side is OrderSide.SELL for t in on.trades)
+        assert 0 < n_on < n_off
+
+    def test_off_unchanged_regression(self):
+        # profit_guard 기본(off) → 명시 off 와 동일 (회귀 invariant).
+        cfg = _domain_config()
+        r1 = GridRunner().run(asset=_ASSET, bars=_bars(), config=cfg, initial_capital=_CAPITAL)
+        r2 = GridRunner().run(
+            asset=_ASSET, bars=_bars(),
+            config=cfg.model_copy(update={"profit_guard": False}),
+            initial_capital=_CAPITAL,
+        )
+        assert r1.final_value == r2.final_value
+        assert len(r1.trades) == len(r2.trades)

@@ -114,6 +114,7 @@ class GridRunner:
 
         cash = initial_capital.amount
         holdings = Decimal("0")
+        avg_cost = Decimal("0")  # 가중평균 매수 체결가 (profit_guard, ADR 0022 D7)
         trades: list[GridTrade] = []
         daily: list[GridDailyValue] = []
 
@@ -135,6 +136,12 @@ class GridRunner:
                     if bc.total_cost > cash:
                         # 실비용 affordability 재검 (cost-coupled edge — §8 Q8).
                         continue
+                    # 가중평균 매수 체결가 갱신 (profit_guard 기준 — research
+                    # dynamic_runner.py:213-218 동치).
+                    avg_cost = (
+                        (avg_cost * holdings + bc.rounded_price * dec.quantity)
+                        / (holdings + dec.quantity)
+                    )
                     cash -= bc.total_cost
                     holdings += dec.quantity
                     trades.append(
@@ -154,6 +161,14 @@ class GridRunner:
                     sc = self._cost_model.compute_sell_cost(
                         price=dec.level_price, quantity=dec.quantity, asset=asset
                     )
+                    # profit_guard (ADR 0022 D7): 체결가 ≤ 평단이면 매도 스킵 —
+                    # 손실 실현 방지 (research dynamic_runner.py:255-260 동치).
+                    if (
+                        config.profit_guard
+                        and avg_cost > 0
+                        and sc.rounded_price <= avg_cost
+                    ):
+                        continue
                     cash += sc.net_proceeds
                     holdings -= dec.quantity
                     trades.append(

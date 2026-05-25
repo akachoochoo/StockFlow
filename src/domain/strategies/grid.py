@@ -13,8 +13,8 @@
   비용은 use_case 에서 layered — backtest = full-fill-at-close 이상화(§8 Q8).
 
 Domain 규칙 (CLAUDE.md §1.1/§2/§3.2): 외부 import 0, datetime.now() 0 (시점 =
-bars/bar_idx 주입), Decimal-only. profit_guard(D7) / idempotency key(Q7) 는
-후속 증분.
+bars/bar_idx 주입), Decimal-only. profit_guard(D7) 는 GridConfig 플래그 +
+GridRunner 적용으로 구현(cost-aware). idempotency key(Q7) 는 후속 증분.
 """
 from __future__ import annotations
 
@@ -52,6 +52,10 @@ class GridConfig(DomainModel):
     volume_gate: bool = False
     volume_gate_period: int = Field(default=20, ge=1)
     volume_gate_multiplier: Decimal = Field(default=Decimal("2.0"), gt=Decimal(0))
+    # profit_guard (ADR 0022 D7): 평단 이하 매도 억제. True 면 체결가 ≤ 가중평균
+    # 매수가(avg_cost)인 SELL 을 스킵 — 손실 실현 방지. avg_cost 추적·게이트는
+    # cost-aware 라 GridRunner(use_case)가 적용한다(전략은 cost-free 유지).
+    profit_guard: bool = False
 
     @property
     def levels_above(self) -> int:

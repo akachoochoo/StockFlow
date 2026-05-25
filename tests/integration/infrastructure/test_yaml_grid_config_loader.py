@@ -76,6 +76,12 @@ class TestLoadHappyPath:
         assert ac.config.rebalance_mode == "on_breach"
         assert ac.config.volume_gate is True
 
+    def test_profit_guard(self, tmp_path):
+        # 기본 off, grid_parameters 로 켤 수 있음 (ADR 0022 D7).
+        assert load_grid_config(_write(tmp_path, _MINIMAL))["069500"].config.profit_guard is False
+        ac = load_grid_config(_write(tmp_path, _MINIMAL + "      profit_guard: true\n"))["069500"]
+        assert ac.config.profit_guard is True
+
     def test_multi_asset_order_preserved(self, tmp_path):
         body = """\
 version: "1.0"
