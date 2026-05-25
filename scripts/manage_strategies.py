@@ -819,6 +819,8 @@ _PARAM_HELP: dict[str, str] = {
     "volume_gate_multiplier": "평균 거래량 x 이 배수 초과 시 '급증' 판정(예 1.5).",
     "profit_guard": "평단 이상에서만 매도. on이면 체결가가 가중평균 매수가 이하인 "
     "매도를 스킵(손실 실현 방지) — 가격이 평단 위로 회복할 때까지 보유.",
+    "sell_cooldown_bars": "매도 후 N 거래일 매수 금지(0=off). 하락 재매수 연쇄·"
+    "whipsaw 억제 → MDD 방어(권고 5). 강세장 상단은 일부 양보.",
 }
 
 
