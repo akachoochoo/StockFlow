@@ -249,6 +249,9 @@ class TestReporterE2E:
         assert "lightweight-charts" in html.lower() or "candlestick" in html.lower()
         assert "069500" in html
         assert '"levelIndex"' in html  # 시변 그리드(LineSeries) 렌더 — ADR §11.8
+        # 통계 패널 (ADR §11.14) — 보유/회전율/예수금 칩 (투입%는 매도有일 때만).
+        assert 'class="stats-bar"' in html
+        assert "보유" in html and "회전율" in html and "예수금" in html
 
     def test_gate_markers_rendered_when_suppressed(self):
         # 게이트 억제 이벤트 → 차트에 ⊘gate 마커 토글 그룹 (ADR 0022 §11.10).

@@ -522,6 +522,35 @@ def _make_bar_dates(n: int = 3) -> list[date]:
     return [date(2024, 1, i + 1) for i in range(n)]
 
 
+class TestSummaryBar:
+    """summary 통계 패널 (ADR 0022 §11.14) — opt-in, None → 미렌더."""
+
+    def _build(self, summary: object) -> str:
+        bars = _make_bars(3)
+        return build_interactive_chart_html(
+            title="T", ohlcv=_serialize_ohlcv(bars), volume=_serialize_volume(bars),
+            marker_groups=[{"label": "S1", "markers": []}], grid_levels=[],
+            summary=summary,  # type: ignore[arg-type]
+        )
+
+    def test_renders_when_provided(self) -> None:
+        html = self._build([("보유", "69 주"), ("회전율", "1.25x")])
+        assert 'class="stats-bar"' in html
+        assert "보유" in html and "69 주" in html
+        assert "회전율" in html and "1.25x" in html
+
+    def test_absent_when_none(self) -> None:
+        assert 'class="stats-bar"' not in self._build(None)
+
+    def test_absent_when_empty(self) -> None:
+        assert 'class="stats-bar"' not in self._build([])
+
+    def test_escapes_values(self) -> None:
+        html = self._build([("x", "<b>&inject</b>")])
+        assert "<b>&inject</b>" not in html
+        assert "&lt;b&gt;" in html
+
+
 class TestSerializeGridSeries:
     def test_empty_envelope_returns_empty(self) -> None:
         result = _serialize_grid_series([], [], color="#ff0000")

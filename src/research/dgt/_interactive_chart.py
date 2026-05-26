@@ -286,6 +286,7 @@ def build_interactive_chart_html(
     grid_levels: list[dict[str, Any]],
     grid_groups: list[dict[str, Any]] | None = None,
     extra_panels: list[dict[str, Any]] | None = None,
+    summary: list[tuple[str, str]] | None = None,
 ) -> str:
     """Assemble a self-contained interactive HTML chart page.
 
@@ -318,6 +319,10 @@ def build_interactive_chart_html(
         #grid-toggles bar renders below #marker-toggles.
     extra_panels:
         Reserved for future equity-curve / additional panes (unused in v1).
+    summary:
+        Optional list of (label, value) pairs rendered as a stats bar below the
+        title (보유/평단/회전율/예치금 등 — ADR 0022 §11.14). Pre-formatted strings;
+        None/empty → no bar (backward-compatible).
     """
     js_lib = _load_lightweight_charts_js()
 
@@ -357,6 +362,16 @@ def build_interactive_chart_html(
     else:
         grid_toggle_html = ""
 
+    # Stats bar (ADR 0022 §11.14) — 보유/평단/회전율/예치금 등 요약 칩.
+    if summary:
+        _stats = "".join(
+            f'<span class="stat"><b>{escape(str(label))}</b> {escape(str(value))}</span>'
+            for label, value in summary
+        )
+        stats_html = f'<div class="stats-bar" id="stats">{_stats}</div>'
+    else:
+        stats_html = ""
+
     html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -375,6 +390,10 @@ def build_interactive_chart_html(
           border-bottom: 1px solid #2d2d4e; }}
     .toggle-bar label {{ cursor: pointer; user-select: none; }}
     .toggle-bar input {{ vertical-align: middle; margin-right: 4px; }}
+    .stats-bar {{ flex: none; display: flex; gap: 18px; flex-wrap: wrap;
+          padding: 8px 16px; font-size: 12px; color: #c8cee8;
+          background: #16213e; border-bottom: 1px solid #2d2d4e; }}
+    .stats-bar .stat b {{ color: #7f8bb5; font-weight: 600; margin-right: 5px; }}
     #chart-container {{
       flex: 1; min-height: 0;
       display: flex; flex-direction: column; width: 100%;
@@ -386,6 +405,7 @@ def build_interactive_chart_html(
 </head>
 <body>
   <h1>{title}</h1>
+  {stats_html}
   {marker_toggle_html}
   {grid_toggle_html}
   <div id="chart-container">

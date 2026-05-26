@@ -93,6 +93,48 @@ def _gate_markers(result: Any, date_set: set[str]) -> list[dict[str, Any]]:
     return markers
 
 
+def _summary_rows(result: Any) -> list[tuple[str, str]]:
+    """GridRunResult → 통계 패널 (label, value) 행 (ADR 0022 §11.14).
+
+    보유/평단/회전율/예수금 + 최종가치/수익/MDD/실현(투입%)/미실현. 평단은 보유>0 일 때만.
+    """
+    from decimal import ROUND_DOWN, Decimal
+
+    init = result.initial_capital.amount
+
+    def won(v: Any) -> str:
+        return f"{Decimal(v).quantize(Decimal('1'), rounding=ROUND_DOWN):,} KRW"
+
+    def pct(v: Any) -> str:
+        return f"{Decimal(v).quantize(Decimal('0.01'))}%"
+
+    ret = (result.final_value - init) / init * 100 if init > 0 else Decimal("0")
+    vals = [d.total_value for d in result.daily_values] or [init]
+    peak = vals[0]
+    mdd = Decimal("0")
+    for v in vals:
+        peak = max(peak, v)
+        mdd = min(mdd, (v - peak) / peak)
+    realized, unrealized = result.pnl_split()
+    rbasis = result.realized_cost_basis()
+    realized_v = won(realized) + (
+        f" (투입 {pct(realized / rbasis * 100)})" if rbasis > 0 else ""
+    )
+    rows = [
+        ("최종가치", won(result.final_value)),
+        ("수익", pct(ret)),
+        ("MDD", pct(mdd * 100)),
+        ("실현", realized_v),
+        ("미실현", won(unrealized)),
+        ("보유", f"{result.final_holdings} 주"),
+    ]
+    if result.final_holdings > 0:
+        rows.append(("평단", won(result.final_avg_cost)))
+    rows.append(("예수금", won(result.final_cash)))
+    rows.append(("회전율", f"{result.turnover():.2f}x"))
+    return rows
+
+
 def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) -> str:
     """도메인 GridRunResult → lightweight-charts 인터랙티브 HTML.
 
@@ -113,6 +155,7 @@ def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) 
     )
 
     title = f"{escape(asset.name)} ({escape(asset.code)}) — DGT 백테스트"
+    summary = _summary_rows(result)
     date_set = {b.trade_date.strftime("%Y-%m-%d") for b in bars}
     markers = _serialize_markers([_MarkerView(t) for t in result.trades], date_set)
     ohlcv = _serialize_ohlcv(bars)
@@ -134,6 +177,7 @@ def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) 
             title=title, ohlcv=ohlcv, volume=volume, marker_groups=marker_groups,
             grid_levels=[],
             grid_groups=[{"label": asset.code, "color": color, "levels": series}],
+            summary=summary,
         )
 
     # 폴백 — grid_levels 미기록 시 초기 그리드 정적 라인.
@@ -151,6 +195,7 @@ def build_dgt_chart_html(asset: Any, bars: list[Any], config: Any, result: Any) 
     return build_interactive_chart_html(
         title=title, ohlcv=ohlcv, volume=volume, marker_groups=marker_groups,
         grid_levels=_serialize_grid_levels(artifact),
+        summary=summary,
     )
 
 
