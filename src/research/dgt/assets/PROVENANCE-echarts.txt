@@ -1,0 +1,67 @@
+echarts.min.js — Vendored Asset Provenance
+============================================
+
+Version:            5.4.3
+Library:            Apache ECharts (Apache Software Foundation)
+License:            Apache License 2.0
+Upstream Source:    https://www.npmjs.com/package/echarts/v/5.4.3
+                    https://github.com/apache/echarts/releases/tag/5.4.3
+npm Tarball URL:    https://registry.npmjs.org/echarts/-/echarts-5.4.3.tgz
+CDN Used (download): https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js
+
+Provenance Verification (R11-provenance)
+-----------------------------------------
+The npm tarball was downloaded from registry.npmjs.org and verified against
+the integrity hash published by the npm registry. The vendored echarts.min.js
+was then verified to match the file inside the tarball BYTE-FOR-BYTE.
+
+Upstream npm tarball integrity (SHA-512, base64, from registry.npmjs.org):
+  sha512-mYKxLxhzy6zyTi/FaEbJMOZU1ULGEQHaeIeuMR5L+JnJTpz+YR03mnnpBhbR4+UYJAgiXgpyTVLffPAjOTLkZA==
+
+Upstream npm tarball SHA-1 (shasum, from registry.npmjs.org):
+  f5522ef24419164903eedcfd2b506c6fc91fb20c
+
+Verified: computed SHA-512 of downloaded tarball matches upstream integrity
+hash exactly. Extracted package/dist/echarts.min.js SHA-256 matches vendored
+file SHA-256 exactly (CDN serves npm tarball content authentically).
+
+Local File Checksum
+-------------------
+File:     echarts.min.js
+SHA-256:  1156429a16a38cb8604dcc6518c19406d4226142d908f8edd2e3531443c54d19
+Size:     1,024,740 bytes (~1 MB minified)
+
+Retrieval Date:     2026-05-27
+
+Inline Safety Verification
+---------------------------
+The file contains 0 literal `</script>` substrings, making it safe to embed
+directly inside an HTML <script> tag without escape mangling. Verified via
+`grep -c "</script" echarts.min.js` → 0.
+
+Minimum Browser Baseline
+--------------------------
+ECharts 5.x requires ES2015+ (ES6) capable browsers:
+  - Chrome 51+
+  - Firefox 54+
+  - Safari 10+
+  - Edge 14+
+
+Path in Repo
+------------
+src/research/dgt/assets/echarts.min.js
+(5th-ring research overlay — src/research/dgt/ per Phase 0.11.i C1 namespace rule)
+
+Usage
+-----
+This file is embedded inline into self-contained portfolio-flow report HTML
+files produced by src/research/dgt/_portfolio_flow.py (viz tool).
+It runs ONLY in a browser opening a portfolio_flow.html file — never in any
+Python process or trading system code path. Zero blast radius on the trading
+system (same DD1 isolation as lightweight-charts vendoring).
+
+Version Upgrade
+---------------
+To upgrade: download the new tarball from npm, verify its npm registry
+integrity hash, extract package/dist/echarts.min.js, replace this file, then
+update the version/checksums above and run the test suite.
