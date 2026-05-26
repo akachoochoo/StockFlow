@@ -821,6 +821,9 @@ _PARAM_HELP: dict[str, str] = {
     "매도를 스킵(손실 실현 방지) — 가격이 평단 위로 회복할 때까지 보유.",
     "sell_cooldown_bars": "매도 후 N 거래일 매수 금지(0=off). 하락 재매수 연쇄·"
     "whipsaw 억제 → MDD 방어(권고 5). 강세장 상단은 일부 양보.",
+    "price_based_reentry": "매도 후 *가격* 기준 재진입(on/off). on이면 직전 매도가 "
+    "이상에선 매수 차단, 그 아래로 떨어지면 즉시 재진입. sell_cooldown_bars 와 "
+    "AND 결합 시 둘 다 통과해야 매수.",
 }
 
 
