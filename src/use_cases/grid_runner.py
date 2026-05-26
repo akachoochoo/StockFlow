@@ -87,6 +87,9 @@ class GridRunResult(DomainModel):
     daily_values: list[GridDailyValue]
     # 게이트 억제 이벤트 (기본 [] → 회귀 zero — 동치/determinism 테스트 무영향).
     gate_events: list[GridGateEvent] = Field(default_factory=list)
+    # 보유분 가중평균 매수가(평단, gross 기준). 매도는 평단 불변 → 잔여 보유의
+    # 평단. 매수 0(보유 0)이면 0. profit_guard 의 avg_cost 와 동일 소스.
+    final_avg_cost: Decimal = Decimal("0")
 
     def pnl_split(self) -> tuple[Decimal, Decimal]:
         """(실현, 미실현) 손익 분해 (정수 원) — 합 = round(final_value - 초기자본).
@@ -120,6 +123,38 @@ class GridRunResult(DomainModel):
         realized = realized.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         unrealized = total - realized
         return realized, unrealized
+
+    def turnover(self) -> Decimal:
+        """자본 회전율 = 총 거래대금(매수+매도 gross) / 초기자본 (기간 누적, x).
+
+        '자본이 기간 동안 몇 배 회전했나'. 연율화 아님. 초기자본 0 이면 0.
+        """
+        if self.initial_capital.amount <= 0:
+            return Decimal("0")
+        gross_sum = sum((t.gross for t in self.trades), Decimal("0"))
+        return gross_sum / self.initial_capital.amount
+
+    def realized_cost_basis(self) -> Decimal:
+        """매도로 실현된 분의 취득원가 합 (= 실현에 투입된 돈).
+
+        실현률(투입 대비) = pnl_split()[0] / realized_cost_basis(). 평균원가법으로
+        매도 시점마다 차감된 원가의 누적. 매도 0 이면 0 (분모 0 → 호출측 가드).
+        """
+        hold = Decimal("0")
+        cost_basis = Decimal("0")
+        basis_sold_total = Decimal("0")
+        for t in self.trades:
+            if t.side is OrderSide.BUY:
+                cost_basis += -t.cash_delta
+                hold += t.quantity
+            else:
+                basis_sold = (
+                    cost_basis / hold * t.quantity if hold > 0 else Decimal("0")
+                )
+                basis_sold_total += basis_sold
+                cost_basis -= basis_sold
+                hold -= t.quantity
+        return basis_sold_total
 
 
 class GridRunner:
@@ -284,4 +319,5 @@ class GridRunner:
             trades=trades,
             daily_values=daily,
             gate_events=gate_events,
+            final_avg_cost=avg_cost,
         )

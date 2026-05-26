@@ -501,3 +501,53 @@ class TestSellCooldown:
             for n, r in runs.items()
         }
         assert buys[0] >= buys[2] >= buys[10]  # 긴 쿨다운일수록 매수 ≤
+
+
+# ---------------------------------------------------------------------------
+# 리포트 메트릭: 평단가(final_avg_cost) / 회전율(turnover) (ADR 0022 §11.14)
+# ---------------------------------------------------------------------------
+class TestReportingMetrics:
+    def test_turnover_matches_gross_over_capital(self):
+        res = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=_domain_config(),
+            initial_capital=_CAPITAL,
+        )
+        gross = sum((t.gross for t in res.trades), Decimal("0"))
+        assert res.turnover() == gross / _CAPITAL.amount
+        assert res.turnover() >= 0
+
+    def test_final_avg_cost_within_buy_range(self):
+        res = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=_domain_config(),
+            initial_capital=_CAPITAL,
+        )
+        buy_px = [t.rounded_price for t in res.trades if t.side is OrderSide.BUY]
+        assert buy_px and res.final_holdings > 0
+        # 평단 = 매수 체결가 가중평균 → [최저 매수가, 최고 매수가] 범위 내.
+        assert min(buy_px) <= res.final_avg_cost <= max(buy_px)
+
+    def test_avg_cost_default_zero(self):
+        # 매수 없는(보유 0) 결과의 평단 기본값 0 — 회귀 안전.
+        from src.use_cases.grid_runner import GridRunResult
+        empty = GridRunResult(
+            initial_capital=_CAPITAL, final_cash=_CAPITAL.amount,
+            final_holdings=Decimal("0"), final_close_price=Decimal("1000"),
+            final_value=_CAPITAL.amount, trades=[], daily_values=[],
+        )
+        assert empty.final_avg_cost == Decimal("0")
+        assert empty.turnover() == Decimal("0")
+        assert empty.realized_cost_basis() == Decimal("0")
+
+    def test_realized_cost_basis_consistency(self):
+        # 실현 = 순매도대금 - 매도분 원가 → 실현 + 매도분원가 = 순매도대금.
+        res = GridRunner().run(
+            asset=_ASSET, bars=_bars(), config=_domain_config(),
+            initial_capital=_CAPITAL,
+        )
+        realized, _ = res.pnl_split()
+        rbasis = res.realized_cost_basis()
+        sells = [t for t in res.trades if t.side is OrderSide.SELL]
+        assert sells and rbasis > 0  # 매도 존재 → 투입원가 > 0
+        net_proceeds = sum((t.cash_delta for t in sells), Decimal("0"))
+        # realized 는 정수 원 반올림이므로 근사(±1원) 비교.
+        assert abs((net_proceeds - rbasis) - realized) <= Decimal("1")
