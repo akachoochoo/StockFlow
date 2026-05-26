@@ -60,6 +60,9 @@ class TestGridBacktestCLI:
         assert "Buy&Hold" in result.output
         assert "MDD" in result.output
         assert "실현" in result.output and "미실현" in result.output  # 손익 분해
+        assert "투입" in result.output  # 실현 투입 대비 비율
+        assert "보유" in result.output  # 보유 수량
+        assert "예수금" in result.output and "회전율" in result.output
 
     def test_json_output(self, tmp_path: Path):
         csv = _write_csv(tmp_path)
@@ -72,6 +75,8 @@ class TestGridBacktestCLI:
         assert int(payload["dgt"]["trades"]) >= 0
         assert "realized_pnl" in payload["dgt"]
         assert "unrealized_pnl" in payload["dgt"]
+        for k in ("final_avg_cost", "final_cash", "turnover", "realized_cost_basis"):
+            assert k in payload["dgt"]
 
     def test_unknown_code_errors(self, tmp_path: Path):
         csv = _write_csv(tmp_path)
@@ -138,6 +143,8 @@ class TestGridBacktestConfig:
         assert "KRX:069500" in result.output and "KRX:132030" in result.output
         assert "Buy&Hold" in result.output
         assert "실현" in result.output and "미실현" in result.output  # 손익 분해
+        assert "보유" in result.output  # 종목별 보유 수량
+        assert "예수금" in result.output and "회전율" in result.output  # 포트폴리오
 
     def test_json_output(self, tmp_path: Path):
         csv_a, csv_b = _two_csvs(tmp_path)
@@ -156,6 +163,13 @@ class TestGridBacktestConfig:
         assert payload["dgt"]["per_asset"][0]["allocated"] == "50000000"
         assert "realized_pnl" in payload["dgt"] and "unrealized_pnl" in payload["dgt"]
         assert "realized_pnl" in payload["dgt"]["per_asset"][0]
+        assert "final_cash" in payload["dgt"] and "turnover" in payload["dgt"]
+        assert "realized_cost_basis" in payload["dgt"]
+        for k in (
+            "final_holdings", "final_avg_cost", "final_cash", "turnover",
+            "realized_cost_basis",
+        ):
+            assert k in payload["dgt"]["per_asset"][0]
 
     def test_config_and_code_mutually_exclusive(self, tmp_path: Path):
         csv_a, _ = _two_csvs(tmp_path)

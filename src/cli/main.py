@@ -659,6 +659,23 @@ def _run_grid_backtest_config(
     asset_splits = [r.result.pnl_split() for r in port.per_asset]
     dgt_realized = sum((rl for rl, _ in asset_splits), Decimal("0"))
     dgt_unrealized = sum((ur for _, ur in asset_splits), Decimal("0"))
+    # 실현 투입원가(실현률 분모) = 종목별 매도 실현분 취득원가 합.
+    port_basis = sum(
+        (r.result.realized_cost_basis() for r in port.per_asset), Decimal("0")
+    )
+    dgt_realized_pct = (
+        f"{_pct(dgt_realized / init * 100)} / 투입 {_pct(dgt_realized / port_basis * 100)}"
+        if port_basis > 0 else _pct(dgt_realized / init * 100)
+    )
+    # 예수금 = 종목별 잔여 현금 합 + 미배분. 회전율 = 총 거래대금 / 초기자본.
+    port_cash = sum(
+        (r.result.final_cash for r in port.per_asset), Decimal("0")
+    ) + port.unallocated
+    _gross = sum(
+        (sum((t.gross for t in r.result.trades), Decimal("0")) for r in port.per_asset),
+        Decimal("0"),
+    )
+    port_turnover = _gross / init if init > 0 else Decimal("0")
 
     # B&H 포트폴리오 = 종목별 균등 분할(floor shares), 공통일 정렬 + 미투자 현금.
     per = init // len(inputs)
@@ -696,10 +713,13 @@ def _run_grid_backtest_config(
                         "return_pct": str(dgt_return),
                         "realized_pnl": str(dgt_realized),
                         "unrealized_pnl": str(dgt_unrealized),
+                        "realized_cost_basis": str(port_basis),
                         "max_drawdown_pct": str(dgt_mdd * 100),
                         "trades": sum(
                             len(r.result.trades) for r in port.per_asset
                         ),
+                        "final_cash": str(port_cash),
+                        "turnover": str(port_turnover),
                         "per_asset": [
                             {
                                 "asset": r.asset.fqn,
@@ -708,6 +728,13 @@ def _run_grid_backtest_config(
                                 "trades": len(r.result.trades),
                                 "realized_pnl": str(realized),
                                 "unrealized_pnl": str(unrealized),
+                                "realized_cost_basis": str(
+                                    r.result.realized_cost_basis()
+                                ),
+                                "final_holdings": str(r.result.final_holdings),
+                                "final_avg_cost": str(r.result.final_avg_cost),
+                                "final_cash": str(r.result.final_cash),
+                                "turnover": str(r.result.turnover()),
                             }
                             for r, (realized, unrealized) in zip(
                                 port.per_asset, asset_splits, strict=True
@@ -734,21 +761,28 @@ def _run_grid_backtest_config(
     )
     for r, (realized, unrealized) in zip(port.per_asset, asset_splits, strict=True):
         rr = r.result
+        avg_str = f"@평단 {_won(rr.final_avg_cost)}" if rr.final_holdings > 0 else ""
         click.echo(
             f"  {r.asset.fqn} ({r.asset.name}): 배분 {_won(r.allocated.amount)} / "
             f"최종 {_won(rr.final_value)} / 거래 {len(rr.trades)} / "
             f"실현 {_won(realized)} / 미실현 {_won(unrealized)}"
+        )
+        click.echo(
+            f"      보유 {rr.final_holdings}주 {avg_str} / "
+            f"예수금 {_won(rr.final_cash)} / 회전 {rr.turnover():.2f}x"
         )
     click.echo(
         f"DGT      : 최종 {_won(port.final_value)} / 수익 {_pct(dgt_return)} / "
         f"MDD {_pct(dgt_mdd * 100)}"
     )
     click.echo(
-        f"           ├ 실현   {_won(dgt_realized)} ({_pct(dgt_realized / init * 100)})"
+        f"           ├ 실현   {_won(dgt_realized)} ({dgt_realized_pct})"
     )
     click.echo(
-        f"           └ 미실현 {_won(dgt_unrealized)} ({_pct(dgt_unrealized / init * 100)})"
+        f"           ├ 미실현 {_won(dgt_unrealized)} ({_pct(dgt_unrealized / init * 100)})"
     )
+    click.echo(f"           ├ 예수금 {_won(port_cash)}")
+    click.echo(f"           └ 회전율 {port_turnover:.2f}x")
     click.echo(
         f"Buy&Hold : 최종 {_won(bh_final)} / 수익 {_pct(bh_return)} / "
         f"MDD {_pct(bh_mdd * 100)}"
@@ -935,9 +969,13 @@ def grid_backtest(
                         "return_pct": str(dgt_return),
                         "realized_pnl": str(result.pnl_split()[0]),
                         "unrealized_pnl": str(result.pnl_split()[1]),
+                        "realized_cost_basis": str(result.realized_cost_basis()),
                         "max_drawdown_pct": str(dgt_mdd * 100),
                         "trades": len(result.trades),
                         "final_holdings": str(result.final_holdings),
+                        "final_avg_cost": str(result.final_avg_cost),
+                        "final_cash": str(result.final_cash),
+                        "turnover": str(result.turnover()),
                     },
                     "buy_and_hold": {
                         "final_value": str(bh_final),
@@ -958,16 +996,27 @@ def grid_backtest(
         f"k=[{k_min},{k_max}]x{multiplier} vol_gate={'on' if volume_gate else 'off'}"
     )
     realized, unrealized = result.pnl_split()
+    rbasis = result.realized_cost_basis()
+    realized_pct = (
+        f"{_pct(realized / init * 100)} / 투입 {_pct(realized / rbasis * 100)}"
+        if rbasis > 0 else _pct(realized / init * 100)
+    )
+    avg_str = (
+        f" @ 평단 {_won(result.final_avg_cost)}" if result.final_holdings > 0 else ""
+    )
     click.echo(
         f"DGT      : 최종 {_won(result.final_value)} / 수익 {_pct(dgt_return)} / "
-        f"MDD {_pct(dgt_mdd * 100)} / 거래 {len(result.trades)} / 보유 {result.final_holdings}"
+        f"MDD {_pct(dgt_mdd * 100)} / 거래 {len(result.trades)}"
     )
     click.echo(
-        f"           ├ 실현   {_won(realized)} ({_pct(realized / init * 100)})"
+        f"           ├ 실현   {_won(realized)} ({realized_pct})"
     )
     click.echo(
-        f"           └ 미실현 {_won(unrealized)} ({_pct(unrealized / init * 100)})"
+        f"           ├ 미실현 {_won(unrealized)} ({_pct(unrealized / init * 100)})"
     )
+    click.echo(f"           ├ 보유 {result.final_holdings} 주{avg_str}")
+    click.echo(f"           ├ 예수금 {_won(result.final_cash)}")
+    click.echo(f"           └ 회전율 {result.turnover():.2f}x")
     click.echo(
         f"Buy&Hold : 최종 {_won(bh_final)} / 수익 {_pct(bh_return)} / "
         f"MDD {_pct(bh_mdd * 100)}"
