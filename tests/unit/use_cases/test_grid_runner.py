@@ -551,3 +551,85 @@ class TestReportingMetrics:
         net_proceeds = sum((t.cash_delta for t in sells), Decimal("0"))
         # realized 는 정수 원 반올림이므로 근사(±1원) 비교.
         assert abs((net_proceeds - rbasis) - realized) <= Decimal("1")
+
+
+# ---------------------------------------------------------------------------
+# 가격 기준 재진입 (ADR 0022 §11.19)
+# ---------------------------------------------------------------------------
+class TestPriceBasedReentry:
+    def test_default_off_unchanged(self):
+        bars = _osc_bars()
+        r1 = GridRunner().run(
+            asset=_ASSET, bars=bars, config=_osc_cfg(), initial_capital=_CAPITAL
+        )
+        r2 = GridRunner().run(
+            asset=_ASSET, bars=bars,
+            config=_osc_cfg(price_based_reentry=False), initial_capital=_CAPITAL,
+        )
+        assert r1.final_value == r2.final_value
+        assert len(r1.trades) == len(r2.trades)
+
+    def test_buys_never_above_recent_sell(self):
+        # 핵심 불변: 첫 매도 이후 모든 매수가는 직전 매도가 이하.
+        bars = _osc_bars()
+        cfg = _osc_cfg(price_based_reentry=True)
+        res = GridRunner().run(
+            asset=_ASSET, bars=bars, config=cfg, initial_capital=_CAPITAL
+        )
+        last_sell = Decimal("0")
+        for t in res.trades:
+            if t.side is OrderSide.SELL:
+                last_sell = t.rounded_price
+            else:
+                if last_sell > 0:
+                    assert t.rounded_price <= last_sell, (
+                        f"매수 {t.rounded_price} > 직전 매도 {last_sell} (위반)"
+                    )
+
+    def test_buys_still_happen_in_dip(self):
+        # 비자명성: 가격이 떨어지는 구간에선 재진입 가능 → 매수 발생.
+        bars = _osc_bars()
+        cfg = _osc_cfg(price_based_reentry=True)
+        res = GridRunner().run(
+            asset=_ASSET, bars=bars, config=cfg, initial_capital=_CAPITAL
+        )
+        buys = [t for t in res.trades if t.side is OrderSide.BUY]
+        sells = [t for t in res.trades if t.side is OrderSide.SELL]
+        assert buys and sells  # 양방향 거래 존재
+
+    def test_initial_no_sell_no_blocking(self):
+        # 첫 매도 전엔 last_sell_price=0 → 게이트 비활성. 초기 매수 발생.
+        bars = _osc_bars()
+        # 첫 매도 직전(bar_idx<5)에 발생하는 매수: bar_idx=2 (close=980, 하향교차).
+        # price-based ON 이지만 last_sell=0 이라 게이트 OFF → 매수 발생.
+        cfg = _osc_cfg(price_based_reentry=True)
+        res = GridRunner().run(
+            asset=_ASSET, bars=bars, config=cfg, initial_capital=_CAPITAL
+        )
+        first_sell_date = next(
+            (t.trade_date for t in res.trades if t.side is OrderSide.SELL), None
+        )
+        assert first_sell_date is not None
+        pre_sell_buys = [
+            t for t in res.trades
+            if t.side is OrderSide.BUY and t.trade_date < first_sell_date
+        ]
+        assert pre_sell_buys  # 매도 이전 매수 발생 (게이트 비활성)
+
+    def test_additive_with_bar_cooldown(self):
+        # cd=5 + price=True → 둘 다 통과해야 매수 (AND, 더 strict).
+        bars = _osc_bars()
+        res_price_only = GridRunner().run(
+            asset=_ASSET, bars=bars,
+            config=_osc_cfg(price_based_reentry=True),
+            initial_capital=_CAPITAL,
+        )
+        res_both = GridRunner().run(
+            asset=_ASSET, bars=bars,
+            config=_osc_cfg(price_based_reentry=True, sell_cooldown_bars=5),
+            initial_capital=_CAPITAL,
+        )
+        n_price = sum(t.side is OrderSide.BUY for t in res_price_only.trades)
+        n_both = sum(t.side is OrderSide.BUY for t in res_both.trades)
+        # AND 게이트: 둘 다 통과해야 매수 → 매수 수 ≤ 단독 적용
+        assert n_both <= n_price
