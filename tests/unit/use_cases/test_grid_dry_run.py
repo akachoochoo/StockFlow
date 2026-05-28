@@ -274,3 +274,137 @@ class TestPersistence:
             assert s.side == e.side
             assert s.level_index == e.level_index
             assert s.quantity == e.quantity
+
+
+class TestStepTodayEquivalence:
+    """``replay_bars(all bars)`` ≡ N invocations of ``step_today(bars[:i+1])``.
+
+    크론 모드의 결정론 박제 — single-step state persistence 가 batch 와 동일한
+    trade sequence 를 produce 함을 측정 가능하게 검증.
+    """
+
+    def test_step_per_bar_equals_replay_bars(self) -> None:
+        bars = _bars_oscillating()
+        config = _config()
+        capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+
+        # Path A: replay_bars (batch)
+        broker_a = _make_broker()
+        uow_a = InMemoryUnitOfWork()
+        orch_a = GridDryRunOrchestrator(
+            broker=broker_a,
+            uow_factory=lambda: uow_a,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        batch_decisions = orch_a.replay_bars(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+
+        # Path B: step_today over a growing bars prefix (cron mode)
+        broker_b = _make_broker()
+        uow_b = InMemoryUnitOfWork()
+        orch_b = GridDryRunOrchestrator(
+            broker=broker_b,
+            uow_factory=lambda: uow_b,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        cron_decisions: list = []
+        for i in range(len(bars)):
+            decs_today = orch_b.step_today(
+                asset=ASSET,
+                bars=bars[: i + 1],
+                config=config,
+                initial_capital=capital,
+            )
+            cron_decisions.extend(decs_today)
+
+        # 동치성: 두 시퀀스 trade-by-trade 동일.
+        assert len(cron_decisions) == len(batch_decisions)
+        for a, b in zip(cron_decisions, batch_decisions, strict=True):
+            assert a.side == b.side
+            assert a.level_index == b.level_index
+            assert a.rounded_price == b.rounded_price
+            assert a.quantity == b.quantity
+
+        # 최종 broker cash + holdings 도 동일.
+        assert (
+            broker_b.get_balance().cash.amount == broker_a.get_balance().cash.amount
+        )
+        h_a = broker_a.get_grid_holding(ASSET.fqn)
+        h_b = broker_b.get_grid_holding(ASSET.fqn)
+        if h_a is None:
+            assert h_b is None
+        else:
+            assert h_b is not None
+            assert h_b.quantity == h_a.quantity
+            assert h_b.avg_price == h_a.avg_price
+
+    def test_step_today_first_call_bootstraps_grid_state(self) -> None:
+        """No prior state → bootstrap from bars[0].close (cold start).
+
+        Bar 0 만 처리 — bar_idx=0 은 prev_close 가 없어 결정 zero → grid_state
+        는 bootstrap 그대로 (on_breach 재중심 없음).
+        """
+        bars = _bars_oscillating()[:1]
+        config = _config()
+        capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+        broker = _make_broker()
+        uow = InMemoryUnitOfWork()
+        orch = GridDryRunOrchestrator(
+            broker=broker,
+            uow_factory=lambda: uow,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        # 사전에 grid_states 비어있어야 함.
+        assert uow.grid_states.get(ASSET.fqn) is None
+        executed = orch.step_today(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+        # Day 0 = 결정 zero (no prev_close).
+        assert executed == []
+        # 호출 후 grid_states 에 상태 저장됨 — reference_price = bars[0].close.
+        saved = uow.grid_states.get(ASSET.fqn)
+        assert saved is not None
+        assert saved.grid_state.reference_price == bars[0].close
+        assert saved.cooldown_remaining == 0
+        assert saved.last_sell_price == Decimal("0")
+        assert saved.avg_cost == Decimal("0")
+
+    def test_step_today_persists_runtime_fields(self) -> None:
+        """매도 발생 시 cooldown / last_sell_price 가 grid_states 에 보존."""
+        bars = _bars_oscillating()
+        config = _config().model_copy(update={"sell_cooldown_bars": 3})
+        capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+        broker = _make_broker()
+        uow = InMemoryUnitOfWork()
+        orch = GridDryRunOrchestrator(
+            broker=broker,
+            uow_factory=lambda: uow,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        # 전체 처리 시 매도 1+ 회 발생함을 batch path 로 확인.
+        replayed = orch.replay_bars(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+        any_sells = any(d.side == OrderSide.SELL for d in replayed)
+        assert any_sells, "test premise: 매도 발생 시나리오 필요"
+        # Cron 모드로 다시 처리 → grid_states 에 cooldown / last_sell_price 가
+        # 매도 발생 이후 의도대로 갱신되는지 확인.
+        broker2 = _make_broker()
+        uow2 = InMemoryUnitOfWork()
+        orch2 = GridDryRunOrchestrator(
+            broker=broker2,
+            uow_factory=lambda: uow2,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        for i in range(len(bars)):
+            orch2.step_today(
+                asset=ASSET,
+                bars=bars[: i + 1],
+                config=config,
+                initial_capital=capital,
+            )
+        final = uow2.grid_states.get(ASSET.fqn)
+        # 매도가 한 번이라도 있었으므로 last_sell_price > 0.
+        assert final is not None
+        assert final.last_sell_price > 0

@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING
 from src.domain.cost_model import KoreanMarketCostModel
 from src.domain.models import Money, OrderRequest, OrderSide, OrderStatus, OrderType
 from src.domain.order_keys import build_grid_order_key
-from src.domain.strategies.grid import GridDecision, GridState, GridStrategy
+from src.domain.strategies.grid import (
+    GridDecision,
+    GridRuntimeState,
+    GridState,
+    GridStrategy,
+)
 from src.domain.strategies.grid_math import adaptive_k, grid_levels
 
 if TYPE_CHECKING:
@@ -80,6 +85,9 @@ class GridDryRunOrchestrator:
         fills go through ``broker.place_order`` and decisions persist via
         ``uow.grid_decisions.save``. ``cash`` / ``holdings`` 는 broker 상태에서
         읽어 GridStrategy.evaluate 의 인자로 전달.
+
+        Runtime state (cooldown / last_sell_price / avg_cost / grid_state) 는
+        본 메서드 내부 변수로 유지 — 크론 모드는 :meth:`step_today` 가 영속.
         """
         if not bars:
             raise ValueError("bars must be non-empty")
@@ -89,6 +97,88 @@ class GridDryRunOrchestrator:
                 f"!= asset.currency ({asset.currency.value})"
             )
 
+        runtime = self._bootstrap_runtime(asset, bars, config)
+        executed: list[GridDecision] = []
+
+        for bar_idx in range(len(bars)):
+            decs, runtime = self._process_one_bar(
+                asset=asset,
+                bars=bars,
+                bar_idx=bar_idx,
+                config=config,
+                runtime=runtime,
+            )
+            executed.extend(decs)
+
+        return executed
+
+    def step_today(
+        self,
+        *,
+        asset: Asset,
+        bars: list[OHLCV],
+        config: GridConfig,
+        initial_capital: Money,
+    ) -> list[GridDecision]:
+        """Process the *latest* bar (``bars[-1]``) with cross-cron state
+        persistence via ``uow.grid_states``.
+
+        First call (no saved state): bootstrap from ``bars[0].close`` using
+        :meth:`_bootstrap_runtime` (cold-start). Subsequent calls: load saved
+        state from prior cron, apply ``_process_one_bar``, save updated state.
+
+        ADR 0022 §12 follow-up — true single-step cron-mode operation. Bars
+        list is the full price history including today (loaded by composition
+        root from CSV / pykrx). bar_idx = len(bars)-1.
+        """
+        if not bars:
+            raise ValueError("bars must be non-empty")
+        if initial_capital.currency != asset.currency:
+            raise ValueError(
+                f"initial_capital.currency ({initial_capital.currency.value}) "
+                f"!= asset.currency ({asset.currency.value})"
+            )
+
+        # 1. Load or bootstrap runtime state.
+        with self._uow_factory() as uow:
+            saved = uow.grid_states.get(asset.fqn)
+        runtime = saved if saved is not None else self._bootstrap_runtime(
+            asset, bars, config
+        )
+
+        # 2. Process today's bar (bars[-1]).
+        bar_idx = len(bars) - 1
+        executed, new_runtime = self._process_one_bar(
+            asset=asset,
+            bars=bars,
+            bar_idx=bar_idx,
+            config=config,
+            runtime=runtime,
+        )
+
+        # 3. Persist new runtime state.
+        ts = self._timestamp_for_bar(bars[bar_idx])
+        with self._uow_factory() as uow:
+            uow.grid_states.save(
+                asset_fqn=asset.fqn,
+                state=new_runtime,
+                updated_at=ts,
+            )
+            uow.commit()
+        return executed
+
+    def _bootstrap_runtime(
+        self,
+        asset: Asset,
+        bars: list[OHLCV],
+        config: GridConfig,
+    ) -> GridRuntimeState:
+        """Cold-start runtime state from ``bars[0].close`` (initial grid).
+
+        ``cooldown_remaining=0``, ``last_sell_price=0``, ``avg_cost=0`` — no
+        prior history. ``grid_state`` = (reference=bars[0].close, levels from
+        adaptive_k).
+        """
         n = config.grid_count
         reference = bars[0].close
         k0 = adaptive_k(
@@ -102,104 +192,129 @@ class GridDryRunOrchestrator:
             fallback_k=config.fallback_k,
             measure=config.volatility_measure,
         )
-        state = GridState(
-            reference_price=reference,
-            grid_levels=tuple(grid_levels(n, reference, k0, config.levels_above)),
+        return GridRuntimeState(
+            grid_state=GridState(
+                reference_price=reference,
+                grid_levels=tuple(
+                    grid_levels(n, reference, k0, config.levels_above)
+                ),
+            ),
+            cooldown_remaining=0,
+            last_sell_price=Decimal("0"),
+            avg_cost=Decimal("0"),
         )
-        avg_cost = Decimal("0")  # 가중평균 매수가 (profit_guard)
-        cooldown_remaining = 0
-        last_sell_price = Decimal("0")
+
+    def _process_one_bar(
+        self,
+        *,
+        asset: Asset,
+        bars: list[OHLCV],
+        bar_idx: int,
+        config: GridConfig,
+        runtime: GridRuntimeState,
+    ) -> tuple[list[GridDecision], GridRuntimeState]:
+        """Process a single bar — pure-ish (broker / uow writes are side-effects).
+
+        Returns (executed_decisions, new_runtime_state). State transition is
+        functional via the ``runtime`` argument — no instance variables. Both
+        :meth:`replay_bars` (batch) and :meth:`step_today` (cron) compose
+        from this primitive, guaranteeing identical semantics.
+        """
+        bar = bars[bar_idx]
+        state = runtime.grid_state
+        cooldown_remaining = runtime.cooldown_remaining
+        last_sell_price = runtime.last_sell_price
+        avg_cost = runtime.avg_cost
+
+        cooling = cooldown_remaining > 0
+        price_blocks_buys = (
+            config.price_based_reentry
+            and last_sell_price > 0
+            and bar.close > last_sell_price
+        )
+        sold_this_bar = False
+        # broker 상태에서 cash + holdings 읽기 (slot 우회 — D19).
+        cash_now = self._broker.get_balance().cash.amount
+        holding = self._broker.get_grid_holding(asset.fqn)
+        holdings = holding.quantity if holding is not None else Decimal("0")
+
+        ev = self._strategy.evaluate(
+            asset=asset,
+            bars=bars,
+            bar_idx=bar_idx,
+            state=state,
+            available_cash=Money(amount=cash_now, currency=asset.currency),
+            holdings=holdings,
+            config=config,
+        )
+
         executed: list[GridDecision] = []
+        for dec in ev.decisions:
+            if dec.side is OrderSide.BUY:
+                if cooling:
+                    continue
+                if price_blocks_buys:
+                    continue
+                bc = self._cost_model.compute_buy_cost(
+                    price=dec.level_price,
+                    quantity=dec.quantity,
+                    asset=asset,
+                )
+                if bc.total_cost > cash_now:
+                    continue
+                avg_cost = (
+                    (avg_cost * holdings + bc.rounded_price * dec.quantity)
+                    / (holdings + dec.quantity)
+                )
+                self._submit_and_settle(
+                    asset=asset,
+                    bar=bar,
+                    side=OrderSide.BUY,
+                    decision=dec,
+                    rounded_price=bc.rounded_price,
+                )
+                executed.append(dec)
+                cash_now -= bc.total_cost
+                holdings += dec.quantity
+            else:
+                sc = self._cost_model.compute_sell_cost(
+                    price=dec.level_price,
+                    quantity=dec.quantity,
+                    asset=asset,
+                )
+                if (
+                    config.profit_guard
+                    and avg_cost > 0
+                    and sc.rounded_price <= avg_cost
+                ):
+                    continue
+                self._submit_and_settle(
+                    asset=asset,
+                    bar=bar,
+                    side=OrderSide.SELL,
+                    decision=dec,
+                    rounded_price=sc.rounded_price,
+                )
+                executed.append(dec)
+                sold_this_bar = True
+                last_sell_price = sc.rounded_price
+                cash_now += sc.net_proceeds
+                holdings -= dec.quantity
 
-        for bar_idx, bar in enumerate(bars):
-            cooling = cooldown_remaining > 0
-            price_blocks_buys = (
-                config.price_based_reentry
-                and last_sell_price > 0
-                and bar.close > last_sell_price
-            )
-            sold_this_bar = False
-            # broker 상태에서 cash + holdings 읽기 (slot 우회 — D19).
-            cash_now = self._broker.get_balance().cash.amount
-            holding = self._broker.get_grid_holding(asset.fqn)
-            holdings = holding.quantity if holding is not None else Decimal("0")
+        # 쿨다운 갱신 (ADR 0022 §11.13)
+        if config.sell_cooldown_bars > 0:
+            if sold_this_bar:
+                cooldown_remaining = config.sell_cooldown_bars
+            elif cooldown_remaining > 0:
+                cooldown_remaining -= 1
 
-            ev = self._strategy.evaluate(
-                asset=asset,
-                bars=bars,
-                bar_idx=bar_idx,
-                state=state,
-                available_cash=Money(amount=cash_now, currency=asset.currency),
-                holdings=holdings,
-                config=config,
-            )
-
-            for dec in ev.decisions:
-                if dec.side is OrderSide.BUY:
-                    if cooling:
-                        continue
-                    if price_blocks_buys:
-                        continue
-                    bc = self._cost_model.compute_buy_cost(
-                        price=dec.level_price,
-                        quantity=dec.quantity,
-                        asset=asset,
-                    )
-                    # broker 가 보유한 *현재* 잔고로 affordability 재검 — broker
-                    # state 가 ground truth.
-                    if bc.total_cost > cash_now:
-                        continue
-                    # 가중평균 매수가 갱신 (profit_guard 기준).
-                    avg_cost = (
-                        (avg_cost * holdings + bc.rounded_price * dec.quantity)
-                        / (holdings + dec.quantity)
-                    )
-                    self._submit_and_settle(
-                        asset=asset,
-                        bar=bar,
-                        side=OrderSide.BUY,
-                        decision=dec,
-                        rounded_price=bc.rounded_price,
-                    )
-                    executed.append(dec)
-                    # 다음 결정의 affordability 검증을 위해 local cash 갱신.
-                    cash_now -= bc.total_cost
-                    holdings += dec.quantity
-                else:
-                    sc = self._cost_model.compute_sell_cost(
-                        price=dec.level_price,
-                        quantity=dec.quantity,
-                        asset=asset,
-                    )
-                    if (
-                        config.profit_guard
-                        and avg_cost > 0
-                        and sc.rounded_price <= avg_cost
-                    ):
-                        continue
-                    self._submit_and_settle(
-                        asset=asset,
-                        bar=bar,
-                        side=OrderSide.SELL,
-                        decision=dec,
-                        rounded_price=sc.rounded_price,
-                    )
-                    executed.append(dec)
-                    sold_this_bar = True
-                    last_sell_price = sc.rounded_price
-                    cash_now += sc.net_proceeds
-                    holdings -= dec.quantity
-
-            # 쿨다운 갱신 (ADR 0022 §11.13)
-            if config.sell_cooldown_bars > 0:
-                if sold_this_bar:
-                    cooldown_remaining = config.sell_cooldown_bars
-                elif cooldown_remaining > 0:
-                    cooldown_remaining -= 1
-
-            state = ev.next_state
-
-        return executed
+        new_runtime = GridRuntimeState(
+            grid_state=ev.next_state,
+            cooldown_remaining=cooldown_remaining,
+            last_sell_price=last_sell_price,
+            avg_cost=avg_cost,
+        )
+        return executed, new_runtime
 
     def _submit_and_settle(
         self,
