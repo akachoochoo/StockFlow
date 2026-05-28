@@ -1523,7 +1523,21 @@ def dry_run(
     "csv_values",
     multiple=True,
     metavar="CODE=PATH.CSV",
-    help="종목별 OHLCV CSV (CODE=path.csv). 단일 종목 기대.",
+    help="종목별 OHLCV CSV (CODE=path.csv). --use-kis 미설정 시 필수.",
+)
+@click.option(
+    "--use-kis",
+    is_flag=True,
+    default=False,
+    help="실 KIS 시세 사용 (paper-on-live). .env 의 KIS_PAPER_APPKEY 필요. "
+    "미설정 시 --csv 사용.",
+)
+@click.option(
+    "--lookback-days",
+    type=int,
+    default=180,
+    show_default=True,
+    help="--use-kis 시 KIS 에서 가져올 lookback 일수 (ATR 계산 + 버퍼).",
 )
 @click.option(
     "--db",
@@ -1553,6 +1567,8 @@ def dry_run(
 def grid_dry_run(
     config_path: Path,
     csv_values: tuple[str, ...],
+    use_kis: bool,
+    lookback_days: int,
     db_path: Path,
     capital: int,
     trade_date: datetime | None,
@@ -1566,9 +1582,16 @@ def grid_dry_run(
     / avg_cost / grid_state) 가 DB 에 영속 → 다음 cron 은 broker 상태를
     grid_decisions 재생으로 복원하고 grid_states 를 load.
 
-    실주문 zero · 실 KIS 시세 미사용 (CSV bars). Phase 1 KIS_PAPER_APPKEY 발급
-    후 KISMarketData 주입 옵션은 후속 증분. 본 명령은 결정론적 백테스트-on-
-    broker 라인 — backtest GridRunner 와 trade-by-trade 동치 (§12 D23 G2).
+    시세 소스 (둘 중 하나):
+    - ``--csv CODE=path.csv`` (기본): 결정론적, 백테스트 검증·테스트용.
+    - ``--use-kis``: 실 KIS ``inquire-daily-itemchartprice`` (read-only) →
+      ``lookback_days`` 일치 daily OHLCV 로드. ``.env`` 의 KIS_PAPER_APPKEY
+      필요 (paper-on-live, ADR 0012 D3). **실주문 zero · 실계좌 미조회**
+      (MockBroker grid 경로 D19 유지).
+
+    실주문 zero 보장: KIS 는 시세만 (get_ohlcv), 주문은 MockBroker 가 처리.
+    backtest GridRunner 와 trade-by-trade 동치 (§12 D23 G2 — 동일 입력 →
+    동일 결정).
     """
     import os  # noqa: PLC0415
     from datetime import UTC  # noqa: PLC0415
@@ -1603,29 +1626,64 @@ def grid_dry_run(
     code, bundle = enabled[0]
     asset = composition.asset_from_code(code)
 
-    # 2. CSV 경로 — 단일 종목
-    csv_map = _parse_csv_paths(csv_values)
-    if None in csv_map:
-        raise click.UsageError(
-            "grid-dry-run 은 종목별 '--csv CODE=path.csv' 형식 필요."
-        )
-    if set(csv_map) != {code}:
-        raise click.UsageError(
-            f"CSV 종목 불일치: config={code}, --csv={sorted(csv_map)}"
-        )
-    bars: list[OHLCV] = load_ohlcv_csv(csv_map[code], asset)
-
-    # 3. 처리할 trade_date 결정 — 기본 today (KST)
+    # 2. 처리할 trade_date 결정 — 기본 today (KST)
     if trade_date is None:
         target_date = datetime.now(tz=KST).date()
     else:
         target_date = trade_date.date()
 
+    # 3. 시세 소스 — CSV vs KIS 분기 (둘 다 daily OHLCV 반환).
+    if use_kis:
+        # KIS paper-on-live: 시세만 KIS, 주문은 MockBroker (실주문 zero).
+        from datetime import timedelta  # noqa: PLC0415
+
+        from src.adapters.kis.config import (  # noqa: PLC0415
+            ConfigurationError,
+            KISConfig,
+        )
+
+        try:
+            kis_config = KISConfig.from_env()  # noqa: F841 — banner 용
+            kis_market_data = composition.build_kis_market_data()
+        except ConfigurationError as exc:
+            raise click.ClickException(
+                f"KIS config error — set the missing key(s) in .env "
+                f"(see .env.example): {exc}"
+            ) from exc
+        if csv_values:
+            click.echo(
+                "⚠ --use-kis 모드 — --csv 는 무시됩니다.", err=True,
+            )
+        start_date = target_date - timedelta(days=lookback_days)
+        bars: list[OHLCV] = kis_market_data.get_ohlcv(asset, start_date, target_date)
+        if not bars:
+            raise click.ClickException(
+                f"KIS get_ohlcv({asset.fqn}, {start_date}, {target_date}) "
+                "이 빈 결과 — KIS 응답 확인 필요."
+            )
+        source_label = (
+            f"KIS({kis_config.mode.value}) lookback={lookback_days}d"
+        )
+    else:
+        # CSV 모드 — 결정론적, 백테스트 검증·테스트용.
+        csv_map = _parse_csv_paths(csv_values)
+        if None in csv_map:
+            raise click.UsageError(
+                "grid-dry-run 은 종목별 '--csv CODE=path.csv' 형식 필요 "
+                "(또는 --use-kis 사용)."
+            )
+        if set(csv_map) != {code}:
+            raise click.UsageError(
+                f"CSV 종목 불일치: config={code}, --csv={sorted(csv_map)}"
+            )
+        bars = load_ohlcv_csv(csv_map[code], asset)
+        source_label = f"CSV({csv_map[code].name})"
+
     # bars 를 target_date 까지로 잘라냄 (그 이후는 미래 — 사용 안 함).
     bars_until_target = [b for b in bars if b.trade_date <= target_date]
     if not bars_until_target:
         raise click.ClickException(
-            f"{code} CSV 에 {target_date.isoformat()} 까지 데이터가 없습니다."
+            f"{code} 시세에 {target_date.isoformat()} 까지 데이터가 없습니다."
         )
     today_bar = bars_until_target[-1]
     if today_bar.trade_date != target_date:
@@ -1681,7 +1739,7 @@ def grid_dry_run(
         timestamp_for_bar=_ts_for_bar,
     )
 
-    # Cron 시작 알림 — bar/복원 상태 포함.
+    # Cron 시작 알림 — bar/복원 상태 + 시세 소스 포함.
     holding_desc = (
         f"보유 {restored_holding.quantity}주 @평단 {_won(restored_holding.avg_price)}"
         if restored_holding is not None
@@ -1691,7 +1749,8 @@ def grid_dry_run(
         level=NotificationLevel.INFO,
         title=f"DGT grid-dry-run 시작 — {asset.fqn} {today_bar.trade_date.isoformat()}",
         body=(
-            f"종가 {today_bar.close} / 사전 결정 {len(prior_decisions)} 건 / "
+            f"시세 {source_label} / 종가 {today_bar.close} / "
+            f"사전 결정 {len(prior_decisions)} 건 / "
             f"복원 cash {_won(restored_cash.amount)} / {holding_desc}"
         ),
     )
@@ -1780,7 +1839,8 @@ def grid_dry_run(
 
     click.echo(
         f"DGT grid-dry-run — {asset.fqn} ({asset.name}) "
-        f"{today_bar.trade_date.isoformat()} close {today_bar.close}"
+        f"{today_bar.trade_date.isoformat()} close {today_bar.close}  "
+        f"[{source_label}]"
     )
     click.echo(
         f"복원: 사전 결정 {len(prior_decisions)} 건 → cash {_won(restored_cash.amount)}"
