@@ -105,6 +105,20 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_grid_decisions_timestamp ON grid_decisions(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_grid_decisions_asset_fqn ON grid_decisions(asset_fqn)",
+    # ADR 0022 §12 follow-up — DGT 크론 간 영속 운용 상태 (per-asset).
+    # asset_fqn = PK (자산당 1행 upsert). grid_levels_json = JSON array of
+    # Decimal strings. avg_cost / last_sell_price = TEXT(Decimal).
+    """
+    CREATE TABLE IF NOT EXISTS grid_states (
+        asset_fqn TEXT PRIMARY KEY,
+        reference_price TEXT NOT NULL,
+        grid_levels_json TEXT NOT NULL,
+        cooldown_remaining INTEGER NOT NULL DEFAULT 0,
+        last_sell_price TEXT NOT NULL DEFAULT '0',
+        avg_cost TEXT NOT NULL DEFAULT '0',
+        updated_at TEXT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS portfolio_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

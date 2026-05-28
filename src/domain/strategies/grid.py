@@ -83,6 +83,31 @@ class GridState(ValueObject):
     grid_levels: tuple[Decimal, ...] = Field(min_length=2)
 
 
+class GridRuntimeState(ValueObject):
+    """크론 간 영속 그리드 운용 상태 (ADR 0022 §12 follow-up).
+
+    ``GridState`` (기하 = reference_price + grid_levels) 에 *runtime bookkeeping*
+    (cooldown_remaining / last_sell_price / avg_cost) 을 합성. ``GridStrategy.
+    evaluate`` 는 grid_state 만 본다 — runtime 필드는 orchestrator (GridRunner /
+    GridDryRunOrchestrator) 가 결정 *이후* 게이트 (cooldown, price_based_reentry,
+    profit_guard) 평가에 사용.
+
+    영속: ``GridStateRepoPort`` 가 asset_fqn 별 1 행 upsert. 크론 1 호출 = 1 bar
+    처리 → 종료 시 본 state 저장 → 다음 크론에서 load → bar 처리.
+
+    Fields:
+    - grid_state: 그리드 기하 (불변)
+    - cooldown_remaining: 매도 후 매수 차단 카운터 (>= 0)
+    - last_sell_price: 직전 매도가 (>= 0, 0 = 미발생, price_based_reentry 기준)
+    - avg_cost: 가중평균 매수 체결가 (>= 0, 0 = 무보유, profit_guard 기준)
+    """
+
+    grid_state: GridState
+    cooldown_remaining: int = Field(default=0, ge=0)
+    last_sell_price: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    avg_cost: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+
+
 class GridDecision(ValueObject):
     """그리드 단일 거래 결정 (intent). 비용 미반영 — use_case 가 cost layered.
 

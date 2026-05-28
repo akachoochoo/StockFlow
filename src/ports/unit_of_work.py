@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from src.ports.repositories import (
         DecisionRepoPort,
         GridDecisionRepoPort,
+        GridStateRepoPort,
         OrderRepoPort,
         PortfolioSnapshotRepoPort,
         PositionRepoPort,
@@ -47,6 +48,7 @@ class UnitOfWorkPort(Protocol):
     orders: OrderRepoPort
     decisions: DecisionRepoPort
     grid_decisions: GridDecisionRepoPort  # ADR 0022 §12 D22
+    grid_states: GridStateRepoPort  # ADR 0022 §12 follow-up (cron 간 영속)
     snapshots: PortfolioSnapshotRepoPort
 
     def __enter__(self) -> UnitOfWorkPort:

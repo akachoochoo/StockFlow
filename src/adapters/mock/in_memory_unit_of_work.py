@@ -26,10 +26,11 @@ if TYPE_CHECKING:
         PortfolioSnapshot,
         Position,
     )
-    from src.domain.strategies.grid import GridDecision
+    from src.domain.strategies.grid import GridDecision, GridRuntimeState
     from src.ports.repositories import (
         DecisionRepoPort,
         GridDecisionRepoPort,
+        GridStateRepoPort,
         OrderRepoPort,
         PortfolioSnapshotRepoPort,
         PositionRepoPort,
@@ -209,6 +210,37 @@ class InMemoryGridDecisionRepo:
         return [d for _, d in sorted(matching, key=lambda x: x[0])]
 
 
+class InMemoryGridStateRepo:
+    """GridStateRepoPort backed by a dict keyed on asset_fqn (ADR 0022 §12).
+
+    Phase 0 backtest 에서 크론 간 영속 시뮬레이션. asset 별 1 행 upsert.
+    """
+
+    def __init__(self) -> None:
+        self._states: dict[str, GridRuntimeState] = {}
+
+    def get(self, asset_fqn: str) -> GridRuntimeState | None:
+        return self._states.get(asset_fqn)
+
+    def save(
+        self,
+        *,
+        asset_fqn: str,
+        state: GridRuntimeState,
+        updated_at: datetime,
+    ) -> None:
+        # updated_at 은 sqlite repo 와 시그니처 정합을 위해 받되, in-memory 는
+        # 사용 안 함 (단일 row 유지 / 시계 의존 zero).
+        del updated_at  # silence unused-arg lint
+        self._states[asset_fqn] = state
+
+    def delete(self, asset_fqn: str) -> bool:
+        if asset_fqn in self._states:
+            del self._states[asset_fqn]
+            return True
+        return False
+
+
 class InMemoryPortfolioSnapshotRepo:
     """PortfolioSnapshotRepoPort backed by a dict keyed on snapshot_date."""
 
@@ -255,6 +287,8 @@ class InMemoryUnitOfWork:
         self.decisions: DecisionRepoPort = InMemoryDecisionRepo()
         # ADR 0022 §12 D22 — DGT grid trade decisions.
         self.grid_decisions: GridDecisionRepoPort = InMemoryGridDecisionRepo()
+        # ADR 0022 §12 follow-up — DGT 크론 간 영속 운용 상태.
+        self.grid_states: GridStateRepoPort = InMemoryGridStateRepo()
         self.snapshots: PortfolioSnapshotRepoPort = InMemoryPortfolioSnapshotRepo()
 
     def __enter__(self) -> UnitOfWorkPort:

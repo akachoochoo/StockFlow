@@ -24,7 +24,7 @@ if TYPE_CHECKING:
         PortfolioSnapshot,
         Position,
     )
-    from src.domain.strategies.grid import GridDecision
+    from src.domain.strategies.grid import GridDecision, GridRuntimeState
 
 
 class PositionRepoPort(Protocol):
@@ -200,4 +200,33 @@ class GridDecisionRepoPort(Protocol):
         """Return all GridDecisions for ``asset_fqn`` in [start, end],
         ordered by timestamp asc.
         """
+        ...
+
+
+class GridStateRepoPort(Protocol):
+    """DGT 크론 간 영속 운용 상태 (grid_states 테이블, ADR 0022 §12 follow-up).
+
+    Asset 별 1 행 upsert (asset_fqn PK). 크론 1 호출 = 1 bar 처리 → 종료 시
+    상태 저장 → 다음 크론에서 load. GridDecisionRepoPort (audit log) 와 분리 —
+    이쪽은 *현재* 운용 상태만.
+    """
+
+    def get(self, asset_fqn: str) -> GridRuntimeState | None:
+        """Return the persisted runtime state for ``asset_fqn``, or None if
+        none has been saved yet (first cron / cold-start)."""
+        ...
+
+    def save(
+        self,
+        *,
+        asset_fqn: str,
+        state: GridRuntimeState,
+        updated_at: datetime,
+    ) -> None:
+        """Upsert the runtime state for ``asset_fqn`` (replaces prior row)."""
+        ...
+
+    def delete(self, asset_fqn: str) -> bool:
+        """Delete the runtime state for ``asset_fqn``. Returns True if a row
+        existed and was removed, False otherwise."""
         ...

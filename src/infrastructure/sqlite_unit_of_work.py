@@ -23,6 +23,9 @@ from src.infrastructure.repositories.sqlite_decision_repo import (
 from src.infrastructure.repositories.sqlite_grid_decision_repo import (
     SqliteGridDecisionRepo,
 )
+from src.infrastructure.repositories.sqlite_grid_state_repo import (
+    SqliteGridStateRepo,
+)
 from src.infrastructure.repositories.sqlite_order_repo import SqliteOrderRepo
 from src.infrastructure.repositories.sqlite_portfolio_snapshot_repo import (
     SqlitePortfolioSnapshotRepo,
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
     from src.ports.repositories import (
         DecisionRepoPort,
         GridDecisionRepoPort,
+        GridStateRepoPort,
         OrderRepoPort,
         PortfolioSnapshotRepoPort,
         PositionRepoPort,
@@ -58,6 +62,8 @@ class SqliteUnitOfWork:
         self.decisions: DecisionRepoPort = SqliteDecisionRepo(conn)
         # ADR 0022 §12 D22 — DGT grid trade decisions (별도 테이블, 다중 일별 row).
         self.grid_decisions: GridDecisionRepoPort = SqliteGridDecisionRepo(conn)
+        # ADR 0022 §12 follow-up — DGT 크론 간 영속 운용 상태 (asset 별 1행 upsert).
+        self.grid_states: GridStateRepoPort = SqliteGridStateRepo(conn)
         self.snapshots: PortfolioSnapshotRepoPort = SqlitePortfolioSnapshotRepo(conn)
 
     def __enter__(self) -> UnitOfWorkPort:
