@@ -1,0 +1,89 @@
+# DGT grid config — N=15 §11.21 권고 A (ADR 0022)
+# trading grid-backtest --config <이파일> --csv CODE=path ... 로 구동.
+#
+# 공통 config: n=6 on_breach k[0.5%,2%] profit_guard cd=5 price_based_reentry=True
+# (= ADR 0022 §11.18 권고 A 갱신 by §11.21 — both 모드 정식 채택).
+#
+# 종목 풀: 15종 (기존 10 + 신규 5 — NAVER/LG화학/셀트리온/POSCO홀딩스/SKT,
+# 섹터 분산 우선 선정). 균등 분할 자본.
+#
+# 사용 예 (현재 윈도):
+#   trading grid-backtest --config config/grid-N15-A.yaml \
+#       --csv 069500=data/historical/KRX_069500_2025-2026.csv \
+#       --csv 132030=data/historical/KRX_132030_2025-2026.csv \
+#       ...(15종)... \
+#       --start 2025-12-02 --end 2026-05-20 --capital 100000000 --as-json
+
+version: '1.0'
+assets:
+  # 기존 10종 (Phase 0 박제 9 + 095660)
+  "069500":
+    name: KODEX 200
+    enabled: true
+    grid_parameters: &gridA
+      grid_count: 6
+      fallback_k: 0.01
+      rebalance_mode: on_breach
+      k_min: 0.005
+      k_max: 0.02
+      slope_gate: false
+      profit_guard: true
+      sell_cooldown_bars: 5
+      price_based_reentry: true
+  "214980":
+    name: KODEX 단기채권 PLUS
+    enabled: true
+    grid_parameters: *gridA
+  "132030":
+    name: KODEX 골드선물(H)
+    enabled: true
+    grid_parameters: *gridA
+  "005930":
+    name: 삼성전자
+    enabled: true
+    grid_parameters: *gridA
+  "005380":
+    name: 현대차
+    enabled: true
+    grid_parameters: *gridA
+  "055550":
+    name: 신한지주
+    enabled: true
+    grid_parameters: *gridA
+  "097950":
+    name: CJ제일제당
+    enabled: true
+    grid_parameters: *gridA
+  "015760":
+    name: 한국전력
+    enabled: true
+    grid_parameters: *gridA
+  "298040":
+    name: 효성중공업
+    enabled: true
+    grid_parameters: *gridA
+  "095660":
+    name: 네오위즈
+    enabled: true
+    grid_parameters: *gridA
+  # N=15 신규 5종 (섹터 분산: IT플랫폼/화학/바이오/철강/통신)
+  "035420":
+    name: NAVER
+    enabled: true
+    grid_parameters: *gridA
+  "051910":
+    name: LG화학
+    enabled: true
+    grid_parameters: *gridA
+  "068270":
+    name: 셀트리온
+    enabled: true
+    grid_parameters: *gridA
+  "005490":
+    name: POSCO홀딩스
+    enabled: true
+    grid_parameters: *gridA
+  "017670":
+    name: SK텔레콤
+    enabled: true
+    grid_parameters: *gridA

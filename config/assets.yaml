@@ -79,3 +79,33 @@ assets:
     market: KOSDAQ
     asset_class: KR_STOCK
     listed_at: 2014-03-03
+
+  # ── N=15 종목 풀 확장 (ADR 0022 §11.18·§11.21 "N=15+ 미검증" 빈칸 메우기) ──
+  # 섹터 분산 우선 선정 — 기존 9종 미보유 5개 섹터 (IT플랫폼/화학/바이오/철강/통신).
+  # 모두 KOSPI 대형주. listed_at = pykrx 데이터 시작일 (실제 상장일은 더 이전).
+  # ⚠ KRX/DART 공식 상장일·시장구분 확인 권장 (§5.1 money-critical).
+  "035420":
+    name: "NAVER"
+    market: KOSPI
+    asset_class: KR_STOCK
+    listed_at: 2014-03-06
+  "051910":
+    name: "LG화학"
+    market: KOSPI
+    asset_class: KR_STOCK
+    listed_at: 2014-03-06
+  "068270":
+    name: "셀트리온"
+    market: KOSPI
+    asset_class: KR_STOCK
+    listed_at: 2014-03-06
+  "005490":
+    name: "POSCO홀딩스"
+    market: KOSPI
+    asset_class: KR_STOCK
+    listed_at: 2014-03-06
+  "017670":
+    name: "SK텔레콤"
+    market: KOSPI
+    asset_class: KR_STOCK
+    listed_at: 2014-03-06
