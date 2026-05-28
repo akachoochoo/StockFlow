@@ -1053,15 +1053,22 @@ class Position(DomainModel):
 class OrderRequest(DomainModel):
     """Order submission to the broker. CLAUDE.md §4.1 requires idempotency_key.
 
-    Phase 0.5 (ADR 0002 §5.7 / §5.9.3): SELL orders MUST identify the slot
-    they are closing via ``slot_number`` (1..7). The broker validates that
-    the slot is FILLED and that the request quantity matches the slot's
-    entry quantity exactly (no partial sells per §3.2.1). BUY orders MAY
-    carry ``slot_number`` (the strategy's intended target); when present
-    the broker fills exactly that slot, otherwise it falls back to the
-    smallest EMPTY slot. Phase 0.5 sells-then-buys cascade always passes
+    Phase 0.5 (ADR 0002 §5.7 / §5.9.3) — split strategy: SELL orders MUST
+    identify the slot they are closing via ``slot_number`` (1..7). The broker
+    validates that the slot is FILLED and that the request quantity matches
+    the slot's entry quantity exactly (no partial sells per §3.2.1). BUY
+    orders MAY carry ``slot_number`` (the strategy's intended target); when
+    present the broker fills exactly that slot, otherwise it falls back to
+    the smallest EMPTY slot. Phase 0.5 sells-then-buys cascade always passes
     the strategy's choice so Decision Invariant 3 (buy_slot ∉ sell_slots)
     is structurally guaranteed.
+
+    ADR 0022 §12 D18 — DGT grid strategy: instead of ``slot_number`` the
+    request carries ``grid_level_idx`` (0..n, the grid level being crossed).
+    The two fields are **mutually exclusive** (XOR): a request is either
+    split-slot or grid-level, never both. SELL must identify *something* —
+    slot OR level — so a slot/grid-less SELL is rejected. Broker dispatches
+    on which field is set (D19).
     """
 
     idempotency_key: str = Field(min_length=1, max_length=64)
@@ -1071,6 +1078,10 @@ class OrderRequest(DomainModel):
     quantity: Decimal = Field(gt=Decimal(0))
     target_price: Decimal = Field(gt=Decimal(0))
     slot_number: int | None = Field(default=None, ge=1, le=7)
+    # ADR 0022 §12 D18 — DGT grid level identifier. ge=0 only; upper bound
+    # depends on runtime GridConfig.grid_count (not enforced here, mirrors
+    # GridDecision.level_index `ge=0`).
+    grid_level_idx: int | None = Field(default=None, ge=0)
 
     @field_validator("quantity", "target_price", mode="before")
     @classmethod
@@ -1079,12 +1090,21 @@ class OrderRequest(DomainModel):
 
     @model_validator(mode="after")
     def _check_side_slot_consistency(self) -> OrderRequest:
-        if self.side is OrderSide.SELL and self.slot_number is None:
+        # ADR 0022 §12 D18 — XOR: split (slot_number) vs grid (grid_level_idx).
+        # 둘 다 set = 의미 충돌 → 즉시 거부 (CLAUDE.md §6.3 침묵의 실패 금지).
+        if self.slot_number is not None and self.grid_level_idx is not None:
             raise ValueError(
-                "SELL OrderRequest requires slot_number (the slot to close)"
+                "OrderRequest carries both slot_number and grid_level_idx — "
+                "they are mutually exclusive (split vs grid). Set exactly one."
             )
-        # ADR 0002 §5.9.3: BUY may carry slot_number (strategy's target);
-        # when None the broker falls back to "smallest EMPTY" allocation.
+        if self.side is OrderSide.SELL and self.slot_number is None and self.grid_level_idx is None:
+            raise ValueError(
+                "SELL OrderRequest requires slot_number (split) or "
+                "grid_level_idx (grid) to identify what is being closed"
+            )
+        # ADR 0002 §5.9.3: BUY may omit both (split fallback = smallest EMPTY).
+        # ADR 0022 §12 D18: BUY grid requests typically carry grid_level_idx
+        # for traceability, but None is permitted (broker treats as split BUY).
         return self
 
 

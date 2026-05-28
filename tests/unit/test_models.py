@@ -1616,6 +1616,62 @@ class TestOrderRequest:
                 target_price=Decimal("35000"),
             )
 
+    # ───────── D18 — grid_level_idx + XOR (ADR 0022 §12) ─────────
+
+    def _ok(self, **kw):
+        defaults = dict(
+            idempotency_key="k",
+            asset=make_asset(),
+            order_type=OrderType.LIMIT,
+            quantity=Decimal("10"),
+            target_price=Decimal("35000"),
+        )
+        defaults.update(kw)
+        return OrderRequest(**defaults)
+
+    def test_grid_buy_level_idx_only(self):
+        r = self._ok(side=OrderSide.BUY, grid_level_idx=5)
+        assert r.slot_number is None
+        assert r.grid_level_idx == 5
+
+    def test_grid_sell_level_idx_only(self):
+        r = self._ok(side=OrderSide.SELL, grid_level_idx=5)
+        assert r.slot_number is None
+        assert r.grid_level_idx == 5
+
+    def test_grid_level_idx_zero_boundary(self):
+        r = self._ok(side=OrderSide.BUY, grid_level_idx=0)
+        assert r.grid_level_idx == 0
+
+    def test_grid_level_idx_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            self._ok(side=OrderSide.BUY, grid_level_idx=-1)
+
+    def test_xor_both_slot_and_grid_rejected(self):
+        """slot_number 와 grid_level_idx 둘 다 set → 의미 충돌 거부."""
+        with pytest.raises(ValidationError) as excinfo:
+            self._ok(side=OrderSide.BUY, slot_number=3, grid_level_idx=5)
+        assert "mutually exclusive" in str(excinfo.value)
+
+    def test_sell_without_slot_or_grid_rejected(self):
+        """SELL 은 둘 중 하나 필수 (무엇을 닫을지 식별)."""
+        with pytest.raises(ValidationError) as excinfo:
+            self._ok(side=OrderSide.SELL)
+        assert "slot_number" in str(excinfo.value) or "grid_level_idx" in str(excinfo.value)
+
+    def test_buy_without_slot_or_grid_allowed(self):
+        """BUY 는 둘 다 None 허용 (split fallback = smallest EMPTY)."""
+        r = self._ok(side=OrderSide.BUY)
+        assert r.slot_number is None
+        assert r.grid_level_idx is None
+
+    def test_split_paths_regression(self):
+        """기존 split BUY/SELL with slot_number 회귀 zero."""
+        r_buy = self._ok(side=OrderSide.BUY, slot_number=3)
+        assert r_buy.slot_number == 3 and r_buy.grid_level_idx is None
+        r_sell = self._ok(side=OrderSide.SELL, slot_number=7)
+        assert r_sell.slot_number == 7 and r_sell.grid_level_idx is None
+
 
 # ---------------------------------------------------------------------------
 # OrderResult
