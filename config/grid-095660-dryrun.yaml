@@ -1,0 +1,35 @@
+# DGT grid dry-run config — 095660 (네오위즈) 단일 종목
+# ADR 0022 §11.21 권고 A (cd=5 + price_based_reentry) + 095660 박제 파라미터.
+#
+# 사용:
+#   trading grid-dry-run \
+#       --config config/grid-095660-dryrun.yaml \
+#       --csv 095660=data/historical/KRX_095660_2025-2026.csv \
+#       --capital 10000000 \
+#       [--date YYYY-MM-DD]
+#
+# - 자본 1천만 권장 (종목당 기준, §11.18 박제 — 그리드 활동 충분 자본).
+# - --date 기본 = today (KST). 지정 시 해당 영업일 처리.
+# - bars 는 CSV 에서 로드 (today 까지의 history). ATR 계산을 위해 최소 atr_period
+#   (14일) 이상 필요.
+
+version: '1.0'
+assets:
+  "095660":
+    name: 네오위즈
+    enabled: true
+    grid_parameters:
+      # Phase 0.11.k 박제 = strategies-backtest.yaml::095660 와 동일.
+      grid_count: 6
+      fallback_k: 0.01
+      rebalance_mode: on_breach
+      volatility_measure: adr
+      atr_period: 14
+      multiplier: 1.5
+      k_min: 0.005
+      k_max: 0.02
+      slope_gate: false
+      profit_guard: true
+      # ADR 0022 §11.21 권고 A 정상상태
+      sell_cooldown_bars: 5
+      price_based_reentry: true

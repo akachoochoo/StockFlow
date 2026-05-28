@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
 
+    from src.adapters.mock.broker import _GridHolding
     from src.domain.models import OHLCV, Asset
     from src.domain.strategies.grid import GridConfig
     from src.ports.broker import BrokerPort
@@ -361,3 +362,83 @@ class GridDryRunOrchestrator:
                 decision=decision,
             )
             uow.commit()
+
+
+def reconstruct_grid_broker_state(
+    *,
+    asset: Asset,
+    initial_capital: Money,
+    decisions: list[GridDecision],
+    last_buy_at: datetime | None = None,
+) -> tuple[Money, _GridHolding | None]:
+    """Replay grid_decisions → (cash, grid_holding) for cron-mode state restore.
+
+    Phase 0 dry-run/paper composition: MockBroker 가 in-memory 라 process 간
+    cash + holding 자체는 영속 안 됨. 대신 grid_decisions (audit log, D22.2) +
+    initial_capital 으로 *결정론적 재생산* — 매수/매도 시퀀스를 재생해 broker
+    상태를 복원.
+
+    Args:
+        asset: 대상 자산 (assertion 용).
+        initial_capital: 첫 cron 시작 시점의 현금 (Money).
+        decisions: 시간순 정렬된 GridDecision 시퀀스 (uow.grid_decisions.
+            list_by_date_range 결과).
+        last_buy_at: 최근 매수 timestamp (선택; 마지막 BUY 의 timestamp 가 있다면
+            전달. None 이면 _GridHolding 의 last_buy_at 도 None).
+
+    Returns:
+        (현재 cash, 현재 grid_holding 또는 None if qty==0).
+
+    가정:
+        - Broker 는 gross 만 추적 (commission/tax 제외) — ADR 0022 §12 D23
+          아이덜라이제이션 정합.
+        - 매도 시 평균가 (avg_price) 유지 (FIFO 아님, average cost).
+        - 시퀀스가 인과적으로 일관 (sell qty <= 보유 qty).
+    """
+    # 지연 import — adapters 의존 (composition 경계 정합). use_case 가 adapter
+    # 의 private 클래스를 알아야 하는 이유: MockBroker 가 dry-run 의 정본
+    # broker 라 별도 GridHolding 도메인 모델 없이 직접 사용.
+    from src.adapters.mock.broker import _GridHolding as _GH  # noqa: PLC0415
+
+    cash = initial_capital.amount
+    quantity = Decimal("0")
+    avg_price = Decimal("0")
+    cost_basis = Decimal("0")
+
+    for dec in decisions:
+        if dec.side is OrderSide.BUY:
+            gross = dec.rounded_price * dec.quantity
+            cash -= gross
+            new_qty = quantity + dec.quantity
+            new_cost = cost_basis + gross
+            avg_price = new_cost / new_qty
+            cost_basis = new_cost
+            quantity = new_qty
+        else:  # SELL
+            if dec.quantity > quantity:
+                raise ValueError(
+                    f"grid_decisions 시퀀스 inconsistency — SELL {dec.quantity} "
+                    f"exceeds holding {quantity} for {asset.fqn}"
+                )
+            gross = dec.rounded_price * dec.quantity
+            cash += gross
+            new_qty = quantity - dec.quantity
+            if new_qty == 0:
+                quantity = Decimal("0")
+                avg_price = Decimal("0")
+                cost_basis = Decimal("0")
+            else:
+                # average cost: avg_price 유지, cost_basis 비례 감소.
+                cost_basis = new_qty * avg_price
+                quantity = new_qty
+
+    new_cash = Money(amount=cash, currency=initial_capital.currency)
+    if quantity == 0:
+        return new_cash, None
+    return new_cash, _GH(
+        asset=asset,
+        quantity=quantity,
+        avg_price=avg_price,
+        cost_basis=cost_basis,
+        last_buy_at=last_buy_at,
+    )

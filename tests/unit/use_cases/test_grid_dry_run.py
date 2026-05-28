@@ -23,7 +23,10 @@ from src.domain.models import (
     OrderSide,
 )
 from src.domain.strategies.grid import GridConfig
-from src.use_cases.grid_dry_run import GridDryRunOrchestrator
+from src.use_cases.grid_dry_run import (
+    GridDryRunOrchestrator,
+    reconstruct_grid_broker_state,
+)
 from src.use_cases.grid_runner import GridRunner
 
 DAY0 = date(2026, 5, 1)
@@ -408,3 +411,79 @@ class TestStepTodayEquivalence:
         # 매도가 한 번이라도 있었으므로 last_sell_price > 0.
         assert final is not None
         assert final.last_sell_price > 0
+
+
+class TestReconstructBrokerState:
+    """grid_decisions 시퀀스 → broker (cash, _GridHolding) 결정론적 재생산."""
+
+    def test_empty_decisions_returns_initial(self) -> None:
+        cash, holding = reconstruct_grid_broker_state(
+            asset=ASSET,
+            initial_capital=Money(amount=Decimal("10000000"), currency=Currency.KRW),
+            decisions=[],
+        )
+        assert cash.amount == Decimal("10000000")
+        assert holding is None
+
+    def test_full_replay_matches_replay_bars_state(self) -> None:
+        """replay_bars 후 broker 상태 == 그 결과 grid_decisions 를 재생한 state."""
+        bars = _bars_oscillating()
+        config = _config()
+        capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+        broker = _make_broker()
+        uow = InMemoryUnitOfWork()
+        orch = GridDryRunOrchestrator(
+            broker=broker,
+            uow_factory=lambda: uow,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        orch.replay_bars(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+        saved = uow.grid_decisions.list_by_date_range(
+            ASSET.fqn, bars[0].trade_date, bars[-1].trade_date
+        )
+        # Reconstruct from grid_decisions
+        cash, holding = reconstruct_grid_broker_state(
+            asset=ASSET,
+            initial_capital=capital,
+            decisions=saved,
+        )
+        # 재생 결과 broker 와 일치
+        assert cash.amount == broker.get_balance().cash.amount
+        broker_holding = broker.get_grid_holding(ASSET.fqn)
+        if broker_holding is None:
+            assert holding is None
+        else:
+            assert holding is not None
+            assert holding.quantity == broker_holding.quantity
+            assert holding.avg_price == broker_holding.avg_price
+
+    def test_oversell_raises(self) -> None:
+        """잘못된 시퀀스 (sell qty > holding) → ValueError."""
+        from src.domain.strategies.grid import GridDecision
+
+        buy = GridDecision(
+            side=OrderSide.BUY,
+            level_index=3,
+            level_price=Decimal("30000"),
+            rounded_price=Decimal("30000"),
+            quantity=Decimal("10"),
+            reasoning={},
+        )
+        sell = GridDecision(
+            side=OrderSide.SELL,
+            level_index=4,
+            level_price=Decimal("30300"),
+            rounded_price=Decimal("30300"),
+            quantity=Decimal("20"),
+            reasoning={},
+        )
+        import pytest
+
+        with pytest.raises(ValueError, match="exceeds holding"):
+            reconstruct_grid_broker_state(
+                asset=ASSET,
+                initial_capital=Money(amount=Decimal("10000000"), currency=Currency.KRW),
+                decisions=[buy, sell],
+            )
