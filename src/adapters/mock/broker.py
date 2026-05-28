@@ -87,11 +87,15 @@ class MockBroker:
         # Parameter kept in the signature so the boundary is loud — Phase 1
         # KIS adapter will reintroduce partial-fill handling with a redesigned
         # slot-aware policy.
+        # ADR 0022 §12 D20: 동일한 차단이 grid 주문에도 적용 (D18 XOR 가
+        # split/grid 양립 불가 보장 → partial fill 정책 단일). KIS live 의
+        # 실제 partial fill = PARTIALLY_FILLED 상태로 PendingSettler 가
+        # 다음 cron 에서 terminal 확인 + reconciliation 흡수 (`reconciler.py:150-170`).
         if simulate_partial_fill_rate != 0.0:
             raise ValueError(
                 "simulate_partial_fill_rate must be 0.0 in Phase 0.5 "
-                "(partial fills are blocked, ADR 0002 §3.2.1). Got "
-                f"{simulate_partial_fill_rate}."
+                "(partial fills are blocked, ADR 0002 §3.2.1 + ADR 0022 §12 D20). "
+                f"Got {simulate_partial_fill_rate}."
             )
         if not 1 <= max_split_count <= 7:
             raise ValueError(
