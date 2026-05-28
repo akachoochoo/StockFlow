@@ -1570,19 +1570,24 @@ def grid_dry_run(
     후 KISMarketData 주입 옵션은 후속 증분. 본 명령은 결정론적 백테스트-on-
     broker 라인 — backtest GridRunner 와 trade-by-trade 동치 (§12 D23 G2).
     """
+    import os  # noqa: PLC0415
     from datetime import UTC  # noqa: PLC0415
     from datetime import date as _date  # noqa: PLC0415
     from datetime import datetime  # noqa: PLC0415
 
     from src.adapters.mock.broker import MockBroker
+    from src.adapters.telegram.notifier import build_notifier
     from src.domain.constants import KST
     from src.domain.models import Balance, OHLCV
     from src.infrastructure.db import connect as _db_connect
     from src.infrastructure.sqlite_unit_of_work import SqliteUnitOfWork
+    from src.ports.notifications import NotificationLevel
     from src.use_cases.grid_dry_run import (
         GridDryRunOrchestrator,
         reconstruct_grid_broker_state,
     )
+
+    notifier = build_notifier(os.environ)
 
     # 1. config → 단일 enabled 종목
     bundles = load_grid_config(config_path)
@@ -1675,19 +1680,68 @@ def grid_dry_run(
         uow_factory=uow_factory,
         timestamp_for_bar=_ts_for_bar,
     )
-    executed = orchestrator.step_today(
-        asset=asset,
-        bars=bars_until_target,
-        config=bundle.config,
-        initial_capital=initial_capital,
+
+    # Cron 시작 알림 — bar/복원 상태 포함.
+    holding_desc = (
+        f"보유 {restored_holding.quantity}주 @평단 {_won(restored_holding.avg_price)}"
+        if restored_holding is not None
+        else "보유 0"
+    )
+    notifier.notify(
+        level=NotificationLevel.INFO,
+        title=f"DGT grid-dry-run 시작 — {asset.fqn} {today_bar.trade_date.isoformat()}",
+        body=(
+            f"종가 {today_bar.close} / 사전 결정 {len(prior_decisions)} 건 / "
+            f"복원 cash {_won(restored_cash.amount)} / {holding_desc}"
+        ),
     )
 
-    # 8. 출력
+    try:
+        executed = orchestrator.step_today(
+            asset=asset,
+            bars=bars_until_target,
+            config=bundle.config,
+            initial_capital=initial_capital,
+        )
+    except Exception as exc:
+        notifier.notify(
+            level=NotificationLevel.ERROR,
+            title=f"DGT grid-dry-run 오류 — {asset.fqn} {today_bar.trade_date.isoformat()}",
+            body=f"{exc.__class__.__name__}: {exc}",
+        )
+        conn.close()
+        raise
+
+    # 매수/매도 결정별 알림.
+    for d in executed:
+        notifier.notify(
+            level=NotificationLevel.INFO,
+            title=f"DGT {d.side.value} — {asset.fqn} level={d.level_index}",
+            body=(
+                f"{d.quantity}주 @{_won(d.rounded_price)} "
+                f"({today_bar.trade_date.isoformat()})"
+            ),
+        )
+
+    # 8. 출력 + 종료 알림 (분기 공통 — JSON / 사람 가독 둘 다 동일 notify).
+    post_cash = broker.get_balance().cash.amount
+    post_holding = broker.get_grid_holding(asset.fqn)
+    post_holding_desc = (
+        f"보유 {post_holding.quantity}주 @평단 {_won(post_holding.avg_price)}"
+        if post_holding is not None
+        else "보유 0"
+    )
+    notifier.notify(
+        level=NotificationLevel.INFO,
+        title=f"DGT grid-dry-run 종료 — {asset.fqn} {today_bar.trade_date.isoformat()}",
+        body=(
+            f"결정 {len(executed)} 건 / cash {_won(post_cash)} / {post_holding_desc}"
+        ),
+    )
+
     if as_json:
         import json as _json
 
-        post_cash = broker.get_balance().cash.amount
-        post_holding = broker.get_grid_holding(asset.fqn)
         click.echo(
             _json.dumps(
                 {
@@ -1746,17 +1800,7 @@ def grid_dry_run(
                 f"  {d.side.value} level={d.level_index} qty={d.quantity} "
                 f"@{_won(d.rounded_price)}"
             )
-    post_cash = broker.get_balance().cash.amount
-    post_holding = broker.get_grid_holding(asset.fqn)
-    click.echo(
-        f"종료 상태: cash {_won(post_cash)}"
-        + (
-            f" / 보유 {post_holding.quantity}주 @평단 "
-            f"{_won(post_holding.avg_price)}"
-            if post_holding is not None
-            else " / 보유 0"
-        )
-    )
+    click.echo(f"종료 상태: cash {_won(post_cash)} / {post_holding_desc}")
     click.echo(
         f"DB: {db_path}  (grid_decisions + grid_states 영속, 다음 cron 자동 이어받음)"
     )
