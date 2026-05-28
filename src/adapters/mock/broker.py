@@ -21,6 +21,7 @@ Design highlights:
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,23 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from src.domain.models import Asset, OrderRequest, Position, SupportSlot
+
+
+@dataclass(frozen=True)
+class _GridHolding:
+    """Internal grid-strategy holding (ADR 0022 §12 D19).
+
+    Slot-free aggregate for DGT grid trades — quantity + weighted avg_price +
+    cost_basis (실현 P&L 계산은 GridRunner 책임, 본 holding 은 잔량만 추적).
+    Distinct from :class:`Position` (slot-based split) and :class:`BrokerHolding`
+    (read-only view, qty > 0 강제). Frozen — replace via :func:`replace`.
+    """
+
+    asset: Asset
+    quantity: Decimal  # >= 0 (0 면 dict 에서 제거)
+    avg_price: Decimal  # weighted avg of BUY fills
+    cost_basis: Decimal  # quantity * avg_price (정밀도 유지)
+    last_buy_at: datetime | None
 
 
 class MockBroker:
@@ -82,6 +100,9 @@ class MockBroker:
 
         self._balance: Balance = initial_balance
         self._positions: dict[str, Position] = {}
+        # ADR 0022 §12 D19 — DGT grid holdings (slot 우회). split Position 과
+        # 분리; 같은 asset 에 동시 holding 금지 (apply 단계 가드).
+        self._grid_holdings: dict[str, _GridHolding] = {}
         self._orders: dict[str, Order] = {}
         self._next_broker_order_id: int = 1
         self._clock = clock
@@ -106,7 +127,10 @@ class MockBroker:
         # Mirror of get_positions but as the aggregated BrokerHolding view
         # (code + quantity + avg_price, no split-slot structure) used for
         # reconciliation (CLAUDE.md §11.2). Only non-empty holdings (qty > 0).
-        return [
+        # ADR 0022 §12 D19: combines split Position 과 grid _GridHolding —
+        # 두 dict 은 mutual exclusion (같은 asset_fqn 에 동시 존재 불가, apply
+        # 단계 가드).
+        split_holdings = [
             BrokerHolding(
                 asset_code=p.asset.code,
                 quantity=p.quantity,
@@ -115,6 +139,16 @@ class MockBroker:
             for p in self._positions.values()
             if p.quantity > 0
         ]
+        grid_holdings = [
+            BrokerHolding(
+                asset_code=h.asset.code,
+                quantity=h.quantity,
+                avg_price=h.avg_price,
+            )
+            for h in self._grid_holdings.values()
+            if h.quantity > 0
+        ]
+        return split_holdings + grid_holdings
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         # Idempotency: same key returns the prior result without re-execution
@@ -218,6 +252,27 @@ class MockBroker:
         )
         assert result.filled_price is not None
         assert result.filled_at is not None
+        # ADR 0022 §12 D19 — grid 분기: grid_level_idx 가 set 이면 slot 우회 경로.
+        # OrderRequest XOR (D18) 가 slot/grid 양립 불가 보장 → 안전하게 분기.
+        if request.grid_level_idx is not None:
+            if request.side is OrderSide.BUY:
+                cost = result.filled_quantity * result.filled_price
+                self._debit_cash(cost)
+                self._apply_grid_buy_fill(
+                    request.asset,
+                    result.filled_quantity,
+                    result.filled_price,
+                    result.filled_at,
+                )
+            else:  # SELL
+                proceeds = result.filled_quantity * result.filled_price
+                self._credit_cash(proceeds)
+                self._apply_grid_sell_fill(
+                    request.asset,
+                    result.filled_quantity,
+                )
+            return
+        # Split path (slot-based, 기존 경로 0변경).
         if request.side is OrderSide.BUY:
             cost = result.filled_quantity * result.filled_price
             self._debit_cash(cost)
@@ -311,6 +366,107 @@ class MockBroker:
             filled_price=filled_price,
             now=now,
         )
+
+    # ------------------------------------------------------------------
+    # ADR 0022 §12 D19 — Grid fill paths (slot 우회)
+    # ------------------------------------------------------------------
+    def _apply_grid_buy_fill(
+        self,
+        asset: Asset,
+        filled_qty: Decimal,
+        filled_price: Decimal,
+        now: datetime,
+    ) -> None:
+        """Apply a fully-filled grid BUY into the grid-holdings ledger.
+
+        slot 미사용. weighted avg_price = (기존 cost_basis + new cost) / new qty.
+        같은 asset 에 split Position 이 이미 있으면 거부 (mutual exclusion).
+        """
+        if asset.fqn in self._positions and self._positions[asset.fqn].quantity > 0:
+            raise BrokerConnectionError(
+                f"grid BUY on {asset.fqn} but split Position with qty>0 exists "
+                "— mutual exclusion (ADR 0022 §12 D19)"
+            )
+        existing = self._grid_holdings.get(asset.fqn)
+        if existing is None:
+            self._grid_holdings[asset.fqn] = _GridHolding(
+                asset=asset,
+                quantity=filled_qty,
+                avg_price=filled_price,
+                cost_basis=filled_qty * filled_price,
+                last_buy_at=now,
+            )
+            return
+        new_qty = existing.quantity + filled_qty
+        new_cost = existing.cost_basis + (filled_qty * filled_price)
+        new_avg = new_cost / new_qty
+        self._grid_holdings[asset.fqn] = replace(
+            existing,
+            quantity=new_qty,
+            avg_price=new_avg,
+            cost_basis=new_cost,
+            last_buy_at=now,
+        )
+
+    def _apply_grid_sell_fill(
+        self,
+        asset: Asset,
+        filled_qty: Decimal,
+    ) -> None:
+        """Apply a fully-filled grid SELL — decrement quantity, keep avg_price.
+
+        부분 매도 시: avg_price 유지 (FIFO 가정 아님 — average cost),
+        cost_basis = quantity * avg_price 비례 감소. quantity 가 0 이 되면
+        holding 삭제 (mutual exclusion 다시 열림).
+        같은 asset 에 split Position 이 있으면 거부.
+        """
+        if asset.fqn in self._positions and self._positions[asset.fqn].quantity > 0:
+            raise BrokerConnectionError(
+                f"grid SELL on {asset.fqn} but split Position with qty>0 exists "
+                "— mutual exclusion (ADR 0022 §12 D19)"
+            )
+        existing = self._grid_holdings.get(asset.fqn)
+        if existing is None or existing.quantity < filled_qty:
+            existing_qty = existing.quantity if existing else Decimal(0)
+            raise BrokerConnectionError(
+                f"grid SELL {filled_qty} on {asset.fqn} exceeds holding qty "
+                f"{existing_qty}"
+            )
+        new_qty = existing.quantity - filled_qty
+        if new_qty == 0:
+            del self._grid_holdings[asset.fqn]
+            return
+        # average cost: avg_price 유지, cost_basis 는 새 qty * 같은 avg.
+        new_cost = new_qty * existing.avg_price
+        self._grid_holdings[asset.fqn] = replace(
+            existing,
+            quantity=new_qty,
+            cost_basis=new_cost,
+        )
+
+    def get_grid_holding(self, asset_fqn: str) -> _GridHolding | None:
+        """Return the current grid holding for ``asset_fqn`` (or None).
+
+        ADR 0022 §12 D19. dry-run/paper composition 에서 GridRunner 가 다음
+        결정 평가 전 보유량을 조회.
+        """
+        return self._grid_holdings.get(asset_fqn)
+
+    def set_grid_holding(self, holding: _GridHolding) -> None:
+        """Inject a grid holding (state restoration on cron resume).
+
+        ADR §10.3 / §10.7 paper trading composition 정합 — set_position 와
+        대칭. 기존 split Position 있으면 거부 (mutual exclusion).
+        """
+        if (
+            holding.asset.fqn in self._positions
+            and self._positions[holding.asset.fqn].quantity > 0
+        ):
+            raise BrokerConnectionError(
+                f"set_grid_holding({holding.asset.fqn}) but split Position with "
+                "qty>0 exists — mutual exclusion (ADR 0022 §12 D19)"
+            )
+        self._grid_holdings[holding.asset.fqn] = holding
 
     # ------------------------------------------------------------------
     # State injection (ADR §10.3 / §10.7 — paper trading composition)
