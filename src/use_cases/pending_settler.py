@@ -62,7 +62,12 @@ from src.domain.models import (
     SellActionRecord,
     SplitSlot,
 )
-from src.domain.order_keys import parse_order_key
+from src.domain.order_keys import (
+    is_grid_order_key,
+    parse_grid_order_key,
+    parse_order_key,
+)
+from src.domain.strategies.grid import GridDecision
 from src.ports.notifications import NotificationLevel
 
 if TYPE_CHECKING:
@@ -108,6 +113,8 @@ class SettleOutcome:
 
     settled_buys: list[Decision] = field(default_factory=list)
     settled_sells: list[Decision] = field(default_factory=list)
+    # ADR 0022 §12 D21 — DGT grid 거래 settle 결과 (slot 없음, 다중 row 가능).
+    settled_grid: list[GridDecision] = field(default_factory=list)
     transitioned_keys: list[str] = field(default_factory=list)
     still_pending_keys: list[str] = field(default_factory=list)
     events: list[SettleEvent] = field(default_factory=list)
@@ -185,6 +192,11 @@ class PendingSettler:
         today: date,
         outcome: SettleOutcome,
     ) -> None:
+        # ADR 0022 §12 D21 — grid 키 (6세그먼트 "grid" sentinel) 면 별도 경로.
+        # Split 키 (5세그먼트) 는 기존 경로 0변경.
+        if is_grid_order_key(order.idempotency_key):
+            self._settle_grid_filled(order, result, today, outcome)
+            return
         parsed = parse_order_key(order.idempotency_key)  # OrderKeyError → halt
         with self._uow_factory() as uow:
             existing = uow.positions.get(order.asset.fqn)
@@ -314,6 +326,50 @@ class PendingSettler:
         self._persist_terminal(uow, order, result, OrderStatus.FILLED)
         uow.decisions.save(decision)
         return decision
+
+    # ------------------------------------------------------------------
+    # ADR 0022 §12 D21 — Grid settle path (slot 우회)
+    # ------------------------------------------------------------------
+    def _settle_grid_filled(
+        self,
+        order: Order,
+        result: OrderResult,
+        today: date,
+        outcome: SettleOutcome,
+    ) -> None:
+        """Settle a confirmed FILLED grid order — persist GridDecision +
+        transition order status. Slot 미사용 (broker 의 ``_grid_holdings``
+        가 별도 ledger).
+
+        Re-settle 안전성: GridDecision 은 append-only — 같은 idempotency_key
+        가 재settle 시도 시 ``orders.list_pending`` 에서 이미 빠진 상태이므로
+        도달 자체가 없음 (split 와 동일 보호).
+        """
+        parsed = parse_grid_order_key(order.idempotency_key)  # OrderKeyError → halt
+        filled_price = _require_fill_economics(result, order)
+        assert result.filled_at is not None
+        # GridDecision = (side, level_index, level_price, rounded_price, qty,
+        # reasoning). settle 시점 level_price 정보는 키에 없으므로 filled_price
+        # 로 일원화 (체결가 기준 — backtest GridStrategy 와 동치성 보장
+        # gridDecisionProjection 가 rounded_price 만 비교).
+        grid_decision = GridDecision(
+            side=parsed.side,
+            level_index=parsed.level_idx,
+            level_price=filled_price,
+            rounded_price=filled_price,
+            quantity=result.filled_quantity,
+            reasoning=_settle_reasoning(order, today),
+        )
+        with self._uow_factory() as uow:
+            uow.grid_decisions.save(
+                asset=order.asset,
+                timestamp=result.filled_at,
+                decision=grid_decision,
+            )
+            self._persist_terminal(uow, order, result, OrderStatus.FILLED)
+            uow.commit()
+        outcome.settled_grid.append(grid_decision)
+        outcome.transitioned_keys.append(order.idempotency_key)
 
     # ------------------------------------------------------------------
     def _settle_terminal_no_fill(
