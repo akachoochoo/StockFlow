@@ -20,6 +20,9 @@ from typing import TYPE_CHECKING
 from src.infrastructure.repositories.sqlite_decision_repo import (
     SqliteDecisionRepo,
 )
+from src.infrastructure.repositories.sqlite_grid_decision_repo import (
+    SqliteGridDecisionRepo,
+)
 from src.infrastructure.repositories.sqlite_order_repo import SqliteOrderRepo
 from src.infrastructure.repositories.sqlite_portfolio_snapshot_repo import (
     SqlitePortfolioSnapshotRepo,
@@ -34,6 +37,7 @@ if TYPE_CHECKING:
 
     from src.ports.repositories import (
         DecisionRepoPort,
+        GridDecisionRepoPort,
         OrderRepoPort,
         PortfolioSnapshotRepoPort,
         PositionRepoPort,
@@ -52,6 +56,8 @@ class SqliteUnitOfWork:
         self.positions: PositionRepoPort = SqlitePositionRepo(conn)
         self.orders: OrderRepoPort = SqliteOrderRepo(conn)
         self.decisions: DecisionRepoPort = SqliteDecisionRepo(conn)
+        # ADR 0022 §12 D22 — DGT grid trade decisions (별도 테이블, 다중 일별 row).
+        self.grid_decisions: GridDecisionRepoPort = SqliteGridDecisionRepo(conn)
         self.snapshots: PortfolioSnapshotRepoPort = SqlitePortfolioSnapshotRepo(conn)
 
     def __enter__(self) -> UnitOfWorkPort:

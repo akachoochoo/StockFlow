@@ -20,13 +20,16 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from src.domain.models import (
+        Asset,
         Decision,
         Order,
         PortfolioSnapshot,
         Position,
     )
+    from src.domain.strategies.grid import GridDecision
     from src.ports.repositories import (
         DecisionRepoPort,
+        GridDecisionRepoPort,
         OrderRepoPort,
         PortfolioSnapshotRepoPort,
         PositionRepoPort,
@@ -164,6 +167,48 @@ class InMemoryDecisionRepo:
         return max(matching, key=lambda d: d.timestamp)
 
 
+class InMemoryGridDecisionRepo:
+    """GridDecisionRepoPort backed by an append-only list (ADR 0022 §12 D22).
+
+    Phase 0 backtest 에서 grid_decisions 영속 시뮬레이션. 저장은 (timestamp,
+    asset_fqn, decision) 3-tuple. ``list_for_date`` / ``list_by_date_range``
+    는 timestamp asc 정렬.
+    """
+
+    def __init__(self) -> None:
+        # Internal record: (timestamp, asset_fqn, GridDecision).
+        self._rows: list[tuple[datetime, str, GridDecision]] = []
+
+    def save(
+        self,
+        *,
+        asset: Asset,
+        timestamp: datetime,
+        decision: GridDecision,
+    ) -> None:
+        self._rows.append((timestamp, asset.fqn, decision))
+
+    def list_for_date(
+        self, asset_fqn: str, trade_date: date
+    ) -> list[GridDecision]:
+        matching = [
+            (ts, d)
+            for ts, fqn, d in self._rows
+            if fqn == asset_fqn and ts.date() == trade_date
+        ]
+        return [d for _, d in sorted(matching, key=lambda x: x[0])]
+
+    def list_by_date_range(
+        self, asset_fqn: str, start: date, end: date
+    ) -> list[GridDecision]:
+        matching = [
+            (ts, d)
+            for ts, fqn, d in self._rows
+            if fqn == asset_fqn and start <= ts.date() <= end
+        ]
+        return [d for _, d in sorted(matching, key=lambda x: x[0])]
+
+
 class InMemoryPortfolioSnapshotRepo:
     """PortfolioSnapshotRepoPort backed by a dict keyed on snapshot_date."""
 
@@ -208,6 +253,8 @@ class InMemoryUnitOfWork:
         self.positions: PositionRepoPort = InMemoryPositionRepo()
         self.orders: OrderRepoPort = InMemoryOrderRepo()
         self.decisions: DecisionRepoPort = InMemoryDecisionRepo()
+        # ADR 0022 §12 D22 — DGT grid trade decisions.
+        self.grid_decisions: GridDecisionRepoPort = InMemoryGridDecisionRepo()
         self.snapshots: PortfolioSnapshotRepoPort = InMemoryPortfolioSnapshotRepo()
 
     def __enter__(self) -> UnitOfWorkPort:

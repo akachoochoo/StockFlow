@@ -17,12 +17,14 @@ if TYPE_CHECKING:
     from decimal import Decimal
 
     from src.domain.models import (
+        Asset,
         Decision,
         Order,
         OrderStatus,
         PortfolioSnapshot,
         Position,
     )
+    from src.domain.strategies.grid import GridDecision
 
 
 class PositionRepoPort(Protocol):
@@ -158,5 +160,44 @@ class PortfolioSnapshotRepoPort(Protocol):
         Used by paper trading composition (ADR §10.3) to restore cash
         between cron invocations: the last snapshot's cash is the
         starting cash for the next day.
+        """
+        ...
+
+
+class GridDecisionRepoPort(Protocol):
+    """DGT grid decision persistence (grid_decisions table, ADR 0022 §12 D22).
+
+    Split ``DecisionRepoPort`` 와 분리 — 그리드 거래는 하루 같은 asset 에 다수
+    GridDecision 발생 가능 (single Decision-per-day 가정 불가) + slot 개념 부재.
+    저장 단위 = (timestamp, asset, GridDecision). 동일성 비교 = 별도
+    :func:`src.use_cases.grid_decision_equivalence.grid_decision_projection`.
+    """
+
+    def save(
+        self,
+        *,
+        asset: Asset,
+        timestamp: datetime,
+        decision: GridDecision,
+    ) -> None:
+        """Append a GridDecision row. Decisions are append-only history."""
+        ...
+
+    def list_for_date(
+        self, asset_fqn: str, trade_date: date
+    ) -> list[GridDecision]:
+        """Return all GridDecisions for ``asset_fqn`` on ``trade_date``,
+        ordered by timestamp asc.
+
+        Used by G2 진성 동등성 검증 (D23): live/dry-run 의 그날 결정 시퀀스를
+        backtest 결과와 비교.
+        """
+        ...
+
+    def list_by_date_range(
+        self, asset_fqn: str, start: date, end: date
+    ) -> list[GridDecision]:
+        """Return all GridDecisions for ``asset_fqn`` in [start, end],
+        ordered by timestamp asc.
         """
         ...

@@ -87,6 +87,24 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_decisions_asset_fqn ON decisions(asset_fqn)",
     "CREATE INDEX IF NOT EXISTS idx_decisions_skip_reason ON decisions(skip_reason)",
+    # ADR 0022 §12 D22 — DGT 그리드 거래 결정 (split decisions 와 별도 테이블,
+    # 네임스페이스 분리). 단일 GridDecision 당 1 row, 다중 일별 trades 자연 표현.
+    """
+    CREATE TABLE IF NOT EXISTS grid_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,                 -- ISO 8601 UTC
+        asset_fqn TEXT NOT NULL,
+        asset_json TEXT NOT NULL,
+        side TEXT NOT NULL,                      -- BUY | SELL
+        level_index INTEGER NOT NULL,
+        level_price TEXT NOT NULL,
+        rounded_price TEXT NOT NULL,
+        quantity TEXT NOT NULL,
+        reasoning TEXT NOT NULL                  -- JSON dict
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_grid_decisions_timestamp ON grid_decisions(timestamp)",
+    "CREATE INDEX IF NOT EXISTS idx_grid_decisions_asset_fqn ON grid_decisions(asset_fqn)",
     """
     CREATE TABLE IF NOT EXISTS portfolio_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
