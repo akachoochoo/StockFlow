@@ -25,6 +25,7 @@ from src.domain.models import (
 from src.domain.strategies.grid import GridConfig
 from src.use_cases.grid_dry_run import (
     GridDryRunOrchestrator,
+    make_grid_holdings_provider,
     reconstruct_grid_broker_state,
 )
 from src.use_cases.grid_runner import GridRunner
@@ -712,3 +713,147 @@ class TestMultiAssetEquivalence:
         # ASSET 의 reference ≈ 30K, ASSET2 의 reference ≈ 60K (bootstrap from bars[0])
         assert Decimal("28000") <= state1.grid_state.reference_price <= Decimal("32000")
         assert Decimal("58000") <= state2.grid_state.reference_price <= Decimal("63000")
+
+
+# ===========================================================================
+# ADR 0022 §13 D25 — holdings_provider 추상화 (live 경로 토대)
+# ===========================================================================
+
+
+class TestHoldingsProvider:
+    """orchestrator 가 broker.get_grid_holding 대신 추상화된 provider 호출."""
+
+    def test_default_provider_uses_broker_get_grid_holding(self) -> None:
+        """holdings_provider 미주입 시 broker.get_grid_holding 사용 (회귀 zero)."""
+        bars = _bars_oscillating()
+        config = _config()
+        capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+        broker = _make_broker()
+        uow = InMemoryUnitOfWork()
+        orch = GridDryRunOrchestrator(
+            broker=broker,
+            uow_factory=lambda: uow,
+            timestamp_for_bar=_ts_for_bar,
+            # holdings_provider 미지정 → 기본 broker fallback
+        )
+        executed = orch.replay_bars(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+        assert len(executed) > 0  # 결정 발생 = 기본 provider 동작 정상
+
+    def test_custom_provider_overrides_broker(self) -> None:
+        """provider 가 broker fallback 을 override — broker 호출 없이 holdings 결정."""
+        bars = _bars_oscillating()
+        config = _config()
+        capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+        broker = _make_broker()
+        uow = InMemoryUnitOfWork()
+
+        # provider 호출 추적
+        calls: list[str] = []
+
+        def fake_provider(asset) -> Decimal:
+            calls.append(asset.fqn)
+            return Decimal("0")
+
+        orch = GridDryRunOrchestrator(
+            broker=broker,
+            uow_factory=lambda: uow,
+            timestamp_for_bar=_ts_for_bar,
+            holdings_provider=fake_provider,
+        )
+        orch.replay_bars(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+        # bar 수 만큼 provider 호출 (각 bar 의 _process_one_bar 가 1회 호출)
+        assert len(calls) == len(bars)
+        assert all(fqn == ASSET.fqn for fqn in calls)
+
+    def test_make_grid_holdings_provider_replays_decisions(self) -> None:
+        """make_grid_holdings_provider 가 grid_decisions.list_net_quantities 재생."""
+        uow = InMemoryUnitOfWork()
+        # ASSET 에 BUY 15 - SELL 3 = net 12 저장
+        from src.domain.strategies.grid import GridDecision  # noqa: PLC0415
+
+        ts = datetime(2026, 5, 28, 6, tzinfo=UTC)
+        with uow:
+            uow.grid_decisions.save(
+                asset=ASSET, timestamp=ts,
+                decision=GridDecision(
+                    side=OrderSide.BUY, level_index=3,
+                    level_price=Decimal("30000"),
+                    rounded_price=Decimal("30000"),
+                    quantity=Decimal("15"), reasoning={},
+                ),
+            )
+            uow.grid_decisions.save(
+                asset=ASSET, timestamp=ts.replace(minute=1),
+                decision=GridDecision(
+                    side=OrderSide.SELL, level_index=4,
+                    level_price=Decimal("30300"),
+                    rounded_price=Decimal("30300"),
+                    quantity=Decimal("3"), reasoning={},
+                ),
+            )
+            uow.commit()
+
+        provider = make_grid_holdings_provider(lambda: uow)
+        assert provider(ASSET) == Decimal("12")
+        # 결정 없는 자산 → 0 (디폴트)
+        from src.domain.models import Asset as _Asset  # noqa: PLC0415
+
+        other = _Asset(
+            code="005930",
+            exchange=Exchange.KRX,
+            market=Market.KOSPI,
+            asset_class=AssetClass.KR_STOCK,
+            currency=Currency.KRW,
+            name="삼성전자",
+            tick_size=Decimal("1"),
+            lot_size=Decimal("1"),
+            listed_at=date(1975, 6, 11),
+        )
+        assert provider(other) == Decimal("0")
+
+    def test_live_provider_decisions_match_broker_path(self) -> None:
+        """동일 시나리오에서 live provider (grid_decisions 재생) ≡ broker fallback.
+
+        replay_bars 를 두 가지 provider 로 실행 — 결정 시퀀스가 trade-by-trade
+        동일해야 함 (G2 진성 동등성의 live 측 부설).
+        """
+        bars = _bars_oscillating()
+        config = _config()
+        capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+
+        # Path A — 기본 broker provider
+        broker_a = _make_broker()
+        uow_a = InMemoryUnitOfWork()
+        orch_a = GridDryRunOrchestrator(
+            broker=broker_a,
+            uow_factory=lambda: uow_a,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        decisions_a = orch_a.replay_bars(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+
+        # Path B — live provider (grid_decisions 재생)
+        broker_b = _make_broker()
+        uow_b = InMemoryUnitOfWork()
+        orch_b = GridDryRunOrchestrator(
+            broker=broker_b,
+            uow_factory=lambda: uow_b,
+            timestamp_for_bar=_ts_for_bar,
+            holdings_provider=make_grid_holdings_provider(lambda: uow_b),
+        )
+        decisions_b = orch_b.replay_bars(
+            asset=ASSET, bars=bars, config=config, initial_capital=capital
+        )
+
+        # 결정 시퀀스 trade-by-trade 동치
+        assert len(decisions_a) == len(decisions_b)
+        for a, b in zip(decisions_a, decisions_b, strict=True):
+            assert a.side == b.side
+            assert a.level_index == b.level_index
+            assert a.rounded_price == b.rounded_price
+            assert a.quantity == b.quantity

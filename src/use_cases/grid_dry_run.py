@@ -64,12 +64,23 @@ class GridDryRunOrchestrator:
         uow_factory: Callable[[], UnitOfWorkPort],
         timestamp_for_bar: Callable[[OHLCV], datetime],
         cost_model: KoreanMarketCostModel | None = None,
+        holdings_provider: Callable[[Asset], Decimal] | None = None,
     ) -> None:
         self._broker = broker
         self._uow_factory = uow_factory
         self._timestamp_for_bar = timestamp_for_bar
         self._cost_model = cost_model or KoreanMarketCostModel()
         self._strategy = GridStrategy()
+        # ADR 0022 §13 D25 — holdings_provider 추상화로 broker.get_grid_holding
+        # 의존 제거 (MockBroker 전용, BrokerPort 외). 기본값 = MockBroker
+        # fallback (회귀 zero). live 모드 = grid_decisions 재생 provider 주입
+        # (compute_grid_holdings_from_uow 헬퍼 활용).
+        if holdings_provider is None:
+            def _default_provider(asset: Asset) -> Decimal:
+                holding = broker.get_grid_holding(asset.fqn)  # type: ignore[attr-defined]
+                return holding.quantity if holding is not None else Decimal("0")
+            holdings_provider = _default_provider
+        self._holdings_provider = holdings_provider
 
     def replay_bars(
         self,
@@ -235,9 +246,10 @@ class GridDryRunOrchestrator:
         )
         sold_this_bar = False
         # broker 상태에서 cash + holdings 읽기 (slot 우회 — D19).
+        # holdings 는 holdings_provider 추상화 (D25) — dry-run = broker
+        # fallback, live = grid_decisions 재생.
         cash_now = self._broker.get_balance().cash.amount
-        holding = self._broker.get_grid_holding(asset.fqn)
-        holdings = holding.quantity if holding is not None else Decimal("0")
+        holdings = self._holdings_provider(asset)
 
         ev = self._strategy.evaluate(
             asset=asset,
@@ -442,3 +454,27 @@ def reconstruct_grid_broker_state(
         cost_basis=cost_basis,
         last_buy_at=last_buy_at,
     )
+
+
+def make_grid_holdings_provider(
+    uow_factory: Callable[[], UnitOfWorkPort],
+) -> Callable[[Asset], Decimal]:
+    """Build a holdings_provider for live mode (ADR 0022 §13 D25).
+
+    Returned callable: given an ``Asset``, queries
+    ``uow.grid_decisions.list_net_quantities()`` (D26.1) → returns net qty for
+    ``asset.fqn`` (default ``Decimal(0)`` if no decisions yet). Used by
+    ``GridDryRunOrchestrator`` in live mode where ``broker.get_grid_holding``
+    is unavailable (KISBroker = read-only on holdings, only ``get_balance`` +
+    ``get_holdings`` aggregate).
+
+    grid_decisions = audit log + ground truth for grid 보유 (D22.2). 본 함수
+    재생 결과 = MockBroker._grid_holdings 의 quantity 와 결정론적 동치 (D23
+    bookkeeping invariant).
+    """
+    def provider(asset: Asset) -> Decimal:
+        with uow_factory() as uow:
+            net = uow.grid_decisions.list_net_quantities()
+        return net.get(asset.fqn, Decimal("0"))
+
+    return provider
