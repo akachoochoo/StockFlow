@@ -43,6 +43,9 @@ if TYPE_CHECKING:
 # Environment double-confirm for live arming. Must be set (to the armed tier's
 # name) IN ADDITION to the CLI --arm-live flag — a flag alone cannot arm.
 ARM_LIVE_ENV = "TRADING_ARM_LIVE"
+# ADR 0022 §13 D32 — DGT 그리드 전용 arming env (split 과 분리). 두 전략이
+# 독립적으로 arm/disarm 가능 — 한쪽 halt 시 다른쪽 영향 zero.
+ARM_GRID_LIVE_ENV = "TRADING_ARM_GRID_LIVE"
 
 
 class CapitalTier(Enum):
@@ -117,6 +120,26 @@ def build_arming_token(
     if cli_tier is None:
         return None
     raw = env.get(ARM_LIVE_ENV)
+    env_confirmed = raw is not None and raw.strip() == cli_tier.name
+    return LiveArmingToken(tier_cap=cli_tier, env_confirmed=env_confirmed)
+
+
+def build_grid_arming_token(
+    cli_tier: CapitalTier | None,
+    *,
+    env: Mapping[str, str],
+) -> LiveArmingToken | None:
+    """ADR 0022 §13 D32 — DGT grid 전용 arming token (split 과 분리).
+
+    동일 패턴 — ``--arm-grid-live`` flag + ``TRADING_ARM_GRID_LIVE`` env.
+    구조는 :func:`build_arming_token` 와 동일하되 env 변수명만 분리. 두 전략이
+    독립 arm/disarm 가능 → 실수로 grid arming 으로 split 가 활성화되거나 그
+    반대가 일어나지 않음. ``assert_armed_for_live`` 는 token 만 검사하므로
+    재사용 가능 (코드 변경 zero).
+    """
+    if cli_tier is None:
+        return None
+    raw = env.get(ARM_GRID_LIVE_ENV)
     env_confirmed = raw is not None and raw.strip() == cli_tier.name
     return LiveArmingToken(tier_cap=cli_tier, env_confirmed=env_confirmed)
 
@@ -203,6 +226,7 @@ def assert_capital_within_tier(
 
 
 __all__ = [
+    "ARM_GRID_LIVE_ENV",
     "ARM_LIVE_ENV",
     "CapitalTier",
     "LiveArmingError",
@@ -210,6 +234,7 @@ __all__ = [
     "assert_armed_for_live",
     "assert_capital_within_tier",
     "build_arming_token",
+    "build_grid_arming_token",
     "capital_tier_from_str",
     "total_max_exposure",
 ]
