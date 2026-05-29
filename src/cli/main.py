@@ -1574,13 +1574,15 @@ def grid_dry_run(
     trade_date: datetime | None,
     as_json: bool,
 ) -> None:
-    """DGT grid dry-run — 1 cron = 1 영업일 처리 + 영속 상태.
+    """DGT grid dry-run — 1 cron = 1 영업일 처리 + 영속 상태 (multi-asset).
 
-    Phase 1.x DGT live promotion (ADR 0022 §12 follow-up). 단일 enabled 종목
-    config 를 받아 ``GridDryRunOrchestrator.step_today`` 1 회 호출.
-    grid_decisions (audit) + grid_states (runtime: cooldown / last_sell_price
-    / avg_cost / grid_state) 가 DB 에 영속 → 다음 cron 은 broker 상태를
-    grid_decisions 재생으로 복원하고 grid_states 를 load.
+    Phase 1.x DGT live promotion (ADR 0022 §12 follow-up). N enabled 종목
+    config 를 받아 종목별 ``GridDryRunOrchestrator.step_today`` 호출.
+    자본 = 총자본 / N 균등 분할 (§11.21 권고 A), per-asset 격리 (한 종목 실패
+    가 다음 종목을 막지 않음). grid_decisions (audit) + grid_states (runtime:
+    cooldown / last_sell_price / avg_cost / grid_state) 가 DB 에 자산별
+    영속 → 다음 cron 은 broker 상태를 grid_decisions 재생으로 복원하고
+    grid_states 를 load.
 
     시세 소스 (둘 중 하나):
     - ``--csv CODE=path.csv`` (기본): 결정론적, 백테스트 검증·테스트용.
@@ -1612,19 +1614,12 @@ def grid_dry_run(
 
     notifier = build_notifier(os.environ)
 
-    # 1. config → 단일 enabled 종목
+    # 1. config → N enabled 종목 (multi-asset 지원, ADR 0022 §12 follow-up)
     bundles = load_grid_config(config_path)
     enabled = [(c, b) for c, b in bundles.items() if b.enabled]
     if not enabled:
         raise click.ClickException(f"{config_path} 에 enabled 종목이 없습니다.")
-    if len(enabled) > 1:
-        raise click.ClickException(
-            "grid-dry-run 은 현재 단일 enabled 종목만 지원 — "
-            f"{len(enabled)} 개 발견 ({[c for c, _ in enabled]}). "
-            "config 에서 1 개만 enabled: true 로 두세요."
-        )
-    code, bundle = enabled[0]
-    asset = composition.asset_from_code(code)
+    n_assets = len(enabled)
 
     # 2. 처리할 trade_date 결정 — 기본 today (KST)
     if trade_date is None:
@@ -1632,18 +1627,18 @@ def grid_dry_run(
     else:
         target_date = trade_date.date()
 
-    # 3. 시세 소스 — CSV vs KIS 분기 (둘 다 daily OHLCV 반환).
+    # 3. 시세 소스 (KIS / CSV) 1회 설정 — assets 루프 재사용.
+    kis_market_data = None
+    kis_mode_label = None
+    csv_map: dict[str, Path] = {}
     if use_kis:
-        # KIS paper-on-live: 시세만 KIS, 주문은 MockBroker (실주문 zero).
-        from datetime import timedelta  # noqa: PLC0415
-
         from src.adapters.kis.config import (  # noqa: PLC0415
             ConfigurationError,
             KISConfig,
         )
 
         try:
-            kis_config = KISConfig.from_env()  # noqa: F841 — banner 용
+            kis_config = KISConfig.from_env()
             kis_market_data = composition.build_kis_market_data()
         except ConfigurationError as exc:
             raise click.ClickException(
@@ -1654,147 +1649,204 @@ def grid_dry_run(
             click.echo(
                 "⚠ --use-kis 모드 — --csv 는 무시됩니다.", err=True,
             )
-        start_date = target_date - timedelta(days=lookback_days)
-        bars: list[OHLCV] = kis_market_data.get_ohlcv(asset, start_date, target_date)
-        if not bars:
-            raise click.ClickException(
-                f"KIS get_ohlcv({asset.fqn}, {start_date}, {target_date}) "
-                "이 빈 결과 — KIS 응답 확인 필요."
-            )
-        source_label = (
-            f"KIS({kis_config.mode.value}) lookback={lookback_days}d"
-        )
+        kis_mode_label = kis_config.mode.value
     else:
-        # CSV 모드 — 결정론적, 백테스트 검증·테스트용.
-        csv_map = _parse_csv_paths(csv_values)
-        if None in csv_map:
+        parsed_csv = _parse_csv_paths(csv_values)
+        if None in parsed_csv:
             raise click.UsageError(
                 "grid-dry-run 은 종목별 '--csv CODE=path.csv' 형식 필요 "
                 "(또는 --use-kis 사용)."
             )
-        if set(csv_map) != {code}:
+        csv_map = parsed_csv  # type: ignore[assignment]
+        # CSV 모드: 모든 enabled 종목이 --csv 에 있어야 함.
+        config_codes = {c for c, _ in enabled}
+        if set(csv_map) != config_codes:
             raise click.UsageError(
-                f"CSV 종목 불일치: config={code}, --csv={sorted(csv_map)}"
+                f"CSV 종목 불일치: config={sorted(config_codes)} vs "
+                f"--csv={sorted(csv_map)}. 모든 enabled 종목의 CSV 필요."
             )
-        bars = load_ohlcv_csv(csv_map[code], asset)
-        source_label = f"CSV({csv_map[code].name})"
 
-    # bars 를 target_date 까지로 잘라냄 (그 이후는 미래 — 사용 안 함).
-    bars_until_target = [b for b in bars if b.trade_date <= target_date]
-    if not bars_until_target:
-        raise click.ClickException(
-            f"{code} 시세에 {target_date.isoformat()} 까지 데이터가 없습니다."
-        )
-    today_bar = bars_until_target[-1]
-    if today_bar.trade_date != target_date:
-        click.echo(
-            f"⚠ {target_date.isoformat()} bar 미존재 — 대체로 직전 영업일 "
-            f"{today_bar.trade_date.isoformat()} 처리.",
-            err=True,
-        )
-
-    # 4. DB 연결 + UoW
+    # 4. DB 연결 (shared) + UoW factory + clock + ts_for_bar (assets 공용)
     conn = _db_connect(db_path)
 
     def uow_factory() -> SqliteUnitOfWork:
         return SqliteUnitOfWork(conn)
 
-    # 5. Broker state 복원 — grid_decisions 재생
-    initial_capital = _krw(capital)
-    with uow_factory() as uow:
-        prior_decisions = uow.grid_decisions.list_by_date_range(
-            asset.fqn,
-            _date(1970, 1, 1),
-            target_date,
-        )
-    restored_cash, restored_holding = reconstruct_grid_broker_state(
-        asset=asset,
-        initial_capital=initial_capital,
-        decisions=prior_decisions,
-    )
-
-    # 6. MockBroker 구성 + state 주입
-    # clock = 처리할 bar 의 종가 시각 (KST 15:30 ≈ UTC 06:30 — 시뮬레이션 단순화).
     clock_dt = datetime(
         target_date.year, target_date.month, target_date.day,
         6, 30, tzinfo=UTC,
     )
-    broker = MockBroker(
-        initial_balance=Balance(cash=restored_cash),
-        clock=lambda: clock_dt,
-    )
-    if restored_holding is not None:
-        broker.set_grid_holding(restored_holding)
 
-    # 7. Orchestrator + step_today
     def _ts_for_bar(b: OHLCV) -> datetime:
         return datetime(
             b.trade_date.year, b.trade_date.month, b.trade_date.day,
             6, 30, tzinfo=UTC,
         )
 
-    orchestrator = GridDryRunOrchestrator(
-        broker=broker,
-        uow_factory=uow_factory,
-        timestamp_for_bar=_ts_for_bar,
-    )
+    # 5. 자본 배분 — 균등 (ADR 0022 §11.21 권고 A: equal split).
+    total_capital = _krw(capital)
+    per_asset_capital = _krw(capital // n_assets)
+    unallocated = capital - (capital // n_assets) * n_assets  # 잔수 (정보용)
 
-    # Cron 시작 알림 — bar/복원 상태 + 시세 소스 포함.
-    holding_desc = (
-        f"보유 {restored_holding.quantity}주 @평단 {_won(restored_holding.avg_price)}"
-        if restored_holding is not None
-        else "보유 0"
-    )
-    notifier.notify(
-        level=NotificationLevel.INFO,
-        title=f"DGT grid-dry-run 시작 — {asset.fqn} {today_bar.trade_date.isoformat()}",
-        body=(
-            f"시세 {source_label} / 종가 {today_bar.close} / "
-            f"사전 결정 {len(prior_decisions)} 건 / "
-            f"복원 cash {_won(restored_cash.amount)} / {holding_desc}"
-        ),
-    )
+    def _process_one_asset(
+        code: str, bundle,
+    ) -> dict:  # noqa: ANN001 — bundle 타입은 yaml_grid_config_loader 내부
+        """단일 종목 dry-run 1회분 처리 + per-asset 알림. dict 결과 반환."""
+        asset = composition.asset_from_code(code)
 
-    try:
-        executed = orchestrator.step_today(
+        # 시세 로드
+        if use_kis:
+            from datetime import timedelta  # noqa: PLC0415
+
+            start_date = target_date - timedelta(days=lookback_days)
+            bars = kis_market_data.get_ohlcv(asset, start_date, target_date)
+            if not bars:
+                raise click.ClickException(
+                    f"KIS get_ohlcv({asset.fqn}, {start_date}, {target_date}) "
+                    "이 빈 결과 — KIS 응답 확인 필요."
+                )
+            source_label = f"KIS({kis_mode_label}) lookback={lookback_days}d"
+        else:
+            bars = load_ohlcv_csv(csv_map[code], asset)
+            source_label = f"CSV({csv_map[code].name})"
+
+        bars_until_target = [b for b in bars if b.trade_date <= target_date]
+        if not bars_until_target:
+            raise click.ClickException(
+                f"{code} 시세에 {target_date.isoformat()} 까지 데이터가 없습니다."
+            )
+        today_bar = bars_until_target[-1]
+        if today_bar.trade_date != target_date:
+            click.echo(
+                f"⚠ {asset.fqn}: {target_date.isoformat()} bar 미존재 — "
+                f"대체로 직전 영업일 {today_bar.trade_date.isoformat()} 처리.",
+                err=True,
+            )
+
+        # Broker state 복원 — grid_decisions 재생 (per-asset, per_asset_capital 기준)
+        with uow_factory() as uow:
+            prior_decisions = uow.grid_decisions.list_by_date_range(
+                asset.fqn, _date(1970, 1, 1), target_date,
+            )
+        restored_cash, restored_holding = reconstruct_grid_broker_state(
             asset=asset,
-            bars=bars_until_target,
-            config=bundle.config,
-            initial_capital=initial_capital,
+            initial_capital=per_asset_capital,
+            decisions=prior_decisions,
         )
-    except Exception as exc:
-        notifier.notify(
-            level=NotificationLevel.ERROR,
-            title=f"DGT grid-dry-run 오류 — {asset.fqn} {today_bar.trade_date.isoformat()}",
-            body=f"{exc.__class__.__name__}: {exc}",
-        )
-        conn.close()
-        raise
 
-    # 매수/매도 결정별 알림.
-    for d in executed:
+        broker = MockBroker(
+            initial_balance=Balance(cash=restored_cash),
+            clock=lambda: clock_dt,
+        )
+        if restored_holding is not None:
+            broker.set_grid_holding(restored_holding)
+
+        orchestrator = GridDryRunOrchestrator(
+            broker=broker,
+            uow_factory=uow_factory,
+            timestamp_for_bar=_ts_for_bar,
+        )
+
+        holding_desc = (
+            f"보유 {restored_holding.quantity}주 @평단 "
+            f"{_won(restored_holding.avg_price)}"
+            if restored_holding is not None else "보유 0"
+        )
         notifier.notify(
             level=NotificationLevel.INFO,
-            title=f"DGT {d.side.value} — {asset.fqn} level={d.level_index}",
+            title=(
+                f"DGT grid-dry-run 시작 — {asset.fqn} "
+                f"{today_bar.trade_date.isoformat()}"
+            ),
             body=(
-                f"{d.quantity}주 @{_won(d.rounded_price)} "
-                f"({today_bar.trade_date.isoformat()})"
+                f"시세 {source_label} / 종가 {today_bar.close} / "
+                f"사전 결정 {len(prior_decisions)} 건 / "
+                f"복원 cash {_won(restored_cash.amount)} / {holding_desc}"
             ),
         )
 
-    # 8. 출력 + 종료 알림 (분기 공통 — JSON / 사람 가독 둘 다 동일 notify).
-    post_cash = broker.get_balance().cash.amount
-    post_holding = broker.get_grid_holding(asset.fqn)
-    post_holding_desc = (
-        f"보유 {post_holding.quantity}주 @평단 {_won(post_holding.avg_price)}"
-        if post_holding is not None
-        else "보유 0"
-    )
+        try:
+            executed = orchestrator.step_today(
+                asset=asset,
+                bars=bars_until_target,
+                config=bundle.config,
+                initial_capital=per_asset_capital,
+            )
+        except Exception as exc:
+            notifier.notify(
+                level=NotificationLevel.ERROR,
+                title=(
+                    f"DGT grid-dry-run 오류 — {asset.fqn} "
+                    f"{today_bar.trade_date.isoformat()}"
+                ),
+                body=f"{exc.__class__.__name__}: {exc}",
+            )
+            raise
+
+        for d in executed:
+            notifier.notify(
+                level=NotificationLevel.INFO,
+                title=f"DGT {d.side.value} — {asset.fqn} level={d.level_index}",
+                body=(
+                    f"{d.quantity}주 @{_won(d.rounded_price)} "
+                    f"({today_bar.trade_date.isoformat()})"
+                ),
+            )
+
+        post_cash = broker.get_balance().cash.amount
+        post_holding = broker.get_grid_holding(asset.fqn)
+        post_holding_desc = (
+            f"보유 {post_holding.quantity}주 @평단 "
+            f"{_won(post_holding.avg_price)}"
+            if post_holding is not None else "보유 0"
+        )
+        notifier.notify(
+            level=NotificationLevel.INFO,
+            title=(
+                f"DGT grid-dry-run 종료 — {asset.fqn} "
+                f"{today_bar.trade_date.isoformat()}"
+            ),
+            body=(
+                f"결정 {len(executed)} 건 / cash {_won(post_cash)} / "
+                f"{post_holding_desc}"
+            ),
+        )
+
+        return {
+            "asset": asset,
+            "today_bar": today_bar,
+            "source_label": source_label,
+            "prior_decisions_count": len(prior_decisions),
+            "restored_cash": restored_cash.amount,
+            "restored_holding": restored_holding,
+            "executed": executed,
+            "post_cash": post_cash,
+            "post_holding": post_holding,
+        }
+
+    # 6. 자산 루프 — 순차 처리, 자산 간 오류 격리 (한 자산 실패 시도 다음 자산 계속).
+    results: list[dict] = []
+    failures: list[tuple[str, Exception]] = []
+    for code, bundle in enabled:
+        try:
+            results.append(_process_one_asset(code, bundle))
+        except click.ClickException:
+            raise  # 사용자 에러 = 즉시 종료
+        except Exception as exc:  # 자산별 격리 — 알림 후 다음 자산
+            failures.append((code, exc))
+
+    # 7. 출력 + 세션 종료 알림
+    n_decisions_total = sum(len(r["executed"]) for r in results)
     notifier.notify(
         level=NotificationLevel.INFO,
-        title=f"DGT grid-dry-run 종료 — {asset.fqn} {today_bar.trade_date.isoformat()}",
+        title=(
+            f"DGT grid-dry-run 세션 종료 — {n_assets} 종목 "
+            f"{target_date.isoformat()}"
+        ),
         body=(
-            f"결정 {len(executed)} 건 / cash {_won(post_cash)} / {post_holding_desc}"
+            f"성공 {len(results)} / 실패 {len(failures)} / "
+            f"전체 결정 {n_decisions_total} 건 / 자본 {_won(total_capital.amount)} "
+            f"균등 분할 (종목당 {_won(per_asset_capital.amount)})"
         ),
     )
 
@@ -1804,31 +1856,43 @@ def grid_dry_run(
         click.echo(
             _json.dumps(
                 {
-                    "mode": "grid-dry-run",
+                    "mode": "grid-dry-run-multi",
                     "config": str(config_path),
                     "db": str(db_path),
-                    "asset": asset.fqn,
-                    "trade_date": today_bar.trade_date.isoformat(),
-                    "close": str(today_bar.close),
-                    "initial_capital": str(initial_capital.amount),
-                    "executed": [
+                    "trade_date": target_date.isoformat(),
+                    "n_assets": n_assets,
+                    "total_capital": str(total_capital.amount),
+                    "per_asset_capital": str(per_asset_capital.amount),
+                    "unallocated": unallocated,
+                    "assets": [
                         {
-                            "side": d.side.value,
-                            "level_index": d.level_index,
-                            "rounded_price": str(d.rounded_price),
-                            "quantity": str(d.quantity),
+                            "asset": r["asset"].fqn,
+                            "name": r["asset"].name,
+                            "trade_date": r["today_bar"].trade_date.isoformat(),
+                            "close": str(r["today_bar"].close),
+                            "executed": [
+                                {
+                                    "side": d.side.value,
+                                    "level_index": d.level_index,
+                                    "rounded_price": str(d.rounded_price),
+                                    "quantity": str(d.quantity),
+                                }
+                                for d in r["executed"]
+                            ],
+                            "post_cash": str(r["post_cash"]),
+                            "post_holding": (
+                                None if r["post_holding"] is None else {
+                                    "quantity": str(r["post_holding"].quantity),
+                                    "avg_price": str(r["post_holding"].avg_price),
+                                }
+                            ),
                         }
-                        for d in executed
+                        for r in results
                     ],
-                    "post_cash": str(post_cash),
-                    "post_holding": (
-                        None
-                        if post_holding is None
-                        else {
-                            "quantity": str(post_holding.quantity),
-                            "avg_price": str(post_holding.avg_price),
-                        }
-                    ),
+                    "failures": [
+                        {"asset": code, "error": str(exc)}
+                        for code, exc in failures
+                    ],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1837,30 +1901,51 @@ def grid_dry_run(
         conn.close()
         return
 
+    # 사람 가독 출력 — 자산별 요약 + 세션 합계.
     click.echo(
-        f"DGT grid-dry-run — {asset.fqn} ({asset.name}) "
-        f"{today_bar.trade_date.isoformat()} close {today_bar.close}  "
-        f"[{source_label}]"
+        f"DGT grid-dry-run — {n_assets} 종목, {target_date.isoformat()}, "
+        f"총 자본 {_won(total_capital.amount)} (균등 분할 "
+        f"{_won(per_asset_capital.amount)}/종목)"
     )
-    click.echo(
-        f"복원: 사전 결정 {len(prior_decisions)} 건 → cash {_won(restored_cash.amount)}"
-        + (
-            f" / 보유 {restored_holding.quantity}주 @평단 "
-            f"{_won(restored_holding.avg_price)}"
-            if restored_holding is not None
-            else " / 보유 0"
+    if failures:
+        click.echo(f"⚠ 실패 {len(failures)} 건:")
+        for code, exc in failures:
+            click.echo(f"  {code}: {exc.__class__.__name__}: {exc}")
+    for r in results:
+        asset_obj = r["asset"]
+        today_bar_r = r["today_bar"]
+        executed_r = r["executed"]
+        post_cash_r = r["post_cash"]
+        post_holding_r = r["post_holding"]
+        post_holding_desc_r = (
+            f"보유 {post_holding_r.quantity}주 @평단 "
+            f"{_won(post_holding_r.avg_price)}"
+            if post_holding_r is not None else "보유 0"
         )
-    )
-    if not executed:
-        click.echo("오늘 결정 = 없음 (그리드 교차 미발생 or 게이트 차단)")
-    else:
-        click.echo(f"오늘 결정 {len(executed)} 건:")
-        for d in executed:
-            click.echo(
-                f"  {d.side.value} level={d.level_index} qty={d.quantity} "
-                f"@{_won(d.rounded_price)}"
+        click.echo(
+            f"── {asset_obj.fqn} ({asset_obj.name}) "
+            f"{today_bar_r.trade_date.isoformat()} close {today_bar_r.close}  "
+            f"[{r['source_label']}]"
+        )
+        click.echo(
+            f"   복원: 사전 결정 {r['prior_decisions_count']} 건 → "
+            f"cash {_won(r['restored_cash'])}"
+            + (
+                f" / 보유 {r['restored_holding'].quantity}주 @평단 "
+                f"{_won(r['restored_holding'].avg_price)}"
+                if r["restored_holding"] is not None else " / 보유 0"
             )
-    click.echo(f"종료 상태: cash {_won(post_cash)} / {post_holding_desc}")
+        )
+        if not executed_r:
+            click.echo("   결정 = 없음 (그리드 교차 미발생 or 게이트 차단)")
+        else:
+            click.echo(f"   결정 {len(executed_r)} 건:")
+            for d in executed_r:
+                click.echo(
+                    f"     {d.side.value} level={d.level_index} qty={d.quantity} "
+                    f"@{_won(d.rounded_price)}"
+                )
+        click.echo(f"   종료 상태: cash {_won(post_cash_r)} / {post_holding_desc_r}")
     click.echo(
         f"DB: {db_path}  (grid_decisions + grid_states 영속, 다음 cron 자동 이어받음)"
     )

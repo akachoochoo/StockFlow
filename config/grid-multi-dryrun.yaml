@@ -1,0 +1,44 @@
+# DGT grid multi-asset dry-run config — ADR 0022 §11.21 권고 A
+#
+# 균등 분할 자본 (자본 = total_capital / N). 자산별 격리 — 한 자산 실패가 다음
+# 자산을 차단하지 않음. grid_decisions + grid_states 가 자산별 1행 영속.
+#
+# 사용:
+#   trading grid-dry-run \
+#       --config config/grid-multi-dryrun.yaml \
+#       --csv 095660=data/historical/KRX_095660_2025-2026.csv \
+#       --csv 069500=data/historical/KRX_069500_2025-2026.csv \
+#       --capital 20000000 \
+#       [--date YYYY-MM-DD]
+#
+#   # 또는 KIS 시세 (자산당 1 API 호출)
+#   trading grid-dry-run --config config/grid-multi-dryrun.yaml --use-kis ...
+#
+# 종목 추가/제거:
+#   - 새 종목: assets 에 추가 + grid_parameters 설정 + enabled: true
+#   - 비활성: enabled: false (config 유지하되 cron 처리 skip)
+
+version: '1.0'
+assets:
+  # Phase 0.11.k §11.21 박제 = ADR 권고 A 공통 파라미터.
+  # 자산별 차별화 검토 — Phase 1+ ADR (ADR 0003 §19.4 / §7.3 보류).
+  "095660":
+    name: 네오위즈
+    enabled: true
+    grid_parameters: &gridA
+      grid_count: 6
+      fallback_k: 0.01
+      rebalance_mode: on_breach
+      volatility_measure: adr
+      atr_period: 14
+      multiplier: 1.5
+      k_min: 0.005
+      k_max: 0.02
+      slope_gate: false
+      profit_guard: true
+      sell_cooldown_bars: 5
+      price_based_reentry: true
+  "069500":
+    name: KODEX 200
+    enabled: true
+    grid_parameters: *gridA
