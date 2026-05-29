@@ -138,11 +138,39 @@ class _FakePositionRepo:
         raise AssertionError("reconciliation must not save positions")
 
 
-class _FakeUoW:
-    """Minimal UnitOfWork stand-in exposing only ``positions`` + lifecycle."""
+class _FakeGridDecisionRepo:
+    """ADR 0022 §13 D26 — minimal stand-in for GridDecisionRepoPort.
 
-    def __init__(self, repo: _FakePositionRepo) -> None:
+    Only ``list_net_quantities`` 가 reconciler 에서 호출됨. 다른 메서드는
+    AssertionError 로 reconciliation 이 의도치 않은 호출을 못 하도록 보호.
+    """
+
+    def __init__(self, net: dict[str, Decimal] | None = None) -> None:
+        self._net = dict(net) if net else {}
+
+    def list_net_quantities(self) -> dict[str, Decimal]:
+        return dict(self._net)
+
+    def save(self, *args, **kwargs) -> None:  # noqa: ARG002
+        raise AssertionError("reconciliation must not save grid_decisions")
+
+    def list_for_date(self, *args, **kwargs):  # noqa: ARG002
+        raise AssertionError("reconciliation must not query grid_decisions by date")
+
+    def list_by_date_range(self, *args, **kwargs):  # noqa: ARG002
+        raise AssertionError("reconciliation must not query grid_decisions by date range")
+
+
+class _FakeUoW:
+    """Minimal UnitOfWork stand-in exposing ``positions`` + ``grid_decisions``."""
+
+    def __init__(
+        self,
+        repo: _FakePositionRepo,
+        grid_repo: _FakeGridDecisionRepo | None = None,
+    ) -> None:
         self.positions = repo
+        self.grid_decisions = grid_repo or _FakeGridDecisionRepo()
         self.commit_calls = 0
         self.entered = False
 
@@ -183,9 +211,10 @@ def _build(
     *,
     positions: list[Position],
     holdings: list[BrokerHolding],
+    grid_net: dict[str, Decimal] | None = None,
 ) -> tuple[Reconciler, _FakeBroker, _FakePositionRepo, _RecordingNotifier, _HaltSpy]:
     repo = _FakePositionRepo(positions)
-    uow = _FakeUoW(repo)
+    uow = _FakeUoW(repo, _FakeGridDecisionRepo(grid_net))
     broker = _FakeBroker(holdings)
     notifier = _RecordingNotifier()
     halt = _HaltSpy()
@@ -379,3 +408,134 @@ class TestReconciliationMismatchDto:
         )
         assert m.db_quantity is None
         assert m.broker_quantity == Decimal("5")
+
+
+# ===========================================================================
+# ADR 0022 §13 D26 — Grid 보유 인식
+# ===========================================================================
+
+
+class TestGridReconciliation:
+    """Reconciler 가 grid 보유를 split Position 과 같은 asset_code 키로 합산."""
+
+    def test_grid_only_asset_matches_broker(self) -> None:
+        """split Position zero + grid net 12 + broker 12 → match."""
+        reconciler, broker, _repo, notifier, halt = _build(
+            positions=[],
+            holdings=[
+                BrokerHolding(
+                    asset_code="095660",
+                    quantity=Decimal("12"),
+                    avg_price=Decimal("30000"),
+                )
+            ],
+            grid_net={"KRX:095660": Decimal("12")},
+        )
+        result = reconciler.reconcile()
+        assert result.matched is True
+        assert result.mismatches == []
+        assert notifier.calls == []
+        assert halt.reasons == []
+
+    def test_grid_only_asset_mismatch_halts(self) -> None:
+        """grid net 12 + broker 0 → mismatch + halt."""
+        reconciler, broker, _repo, notifier, halt = _build(
+            positions=[],
+            holdings=[],  # broker 빈 보유
+            grid_net={"KRX:095660": Decimal("12")},
+        )
+        with pytest.raises(StateMismatchError):
+            reconciler.reconcile()
+        assert len(notifier.calls) == 1
+        assert notifier.calls[0][0] is NotificationLevel.CRITICAL
+        assert "095660" in notifier.calls[0][2]
+        assert len(halt.reasons) == 1
+
+    def test_split_plus_grid_sum_matches_broker(self) -> None:
+        """같은 종목에 split 5 + grid 7 = 12, broker 12 → match (방어적 합산)."""
+        asset = _asset("069500")
+        positions = [
+            Position(
+                asset=asset,
+                quantity=Decimal("5"),
+                avg_price=Decimal("28000"),
+                split_level=1,
+                last_buy_at=datetime(2026, 5, 22, 6, 0, 0, tzinfo=UTC),
+                slots=[
+                    SplitSlot(
+                        slot_number=1,
+                        state=__import__(
+                            "src.domain.models", fromlist=["SlotState"]
+                        ).SlotState.FILLED,
+                        entry=SplitEntry(
+                            split_number=1,
+                            entry_date=date(2026, 5, 22),
+                            quantity=Decimal("5"),
+                            entry_price=Decimal("28000"),
+                            idempotency_key="k1",
+                        ),
+                    ),
+                    *[
+                        SplitSlot(
+                            slot_number=i,
+                            state=__import__(
+                                "src.domain.models", fromlist=["SlotState"]
+                            ).SlotState.EMPTY,
+                        )
+                        for i in range(2, 8)
+                    ],
+                ],
+            )
+        ]
+        reconciler, _broker, _repo, _notifier, _halt = _build(
+            positions=positions,
+            holdings=[
+                BrokerHolding(
+                    asset_code="069500",
+                    quantity=Decimal("12"),
+                    avg_price=Decimal("28500"),
+                )
+            ],
+            grid_net={"KRX:069500": Decimal("7")},
+        )
+        result = reconciler.reconcile()
+        assert result.matched is True
+
+    def test_grid_zero_net_excluded_from_db_positions(self) -> None:
+        """grid net 0 (완전 매도) 자산은 DB 보유 0 으로 취급 — broker 0 이면 match."""
+        reconciler, _broker, _repo, _notifier, _halt = _build(
+            positions=[],
+            holdings=[],
+            grid_net={},  # list_net_quantities 가 qty>0 만 반환
+        )
+        result = reconciler.reconcile()
+        assert result.matched is True
+
+    def test_grid_decision_asset_fqn_decomposed_to_code(self) -> None:
+        """asset_fqn 의 마지막 세그먼트가 asset_code 로 사용됨."""
+        reconciler, _broker, _repo, notifier, halt = _build(
+            positions=[],
+            holdings=[
+                BrokerHolding(
+                    asset_code="069500",  # KRX:069500 의 코드
+                    quantity=Decimal("5"),
+                    avg_price=Decimal("30000"),
+                )
+            ],
+            grid_net={"KRX:069500": Decimal("5")},
+        )
+        result = reconciler.reconcile()
+        assert result.matched is True
+        # 다른 fqn 형식 (e.g., 가상 NASDAQ:AAPL) 도 마지막 세그먼트 사용 가능
+        reconciler2, _b2, _r2, n2, h2 = _build(
+            positions=[],
+            holdings=[
+                BrokerHolding(
+                    asset_code="AAPL",
+                    quantity=Decimal("10"),
+                    avg_price=Decimal("180"),
+                )
+            ],
+            grid_net={"NASDAQ:AAPL": Decimal("10")},
+        )
+        assert reconciler2.reconcile().matched is True

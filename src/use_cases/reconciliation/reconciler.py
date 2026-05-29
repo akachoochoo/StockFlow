@@ -29,6 +29,7 @@ composition 이 주입한다 (check_namespace 통과).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from src.domain.exceptions import StateMismatchError
@@ -37,7 +38,6 @@ from src.ports.notifications import NotificationLevel
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
-    from decimal import Decimal
 
     from src.ports.broker import HoldingsReaderPort
     from src.ports.notifications import NotifierPort
@@ -147,15 +147,31 @@ class Reconciler:
     def _read_db_positions(
         self,
     ) -> tuple[dict[str, Decimal], dict[str, Decimal]]:
-        """Return ({asset_code: quantity}, {asset_code: avg_price}) for qty > 0."""
+        """Return ({asset_code: quantity}, {asset_code: avg_price}) for qty > 0.
+
+        ADR 0022 §13 D26 — Reconciliation grid 인식: split Position quantity 와
+        grid net quantity (BUY−SELL, ``grid_decisions.list_net_quantities``)
+        를 같은 asset_code 키로 합산. 한 종목에 split + grid 동시 보유 시
+        양쪽 합산 (방어적). grid 만 보유한 종목은 avg_price 가 None 으로 유지
+        (mismatch struct 의 ``db_avg_price`` 가 Optional — quantity 가 halt
+        trigger 라 avg_price 결손은 halt 결정에 영향 없음).
+        """
         quantities: dict[str, Decimal] = {}
         avg_prices: dict[str, Decimal] = {}
         with self._uow_factory() as uow:
+            # Split positions (기존 경로, 0 변경).
             for position in uow.positions.list_all():
                 if position.quantity > 0:
                     code = position.asset.code
                     quantities[code] = position.quantity
                     avg_prices[code] = position.avg_price
+            # Grid 보유 합산 (D26): asset_fqn 의 마지막 세그먼트 = asset_code.
+            grid_net = uow.grid_decisions.list_net_quantities()
+            for asset_fqn, net_qty in grid_net.items():
+                code = asset_fqn.split(":")[-1]
+                quantities[code] = quantities.get(code, Decimal("0")) + net_qty
+                # avg_price: grid 만이면 결손, split + grid 합산 시 split avg
+                # 유지 (혼합 시 detail 비교 무의미 — quantity 만 halt trigger).
         return quantities, avg_prices
 
     def _read_broker_holdings(
