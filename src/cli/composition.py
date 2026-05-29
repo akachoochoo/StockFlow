@@ -585,6 +585,144 @@ def build_live_components(
     )
 
 
+# ===========================================================================
+# DGT grid live (ADR 0022 §13 D30.2)
+# ===========================================================================
+
+
+@dataclass
+class GridLiveComponents:
+    """Wired DGT grid live component graph (ADR 0022 §13 D30.2).
+
+    `trading grid-live` 가 사용 — settle → reconcile → arm → decide
+    (run_grid_live_pipeline). orchestrator 는 GridDryRunOrchestrator 이지만
+    broker 는 write-enabled KISBroker (실주문). holdings_provider 는
+    grid_decisions 재생 (D25 make_grid_holdings_provider). market_data 는
+    KISMarketData (실시세, read-only).
+    """
+
+    orchestrator: object  # GridDryRunOrchestrator (forward ref 회피)
+    settler: object  # PendingSettler
+    reconciler: object  # Reconciler
+    broker: object  # KISBroker (write)
+    market_data: object  # KISMarketData
+    notifier: NotifierPort
+    config: object  # KISConfig
+    uow_factory: Callable[[], UnitOfWorkPort]
+    clock: Callable[[], datetime]
+    close: Callable[[], None]
+
+
+def build_grid_live_components(
+    *,
+    db_path: Path | str,
+    environ: Mapping[str, str] | None = None,
+    http: HttpClient | None = None,
+    clock: Callable[[], datetime] | None = None,
+    notifier: NotifierPort | None = None,
+    halt: Callable[[str], None] | None = None,
+    max_pending_age_business_days: int = 1,
+) -> GridLiveComponents:
+    """Wire the DGT grid live component graph (ADR 0022 §13 D30.2).
+
+    Composition root for ``trading grid-live``. Wires:
+
+    - **write-enabled** ``KISBroker`` (order_store 공유 connection) — D17 6세그
+      grid idempotency key 호환 (D24 변경 zero).
+    - ``KISMarketData`` (read) — get_ohlcv lookback 로 bars 로드.
+    - ``PendingSettler`` (grid 분기 D21 자동 활용) over KIS broker.
+    - ``Reconciler`` (grid 인식 D26 자동 활용) over KIS broker (get_holdings
+      read-only).
+    - ``GridDryRunOrchestrator`` (D23) with KISBroker + live
+      ``make_grid_holdings_provider`` (D25 — grid_decisions 재생).
+
+    DI per CLAUDE.md §1.2: ``http`` / ``clock`` / ``notifier`` / ``halt`` 주입
+    가능 — 테스트 network-free + sentinel-free.
+
+    실주문은 ``orchestrator.step_today`` 호출 시에만 — runner 의 arming gate
+    (D32) 이후. 본 함수는 그래프만 wire (실주문 zero).
+    """
+    from src.adapters.kis._client import KISClient
+    from src.adapters.kis._http import RequestsHttpClient
+    from src.adapters.kis.auth import KISAuth
+    from src.adapters.kis.broker import KISBroker
+    from src.adapters.kis.config import KISConfig
+    from src.adapters.kis.market_data import KISMarketData
+    from src.adapters.kis.order_store import SqliteKISOrderStore
+    from src.adapters.telegram.notifier import build_notifier
+    from src.infrastructure.repositories.sqlite_order_repo import SqliteOrderRepo
+    from src.use_cases.grid_dry_run import (
+        GridDryRunOrchestrator,
+        make_grid_holdings_provider,
+    )
+    from src.use_cases.pending_settler import PendingSettler
+    from src.use_cases.reconciliation import Reconciler
+
+    config = KISConfig.from_env(environ)
+    http_client: HttpClient = http if http is not None else RequestsHttpClient()
+    utc_clock: Callable[[], datetime] = (
+        clock if clock is not None else (lambda: datetime.now(UTC))
+    )
+
+    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    client = KISClient(
+        config=config, http=http_client, auth=auth, clock=utc_clock
+    )
+
+    conn = connect(db_path)
+
+    def uow_factory() -> SqliteUnitOfWork:
+        return SqliteUnitOfWork(conn)
+
+    order_store = SqliteKISOrderStore(orders=SqliteOrderRepo(conn))
+    kis_broker = KISBroker(
+        client=client, order_store=order_store, clock=utc_clock
+    )
+    market_data = KISMarketData(client=client)
+
+    notif: NotifierPort = notifier or build_notifier(environ)
+    halt_cb: Callable[[str], None] = halt or _default_halt
+
+    settler = PendingSettler(
+        uow_factory=uow_factory,
+        broker=kis_broker,
+        max_pending_age_business_days=max_pending_age_business_days,
+    )
+    reconciler = Reconciler(
+        uow_factory=uow_factory,
+        broker=kis_broker,
+        notifier=notif,
+        halt=halt_cb,
+        clock=utc_clock,
+    )
+
+    # GridDryRunOrchestrator with live holdings_provider — broker 의존을
+    # grid_decisions 재생 (D25) 으로 대체. timestamp_for_bar = KST 종가 시각.
+    def _ts_for_bar(b):  # noqa: ANN001
+        d = b.trade_date
+        return datetime(d.year, d.month, d.day, 6, 30, tzinfo=UTC)
+
+    orchestrator = GridDryRunOrchestrator(
+        broker=kis_broker,
+        uow_factory=uow_factory,
+        timestamp_for_bar=_ts_for_bar,
+        holdings_provider=make_grid_holdings_provider(uow_factory),
+    )
+
+    return GridLiveComponents(
+        orchestrator=orchestrator,
+        settler=settler,
+        reconciler=reconciler,
+        broker=kis_broker,
+        market_data=market_data,
+        notifier=notif,
+        config=config,
+        uow_factory=uow_factory,
+        clock=utc_clock,
+        close=conn.close,
+    )
+
+
 def check_snapshot_position_sync(
     uow_factory: Callable[[], SqliteUnitOfWork],
 ) -> None:

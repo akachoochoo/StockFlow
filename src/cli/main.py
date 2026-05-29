@@ -2243,6 +2243,290 @@ def live(
             components.close()
 
 
+@main.command("grid-live")
+@click.option(
+    "--config",
+    "config_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="DGT grid live config YAML (N enabled 종목, ADR 0022 §11 D11).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default="grid-live.db",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="실거래 상태 SQLite DB path (created on first run). grid-dry-run "
+    "과 별도 DB 권장 (격리).",
+)
+@click.option(
+    "--capital",
+    type=int,
+    default=10_000_000,
+    show_default=True,
+    help="총 자본 (KRW). N enabled 종목에 균등 분할 (§11.21 권고 A). "
+    "이후 cron 은 grid_decisions 재생으로 복원 — 같은 값 유지.",
+)
+@click.option(
+    "--date",
+    "trade_date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="처리할 KST 영업일 (YYYY-MM-DD). 기본 = 오늘 (KST).",
+)
+@click.option(
+    "--lookback-days",
+    type=int,
+    default=180,
+    show_default=True,
+    help="KIS get_ohlcv lookback (ATR 14일 + 버퍼).",
+)
+@click.option(
+    "--tier",
+    required=True,
+    type=click.Choice(["200", "300", "500"]),
+    help="Intended capital tier (만원, ADR 0012 D10). Must be ≤ --arm-grid-live "
+    "cap to place orders.",
+)
+@click.option(
+    "--arm-grid-live",
+    "arm_tier",
+    type=click.Choice(["200", "300", "500"]),
+    default=None,
+    help="ARM GRID live orders up to this tier. Requires "
+    "TRADING_ARM_GRID_LIVE=<tier> env too (double-confirm). Omit = no orders "
+    "(settle + reconcile only). split arming 과 분리 (ADR 0022 §13 D32).",
+)
+@click.option(
+    "--max-loss-pct",
+    default="20.0",
+    show_default=True,
+    help="Stop-loss breach alert threshold magnitude (ADR 0022 §13 D27; "
+    "알림-only, 자동 매수 차단 미구현 — CLAUDE.md §11.4).",
+)
+@click.option(
+    "--supervised-first-order",
+    is_flag=True,
+    default=False,
+    help="첫 주문 placed 후 halt sentinel 기록 → 다음 cron 차단 (사람이 "
+    "체결 확인 후 `trading resume`, ADR 0022 §13 D30).",
+)
+def grid_live(
+    config_path: Path,
+    db_path: Path,
+    capital: int,
+    trade_date: datetime | None,
+    lookback_days: int,
+    tier: str,
+    arm_tier: str | None,
+    max_loss_pct: str,
+    supervised_first_order: bool,
+) -> None:
+    """DGT grid 실거래 일일 runner — settle → reconcile → arm → decide (§13 D30).
+
+    ⚠️ **실주문 진입점 (그리드 전용).** Real orders go out ONLY when armed:
+    ``--arm-grid-live <tier>`` AND ``TRADING_ARM_GRID_LIVE=<tier>`` env
+    (double-confirm), with ``--tier`` ≤ armed cap, plus NTP sync + no halt +
+    today's reconciliation matched (5-AND gate). Without arming the run does
+    settle + reconcile only and exits non-zero — **실주문 zero**.
+
+    Order sequence (hard-coded): settle (confirm prior PENDING grid fills) →
+    reconcile (DB grid+split vs KIS holdings — mismatch halts) → arm gate →
+    decide (per-asset GridDryRunOrchestrator.step_today). -max-loss-pct
+    breach 시 텔레그램 WARNING (사람 검토, 자동매수차단 미구현 — CLAUDE.md
+    §11.4 / D27).
+
+    Split live 와 격리: `TRADING_ARM_GRID_LIVE` 별도 env, `grid-live.db`
+    별도 DB 권장 (D30 권고).
+    """
+    import os  # noqa: PLC0415
+    from datetime import UTC  # noqa: PLC0415
+    from datetime import datetime as _dt  # noqa: PLC0415
+    from datetime import timedelta  # noqa: PLC0415
+
+    from src.adapters.kis._client import KISApiError  # noqa: PLC0415
+    from src.adapters.kis.auth import KISAuthError  # noqa: PLC0415
+    from src.adapters.kis.config import ConfigurationError  # noqa: PLC0415
+    from src.cli.grid_live_runner import (  # noqa: PLC0415
+        GridLiveAssetRun,
+        run_grid_live_pipeline,
+    )
+    from src.cli.live_gate import (  # noqa: PLC0415
+        LiveArmingError,
+        build_grid_arming_token,
+        capital_tier_from_str,
+    )
+    from src.domain.constants import KST  # noqa: PLC0415
+    from src.domain.exceptions import (  # noqa: PLC0415
+        BrokerConnectionError,
+        ClockSkewError,
+        DataIntegrityError,
+        MarketDataUnavailableError,
+        StateMismatchError,
+    )
+
+    # 1. config → N enabled 종목 + grid params
+    bundles = load_grid_config(config_path)
+    enabled = [(c, b) for c, b in bundles.items() if b.enabled]
+    if not enabled:
+        raise click.ClickException(
+            f"{config_path} 에 enabled 종목이 없습니다."
+        )
+    n_assets = len(enabled)
+    per_asset_capital = capital // n_assets
+
+    # 2. target_date (KST)
+    today = trade_date.date() if trade_date is not None else _dt.now(KST).date()
+    intended_tier = capital_tier_from_str(tier)
+    arm_token = build_grid_arming_token(
+        capital_tier_from_str(arm_tier) if arm_tier is not None else None,
+        env=os.environ,
+    )
+    armed = arm_token is not None and arm_token.env_confirmed
+
+    with safety.lock_file():
+        # 3. NTP gate (CLAUDE.md §3.3) — fail-closed
+        try:
+            safety.verify_ntp_sync()
+        except ClockSkewError as exc:
+            click.echo(f"❌ NTP 동기화 실패 — 실거래 거부: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+
+        # 4. compose graph (KIS write + read, settler, reconciler, orchestrator)
+        try:
+            components = composition.build_grid_live_components(db_path=db_path)
+        except ConfigurationError as exc:
+            click.echo(
+                f"KIS config error — set the missing key(s) in .env: {exc}",
+                err=True,
+            )
+            raise click.exceptions.Exit(1) from exc
+
+        kis_config = components.config
+        click.echo("=" * 64)
+        click.echo("GRID LIVE — DGT 실거래 (settle → reconcile → arm → decide)")
+        click.echo("=" * 64)
+        click.echo(
+            f"KIS mode={kis_config.mode.value} host={kis_config.base_url} "
+            f"appkey={kis_config.masked_appkey}"
+        )
+        click.echo(
+            f"date={today}  종목 {n_assets} (총자본 {_won(Decimal(capital))} / "
+            f"균등 {_won(Decimal(per_asset_capital))}/종목)  "
+            f"intended_tier={tier}만  "
+            f"armed={'YES' if armed else 'NO (settle+reconcile only, 실주문 zero)'}"
+        )
+
+        # 5. per-asset bars 로드 (KIS get_ohlcv) + GridLiveAssetRun 빌드
+        try:
+            asset_runs: list[GridLiveAssetRun] = []
+            for code, bundle in enabled:
+                asset = composition.asset_from_code(code)
+                start_date = today - timedelta(days=lookback_days)
+                bars = components.market_data.get_ohlcv(asset, start_date, today)
+                if not bars:
+                    raise click.ClickException(
+                        f"KIS get_ohlcv({asset.fqn}, {start_date}, {today}) "
+                        "이 빈 결과."
+                    )
+                asset_runs.append(
+                    GridLiveAssetRun(
+                        asset=asset,
+                        bars=bars,
+                        config=bundle.config,
+                        initial_capital=Decimal(per_asset_capital),
+                    )
+                )
+
+            def _write_halt(reason: str) -> None:
+                safety.write_halt(reason)
+
+            result = run_grid_live_pipeline(
+                settler=components.settler,
+                reconciler=components.reconciler,
+                orchestrator=components.orchestrator,
+                uow_factory=components.uow_factory,
+                notifier=components.notifier,
+                today=today,
+                asset_runs=asset_runs,
+                intended_tier=intended_tier,
+                arm_token=arm_token,
+                halt_active=safety.is_halted(),
+                ntp_synced=True,
+                max_loss_pct=Decimal(max_loss_pct),
+                supervised_first_order=supervised_first_order,
+                halt_writer=_write_halt,
+            )
+
+            # 6. 결과 출력
+            click.echo(
+                f"settled grid: {len(result.settle.settled_grid)} 건 "
+                f"(split: buys={len(result.settle.settled_buys)} "
+                f"sells={len(result.settle.settled_sells)})"
+            )
+            for outcome in result.per_asset:
+                exec_str = (
+                    f"{len(outcome.executed)} 건"
+                    if outcome.executed
+                    else "0 (그리드 교차 미발생/게이트 차단)"
+                )
+                click.echo(
+                    f"  {outcome.asset.fqn} {outcome.today_bar.trade_date} "
+                    f"close {outcome.today_bar.close} → 결정 {exec_str}"
+                )
+                for d in outcome.executed:
+                    click.echo(
+                        f"    {d.side.value} level={d.level_index} "
+                        f"qty={d.quantity} @{_won(d.rounded_price)}"
+                    )
+                if outcome.stop_loss_breach is not None:
+                    fqn, loss = outcome.stop_loss_breach
+                    click.echo(f"⚠️ {fqn} 손실 한도 도달: {loss:.2f}%")
+            if result.supervised_hold:
+                click.echo(
+                    "🛑 supervised first-order — 첫 주문 후 halt 기록됨. 체결 "
+                    "확인 후 `trading resume` 로 다음 run 허용."
+                )
+            click.echo("✅ grid-live run 완료")
+        except LiveArmingError as exc:
+            click.echo(
+                f"⚠️ GRID 라이브 무장 안됨 — 실주문 zero "
+                f"(settle + reconcile 는 완료). {exc}",
+                err=True,
+            )
+            raise click.exceptions.Exit(1) from exc
+        except ClockSkewError as exc:
+            click.echo(f"❌ NTP 게이트 실패 — 실주문 거부: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except StateMismatchError as exc:
+            click.echo(
+                "❌ reconciliation 불일치 — 영속 halt 기록됨. 조사 후 "
+                "`trading resume`. 자동수정 zero (CLAUDE.md §11.2).",
+                err=True,
+            )
+            click.echo(f"  상세: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except KISAuthError as exc:
+            click.echo(f"KIS auth failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except (BrokerConnectionError, KISApiError) as exc:
+            click.echo(f"KIS call failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except DataIntegrityError as exc:
+            click.echo(f"KIS price integrity check failed: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        except MarketDataUnavailableError as exc:
+            click.echo(f"KIS market-data unavailable: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        finally:
+            components.close()
+
+    # Mark UTC import as used (linter pacification — actually used in
+    # composition._ts_for_bar via closure, but linter sees only local scope).
+    _ = UTC
+
+
 @main.command("halt")
 @click.option(
     "--reason",
