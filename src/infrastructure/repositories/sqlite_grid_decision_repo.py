@@ -84,6 +84,22 @@ class SqliteGridDecisionRepo:
         ).fetchall()
         return [self._build_decision(r) for r in rows]
 
+    def list_net_quantities(self) -> dict[str, Decimal]:
+        """ADR 0022 §13 D26 — per-asset net 보유 (BUY − SELL).
+
+        SUM(quantity) by side, 종목별 net = BUY_total − SELL_total. Python
+        Decimal 로 합산 (sqlite SUM 의 REAL cast 회피 → 정확). qty > 0 만 반환.
+        """
+        rows = self._conn.execute(
+            "SELECT asset_fqn, side, quantity FROM grid_decisions"
+        ).fetchall()
+        net: dict[str, Decimal] = {}
+        for r in rows:
+            qty = Decimal(r["quantity"])
+            sign = Decimal("1") if r["side"] == OrderSide.BUY.value else Decimal("-1")
+            net[r["asset_fqn"]] = net.get(r["asset_fqn"], Decimal("0")) + sign * qty
+        return {fqn: q for fqn, q in net.items() if q > 0}
+
     @staticmethod
     def _build_decision(row: sqlite3.Row) -> GridDecision:
         return GridDecision(

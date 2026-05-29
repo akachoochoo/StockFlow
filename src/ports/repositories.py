@@ -202,6 +202,16 @@ class GridDecisionRepoPort(Protocol):
         """
         ...
 
+    def list_net_quantities(self) -> dict[str, Decimal]:
+        """Return ``{asset_fqn: net_quantity}`` for all assets with non-zero
+        net holding (ADR 0022 §13 D26 — reconciliation grid 인식).
+
+        Net = Σ(BUY quantity) − Σ(SELL quantity), filtered to qty > 0
+        (자산이 모두 매도되어 보유 0 인 경우 제외). Decimal precision 보존
+        (no float cast). 시간 정렬 무관 (덧셈 commutative).
+        """
+        ...
+
 
 class GridStateRepoPort(Protocol):
     """DGT 크론 간 영속 운용 상태 (grid_states 테이블, ADR 0022 §12 follow-up).

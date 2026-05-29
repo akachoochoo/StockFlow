@@ -108,3 +108,54 @@ def test_uow_exposes_grid_decisions_attribute() -> None:
         uow.grid_decisions.save(asset=asset, timestamp=ts, decision=_gd())
         uow.commit()
     assert len(uow.grid_decisions.list_for_date(asset.fqn, ts.date())) == 1
+
+
+# ───────── ADR 0022 §13 D26 — list_net_quantities ─────────
+
+
+def test_list_net_quantities_empty() -> None:
+    assert InMemoryUnitOfWork().grid_decisions.list_net_quantities() == {}
+
+
+def test_list_net_quantities_buy_minus_sell() -> None:
+    uow = InMemoryUnitOfWork()
+    asset = _asset()
+    base = datetime(2026, 5, 28, 6, tzinfo=UTC)
+    with uow:
+        uow.grid_decisions.save(
+            asset=asset, timestamp=base,
+            decision=_gd(side=OrderSide.BUY, quantity=Decimal("15")),
+        )
+        uow.grid_decisions.save(
+            asset=asset, timestamp=base.replace(minute=1),
+            decision=_gd(side=OrderSide.SELL, quantity=Decimal("4")),
+        )
+        uow.commit()
+    assert uow.grid_decisions.list_net_quantities() == {asset.fqn: Decimal("11")}
+
+
+def test_list_net_quantities_zero_net_excluded() -> None:
+    uow = InMemoryUnitOfWork()
+    asset = _asset()
+    base = datetime(2026, 5, 28, 6, tzinfo=UTC)
+    with uow:
+        uow.grid_decisions.save(asset=asset, timestamp=base, decision=_gd(quantity=Decimal("10")))
+        uow.grid_decisions.save(asset=asset, timestamp=base.replace(minute=1),
+                                decision=_gd(side=OrderSide.SELL, quantity=Decimal("10")))
+        uow.commit()
+    assert uow.grid_decisions.list_net_quantities() == {}
+
+
+def test_list_net_quantities_multi_asset() -> None:
+    uow = InMemoryUnitOfWork()
+    a1 = _asset("095660")
+    a2 = _asset("069500")
+    ts = datetime(2026, 5, 28, 6, tzinfo=UTC)
+    with uow:
+        uow.grid_decisions.save(asset=a1, timestamp=ts, decision=_gd(quantity=Decimal("8")))
+        uow.grid_decisions.save(asset=a2, timestamp=ts, decision=_gd(quantity=Decimal("19")))
+        uow.commit()
+    assert uow.grid_decisions.list_net_quantities() == {
+        a1.fqn: Decimal("8"),
+        a2.fqn: Decimal("19"),
+    }

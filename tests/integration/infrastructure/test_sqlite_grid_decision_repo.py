@@ -158,3 +158,61 @@ class TestDateAndAssetFilters:
         repo = SqliteGridDecisionRepo(conn)
         assert repo.list_for_date("KRX:000000", date(2026, 5, 28)) == []
         assert repo.list_by_date_range("KRX:000000", date(2026, 1, 1), date(2026, 12, 31)) == []
+
+
+class TestListNetQuantities:
+    """ADR 0022 §13 D26 — Reconciliation grid 인식의 토대."""
+
+    def test_empty_when_no_decisions(self, conn) -> None:
+        repo = SqliteGridDecisionRepo(conn)
+        assert repo.list_net_quantities() == {}
+
+    def test_single_buy(self, conn) -> None:
+        repo = SqliteGridDecisionRepo(conn)
+        asset = _asset()
+        ts = datetime(2026, 5, 28, 6, tzinfo=UTC)
+        repo.save(asset=asset, timestamp=ts, decision=_gd(quantity=Decimal("10")))
+        assert repo.list_net_quantities() == {asset.fqn: Decimal("10")}
+
+    def test_net_after_buy_sell(self, conn) -> None:
+        repo = SqliteGridDecisionRepo(conn)
+        asset = _asset()
+        base = datetime(2026, 5, 28, 6, tzinfo=UTC)
+        repo.save(asset=asset, timestamp=base, decision=_gd(side=OrderSide.BUY, quantity=Decimal("15")))
+        repo.save(asset=asset, timestamp=base.replace(minute=1), decision=_gd(side=OrderSide.SELL, quantity=Decimal("3")))
+        assert repo.list_net_quantities() == {asset.fqn: Decimal("12")}
+
+    def test_zero_net_excluded(self, conn) -> None:
+        """qty 0 (BUY 동량 SELL) 자산은 결과에서 제외."""
+        repo = SqliteGridDecisionRepo(conn)
+        asset = _asset()
+        base = datetime(2026, 5, 28, 6, tzinfo=UTC)
+        repo.save(asset=asset, timestamp=base, decision=_gd(side=OrderSide.BUY, quantity=Decimal("20")))
+        repo.save(asset=asset, timestamp=base.replace(minute=1), decision=_gd(side=OrderSide.SELL, quantity=Decimal("20")))
+        assert repo.list_net_quantities() == {}
+
+    def test_multiple_assets_independent(self, conn) -> None:
+        repo = SqliteGridDecisionRepo(conn)
+        a1 = _asset("095660")
+        a2 = _asset("069500")
+        ts = datetime(2026, 5, 28, 6, tzinfo=UTC)
+        repo.save(asset=a1, timestamp=ts, decision=_gd(quantity=Decimal("10")))
+        repo.save(asset=a2, timestamp=ts, decision=_gd(quantity=Decimal("25")))
+        repo.save(asset=a2, timestamp=ts.replace(minute=1), decision=_gd(side=OrderSide.SELL, quantity=Decimal("5")))
+        assert repo.list_net_quantities() == {
+            a1.fqn: Decimal("10"),
+            a2.fqn: Decimal("20"),
+        }
+
+    def test_decimal_precision_preserved(self, conn) -> None:
+        """sqlite SUM/CAST 회피 → Decimal 정확 합산."""
+        repo = SqliteGridDecisionRepo(conn)
+        asset = _asset()
+        ts = datetime(2026, 5, 28, 6, tzinfo=UTC)
+        # 정수 주식이지만 Decimal 합산 정확성 검증.
+        for i, qty in enumerate(["7", "13", "11"]):
+            repo.save(
+                asset=asset, timestamp=ts.replace(minute=i),
+                decision=_gd(quantity=Decimal(qty)),
+            )
+        assert repo.list_net_quantities() == {asset.fqn: Decimal("31")}

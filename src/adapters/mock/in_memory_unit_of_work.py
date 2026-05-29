@@ -209,6 +209,17 @@ class InMemoryGridDecisionRepo:
         ]
         return [d for _, d in sorted(matching, key=lambda x: x[0])]
 
+    def list_net_quantities(self) -> dict[str, Decimal]:
+        """ADR 0022 §13 D26 — per-asset net 보유 (BUY − SELL)."""
+        from decimal import Decimal as _Decimal  # noqa: PLC0415
+        from src.domain.models import OrderSide as _OrderSide  # noqa: PLC0415
+
+        net: dict[str, _Decimal] = {}
+        for _ts, fqn, d in self._rows:
+            sign = _Decimal("1") if d.side is _OrderSide.BUY else _Decimal("-1")
+            net[fqn] = net.get(fqn, _Decimal("0")) + sign * d.quantity
+        return {fqn: q for fqn, q in net.items() if q > 0}
+
 
 class InMemoryGridStateRepo:
     """GridStateRepoPort backed by a dict keyed on asset_fqn (ADR 0022 §12).
