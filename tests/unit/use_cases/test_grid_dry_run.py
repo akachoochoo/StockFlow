@@ -487,3 +487,228 @@ class TestReconstructBrokerState:
                 initial_capital=Money(amount=Decimal("10000000"), currency=Currency.KRW),
                 decisions=[buy, sell],
             )
+
+
+# ===========================================================================
+# Multi-asset equivalence (CLI grid-dry-run + grid-backtest, ADR 0022 §11.21)
+# ===========================================================================
+
+# 2번째 자산 — 동일 currency / market, 다른 code + listed_at.
+ASSET2 = Asset(
+    code="005930",
+    exchange=Exchange.KRX,
+    market=Market.KOSPI,
+    asset_class=AssetClass.KR_STOCK,
+    currency=Currency.KRW,
+    name="삼성전자",
+    tick_size=Decimal("1"),
+    lot_size=Decimal("1"),
+    listed_at=date(1975, 6, 11),
+)
+
+
+def _bar_for(asset: Asset, idx: int, *, close: int, volume: int = 1_000_000) -> OHLCV:
+    """Generic bar builder — asset 명시 (ASSET2 등 다른 자산 용)."""
+    return OHLCV(
+        asset=asset,
+        trade_date=date(2026, 5, 1 + idx),
+        open=Decimal(close - 50),
+        high=Decimal(close + 100),
+        low=Decimal(close - 100),
+        close=Decimal(close),
+        volume=Decimal(volume),
+    )
+
+
+def _bars2_distinct() -> list[OHLCV]:
+    """ASSET2 용 다른 가격 시퀀스 — ASSET 와 다른 가격대 + 진폭."""
+    closes = [
+        60000, 60300, 60800, 61500, 62000, 62800,  # up
+        62300, 61500, 60700, 59800, 59000,         # down
+        59500, 60200, 61000, 61800,                # up
+        61300, 60500, 59600, 58800, 58000,         # down
+    ]
+    return [_bar_for(ASSET2, i, close=c) for i, c in enumerate(closes)]
+
+
+class TestMultiAssetEquivalence:
+    """Multi-asset 처리 시 per-asset 격리 + 단일자산 G2 동치성 유지."""
+
+    def test_multi_asset_decisions_equal_isolated_single_asset(self) -> None:
+        """Multi-asset (shared uow) per-asset 결정 == isolated single-asset 결정.
+
+        Per-asset 격리 보장 — multi-asset 처리 시 한 자산의 결정 시퀀스가 그
+        자산 단독 dry-run 과 동일. (backtest GridRunner 와의 비교는 cost-coupling
+        idealization 차이로 인해 trade-by-trade 동치성 미보장 — D23 문서화 정합.)
+        """
+        bars1 = _bars_oscillating()
+        bars2 = _bars2_distinct()
+        config = _config()
+        per_asset_capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+
+        # Path A — 자산 1 isolated dry-run
+        broker_a1 = _make_broker()
+        uow_a1 = InMemoryUnitOfWork()
+        orch_a1 = GridDryRunOrchestrator(
+            broker=broker_a1,
+            uow_factory=lambda: uow_a1,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        isolated1 = orch_a1.replay_bars(
+            asset=ASSET, bars=bars1, config=config, initial_capital=per_asset_capital
+        )
+
+        # Path A — 자산 2 isolated dry-run
+        broker_a2 = _make_broker()
+        uow_a2 = InMemoryUnitOfWork()
+        orch_a2 = GridDryRunOrchestrator(
+            broker=broker_a2,
+            uow_factory=lambda: uow_a2,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        isolated2 = orch_a2.replay_bars(
+            asset=ASSET2, bars=bars2, config=config, initial_capital=per_asset_capital
+        )
+
+        # Path B — multi-asset (shared uow, separate brokers, 순차 처리)
+        uow_b = InMemoryUnitOfWork()
+        broker_b1 = _make_broker()
+        orch_b1 = GridDryRunOrchestrator(
+            broker=broker_b1,
+            uow_factory=lambda: uow_b,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        multi1 = orch_b1.replay_bars(
+            asset=ASSET, bars=bars1, config=config, initial_capital=per_asset_capital
+        )
+        broker_b2 = _make_broker()
+        orch_b2 = GridDryRunOrchestrator(
+            broker=broker_b2,
+            uow_factory=lambda: uow_b,
+            timestamp_for_bar=_ts_for_bar,
+        )
+        multi2 = orch_b2.replay_bars(
+            asset=ASSET2, bars=bars2, config=config, initial_capital=per_asset_capital
+        )
+
+        # 자산 1 — multi-asset 처리 시 단독 처리와 trade-by-trade 동치
+        assert len(multi1) == len(isolated1)
+        for m, i in zip(multi1, isolated1, strict=True):
+            assert m.side == i.side
+            assert m.level_index == i.level_index
+            assert m.rounded_price == i.rounded_price
+            assert m.quantity == i.quantity
+        # 자산 2 — 동일
+        assert len(multi2) == len(isolated2)
+        for m, i in zip(multi2, isolated2, strict=True):
+            assert m.side == i.side
+            assert m.level_index == i.level_index
+            assert m.rounded_price == i.rounded_price
+            assert m.quantity == i.quantity
+
+    def test_grid_decisions_isolated_by_asset(self) -> None:
+        """uow.grid_decisions 가 자산별 격리 — list_by_date_range 호출 시 다른 자산 누설 zero."""
+        bars1 = _bars_oscillating()
+        bars2 = _bars2_distinct()
+        config = _config()
+        per_asset_capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+
+        uow = InMemoryUnitOfWork()
+        for asset, bars in [(ASSET, bars1), (ASSET2, bars2)]:
+            broker = _make_broker()
+            orch = GridDryRunOrchestrator(
+                broker=broker,
+                uow_factory=lambda: uow,
+                timestamp_for_bar=_ts_for_bar,
+            )
+            orch.replay_bars(
+                asset=asset, bars=bars, config=config, initial_capital=per_asset_capital
+            )
+
+        saved1 = uow.grid_decisions.list_by_date_range(
+            ASSET.fqn, bars1[0].trade_date, bars1[-1].trade_date
+        )
+        saved2 = uow.grid_decisions.list_by_date_range(
+            ASSET2.fqn, bars2[0].trade_date, bars2[-1].trade_date
+        )
+        # 격리 확인 — 누설 zero
+        assert len(saved1) > 0 and len(saved2) > 0
+        # 모든 saved1 의 가격대 == ASSET 의 가격대 범위 (30000 근처)
+        for d in saved1:
+            assert Decimal("28000") <= d.rounded_price <= Decimal("32500")
+        # 모든 saved2 의 가격대 == ASSET2 가격대 (58000~63000)
+        for d in saved2:
+            assert Decimal("57000") <= d.rounded_price <= Decimal("63000")
+
+    def test_per_asset_reconstruct_does_not_leak(self) -> None:
+        """shared uow 에서 자산 A 의 broker state 재구성 시 자산 B 의 결정 영향 zero."""
+        bars1 = _bars_oscillating()
+        bars2 = _bars2_distinct()
+        config = _config()
+        per_asset_capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+
+        uow = InMemoryUnitOfWork()
+        for asset, bars in [(ASSET, bars1), (ASSET2, bars2)]:
+            broker = _make_broker()
+            orch = GridDryRunOrchestrator(
+                broker=broker,
+                uow_factory=lambda: uow,
+                timestamp_for_bar=_ts_for_bar,
+            )
+            orch.replay_bars(
+                asset=asset, bars=bars, config=config, initial_capital=per_asset_capital
+            )
+
+        # ASSET 의 reconstruct — ASSET 의 grid_decisions 만 사용해야 함.
+        saved1 = uow.grid_decisions.list_by_date_range(
+            ASSET.fqn, bars1[0].trade_date, bars1[-1].trade_date
+        )
+        cash1, hold1 = reconstruct_grid_broker_state(
+            asset=ASSET, initial_capital=per_asset_capital, decisions=saved1,
+        )
+        # ASSET2 의 reconstruct — ASSET2 의 grid_decisions 만.
+        saved2 = uow.grid_decisions.list_by_date_range(
+            ASSET2.fqn, bars2[0].trade_date, bars2[-1].trade_date
+        )
+        cash2, hold2 = reconstruct_grid_broker_state(
+            asset=ASSET2, initial_capital=per_asset_capital, decisions=saved2,
+        )
+
+        # 두 자산의 cash 변동이 독립적 (서로 다른 가격대로 다른 trades).
+        assert cash1 != cash2  # 같을 확률 0% (다른 가격대)
+        # 두 자산 모두 자기 가격대에서만 거래 (위 saved1/saved2 검증 정합).
+        if hold1 is not None:
+            assert hold1.asset.fqn == ASSET.fqn
+        if hold2 is not None:
+            assert hold2.asset.fqn == ASSET2.fqn
+
+    def test_grid_states_isolated_by_asset(self) -> None:
+        """grid_states 가 자산별 1행 — step_today 호출 시 자산별 독립."""
+        bars1 = _bars_oscillating()
+        bars2 = _bars2_distinct()
+        config = _config()
+        per_asset_capital = Money(amount=Decimal("10000000"), currency=Currency.KRW)
+
+        uow = InMemoryUnitOfWork()
+        # 각 자산 1 bar 처리 — bar_idx=0 부터 시작.
+        for asset, bars in [(ASSET, bars1), (ASSET2, bars2)]:
+            broker = _make_broker()
+            orch = GridDryRunOrchestrator(
+                broker=broker,
+                uow_factory=lambda: uow,
+                timestamp_for_bar=_ts_for_bar,
+            )
+            orch.step_today(
+                asset=asset, bars=bars[:5], config=config,
+                initial_capital=per_asset_capital,
+            )
+
+        # 자산별 grid_states 행 존재
+        state1 = uow.grid_states.get(ASSET.fqn)
+        state2 = uow.grid_states.get(ASSET2.fqn)
+        assert state1 is not None and state2 is not None
+        # reference_price 가 서로 다름 (다른 가격대)
+        assert state1.grid_state.reference_price != state2.grid_state.reference_price
+        # ASSET 의 reference ≈ 30K, ASSET2 의 reference ≈ 60K (bootstrap from bars[0])
+        assert Decimal("28000") <= state1.grid_state.reference_price <= Decimal("32000")
+        assert Decimal("58000") <= state2.grid_state.reference_price <= Decimal("63000")
