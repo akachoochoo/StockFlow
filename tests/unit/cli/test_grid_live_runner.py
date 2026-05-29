@@ -278,11 +278,42 @@ class TestDecisionsAndAlerts:
         )
         ctx = _build(decisions={"KRX:095660": [dec]})
         result = _run(**ctx)
-        # 결정 1건 → INFO 알림 1건 (start/end 없음 — runner 는 per-decision 만)
+        # per-decision INFO + D33 (start / settle / end) — BUY+095660 알림이
+        # 1건 이상 있는지 확인.
         info_calls = [c for c in ctx["notifier"].calls if c[0] is NotificationLevel.INFO]
-        assert len(info_calls) >= 1
-        assert "BUY" in info_calls[0][1] and "095660" in info_calls[0][1]
+        decision_calls = [c for c in info_calls if "BUY" in c[1] and "095660" in c[1]]
+        assert len(decision_calls) == 1
         assert len(result.per_asset[0].executed) == 1
+
+
+class TestObservabilityAlerts:
+    """ADR 0022 §13 D33 — cron 시작 / settle 요약 / cron 종료 알림."""
+
+    def test_cron_start_alert_emitted(self):
+        ctx = _build()
+        _run(**ctx)
+        starts = [c for c in ctx["notifier"].calls if "cron 시작" in c[1]]
+        assert len(starts) == 1
+        assert starts[0][0] is NotificationLevel.INFO
+        # 종목 / 자본 / armed 정보 포함
+        assert "종목" in starts[0][2]
+        assert "armed" in starts[0][2]
+
+    def test_settle_summary_alert_emitted(self):
+        ctx = _build()
+        _run(**ctx)
+        summaries = [c for c in ctx["notifier"].calls if "settle —" in c[1]]
+        assert len(summaries) == 1
+        assert summaries[0][0] is NotificationLevel.INFO
+        assert "grid" in summaries[0][2]
+
+    def test_cron_end_alert_emitted(self):
+        ctx = _build()
+        _run(**ctx)
+        ends = [c for c in ctx["notifier"].calls if "cron 종료" in c[1]]
+        assert len(ends) == 1
+        assert ends[0][0] is NotificationLevel.INFO
+        assert "결정" in ends[0][2]
 
 
 class TestStopLossBreach:

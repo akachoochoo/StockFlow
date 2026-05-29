@@ -115,10 +115,35 @@ def run_grid_live_pipeline(
     """
     from src.domain.models import Money  # noqa: PLC0415 — 지역 import 만
 
+    # 0. CRON 시작 알림 (D33) — 종목 / 자본 / armed 여부 요약.
+    n_assets = len(asset_runs)
+    total_capital = sum((r.initial_capital for r in asset_runs), Decimal("0"))
+    armed = arm_token is not None and arm_token.env_confirmed
+    notifier.notify(
+        level=NotificationLevel.INFO,
+        title=f"[GRID LIVE] cron 시작 — {today.isoformat()}",
+        body=(
+            f"종목 {n_assets} / 자본 {total_capital} KRW / "
+            f"intended_tier={intended_tier.name} / "
+            f"armed={'YES' if armed else 'NO (settle+reconcile only)'}"
+        ),
+    )
+
     # 1. SETTLE — confirm prior PENDING grid fills (no new orders).
     settle = settler.settle(today)
     for event in settle.events:
         notifier.notify(level=event.level, title=event.title, body=event.body)
+    # D33 — settle 요약 알림 (grid 건수 + split 건수 + still_pending).
+    notifier.notify(
+        level=NotificationLevel.INFO,
+        title=f"[GRID LIVE] settle — {today.isoformat()}",
+        body=(
+            f"grid {len(settle.settled_grid)} 건 / "
+            f"split buys {len(settle.settled_buys)} / "
+            f"split sells {len(settle.settled_sells)} / "
+            f"still_pending {len(settle.still_pending_keys)}"
+        ),
+    )
 
     # 2. RECONCILE (선행) — read-only; raises on mismatch (split + grid 합산).
     recon = reconciler.reconcile()
@@ -178,6 +203,19 @@ def run_grid_live_pipeline(
         any_orders_placed=any_orders_placed,
         halt_writer=halt_writer,
         notifier=notifier,
+    )
+
+    # 7. CRON 종료 알림 (D33) — 일일 요약. 결정 / breach / supervised hold.
+    n_decisions = sum(len(o.executed) for o in per_asset)
+    n_breaches = sum(1 for o in per_asset if o.stop_loss_breach is not None)
+    notifier.notify(
+        level=NotificationLevel.INFO,
+        title=f"[GRID LIVE] cron 종료 — {today.isoformat()}",
+        body=(
+            f"결정 {n_decisions} 건 ({n_assets} 종목) / "
+            f"손실 한도 도달 {n_breaches} / "
+            f"supervised hold {'YES' if supervised_hold else 'NO'}"
+        ),
     )
 
     return GridLivePipelineResult(
