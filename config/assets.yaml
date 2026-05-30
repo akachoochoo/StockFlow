@@ -109,3 +109,12 @@ assets:
     market: KOSPI
     asset_class: KR_STOCK
     listed_at: 2014-03-06
+
+  # ── 사용자 추가 (DGT 4종 dry-run, 2026-05-30) ──
+  # KOSDAQ 엔터테인먼트 — pykrx 데이터 시작일 (실제 상장일은 더 이전).
+  # ⚠ KRX/DART 공식 상장일·시장구분 확인 권장 (§5.1 money-critical).
+  "035900":
+    name: "JYP Ent."
+    market: KOSDAQ
+    asset_class: KR_STOCK
+    listed_at: 2019-01-02

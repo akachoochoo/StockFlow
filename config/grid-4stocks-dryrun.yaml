@@ -1,0 +1,57 @@
+# DGT grid dry-run config — 4종목 (네오위즈 / NAVER / 셀트리온 / JYP)
+# ADR 0022 §11.21 권고 A — N=4 균등 분할, 정상상태 파라미터.
+#
+# 사용 (CSV 모드, 결정론적):
+#   trading grid-dry-run \
+#       --config config/grid-4stocks-dryrun.yaml \
+#       --csv 095660=data/historical/KRX_095660_2025-2026.csv \
+#       --csv 035420=data/historical/KRX_035420_2025-2026.csv \
+#       --csv 068270=data/historical/KRX_068270_2025-2026.csv \
+#       --csv 035900=data/historical/KRX_035900_2025-2026.csv \
+#       --capital 20000000 \
+#       [--date YYYY-MM-DD]
+#
+# 사용 (KIS 시세 모드, paper-on-live):
+#   trading grid-dry-run \
+#       --config config/grid-4stocks-dryrun.yaml \
+#       --use-kis --lookback-days 180 \
+#       --capital 20000000 \
+#       [--date YYYY-MM-DD]
+#
+# 자본 권장: 총 2000만~4000만 (종목당 500만~1000만). §11.18 박제 — 종목당 자본
+# 1000만 = 그리드 활동 sweet spot. 500만 = 절반 검증 자본 (D31 권고 정합).
+#
+# 파라미터 공통 (YAML anchor &gridA / *gridA):
+#   §11.21 권고 A 정상상태 — cd=5 + price_based_reentry=true + n=6 on_breach +
+#   ADR×1.5 + profit_guard. 095660 박제 파라미터와 동일.
+
+version: '1.0'
+assets:
+  "095660":
+    name: 네오위즈
+    enabled: true
+    grid_parameters: &gridA
+      grid_count: 6
+      fallback_k: 0.01
+      rebalance_mode: on_breach
+      volatility_measure: adr
+      atr_period: 14
+      multiplier: 1.5
+      k_min: 0.005
+      k_max: 0.02
+      slope_gate: false
+      profit_guard: true
+      sell_cooldown_bars: 5
+      price_based_reentry: true
+  "035420":
+    name: NAVER
+    enabled: true
+    grid_parameters: *gridA
+  "068270":
+    name: 셀트리온
+    enabled: true
+    grid_parameters: *gridA
+  "035900":
+    name: JYP Ent.
+    enabled: true
+    grid_parameters: *gridA
