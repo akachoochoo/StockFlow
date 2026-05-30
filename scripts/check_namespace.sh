@@ -103,6 +103,22 @@ if [ -d "src/research/dynamic_adjustment" ]; then
   fi
 fi
 
+# Phase 1.x ADR 0023 D15 — dgt_minute intra-research isolation.
+# dgt_minute 는 처음부터 재설계 경로 (ADR 0007 §1.7.2 (b)) — 일봉 dgt /
+# visualization / dynamic_adjustment 와 교차 import 차단. intra-self
+# (dgt_minute → dgt_minute) 만 허용.
+if [ -d "src/research/dgt_minute" ]; then
+  matches=$(grep -rEn "^[[:space:]]*(from|import)[[:space:]]+src\.research\." src/research/dgt_minute 2>/dev/null || true)
+  if [ -n "$matches" ]; then
+    intra_violations=$(echo "$matches" | grep -vE "src\.research\.dgt_minute(\.|$|[[:space:]])" || true)
+    if [ -n "$intra_violations" ]; then
+      echo "$intra_violations"
+      echo "FAIL: src/research/dgt_minute contains cross-import to non-dgt_minute src.research sub-namespace"
+      violations=$((violations + 1))
+    fi
+  fi
+fi
+
 if [ "$violations" -gt 0 ]; then
   echo "FAIL: namespace discipline violated ($violations inner ring(s))"
   exit 1
