@@ -456,10 +456,15 @@ KIS_API_KEY = os.environ["KIS_API_KEY"]
 
 ### 10.1 단일 프로세스 가정
 
-이 시스템은 **cron 기반 1회성 실행**이 기본:
+이 시스템은 **cron 호출 기반 단일 프로세스 실행**이 기본:
 - 멀티스레드 사용 금지 (필요하면 사용자에게 질문)
 - 비동기 사용 금지 (asyncio 등)
 - 데몬 형태 운영 안 함
+
+**호출 주기** (ADR 0023 D4, 2026-05-30):
+- 일봉 인프라 (Phase 0 ~ ADR 0022, 동결): cron 1회/일 (장 시작 전 또는 종가 직후). 운영 차단 상태 — env `ALLOW_DAILY_LIVE=1` 강제 필요.
+- 분봉 인프라 (ADR 0023, Phase 1.x): cron 1분/장중 (09:00~15:30 KST 정규장, 390회/일). 동시호가 구간 (15:20~15:30) = cron 정상 호출 + 주문 제출 zero.
+- 각 호출 = 독립 프로세스 + lock file 자연 직렬화 + 60초 budget hard cap (R2 mitigation).
 
 ### 10.2 락 파일로 중복 실행 방지
 
@@ -698,7 +703,7 @@ B) <옵션 2와 trade-off>
 - SupportLevelStrategy + cooldown — Phase 0.9.x / Phase 1+ (ADR 0004 §7.3.2 거부 박제 인용 필수)
 - 멀티 종목 + SupportLevel 결합 — Phase 0.9.x 후속 (ADR 0004 §1.10)
 - Phase 0.7.4 (부동산 분산) — placeholder 보존 (ADR 0003 §18.12.4 / §19.3)
-- 그리드 트레이딩 — Phase 0.11.a 완료 (2026-05-12, ADR 0007 §3, D10 = archive). 분봉 DGT 재검토 = Phase 1 ADR 0012 진입 후 별도 결정 라운드.
+- 그리드 트레이딩 — Phase 0.11.a 완료 (2026-05-12, ADR 0007 §3, D10 = archive). 분봉 DGT 재검토 = ~~Phase 1 ADR 0012 진입 후 별도 결정 라운드~~ → **ADR 0023 (2026-05-30 박제)** 정본. ADR 0022 §13 일봉 grid-live 인프라 = 코드 보존 + 운영 동결 (ADR 0023 D5/D17).
 - 종목 선정 자동화 / 박영옥 가치주 자동 식별 — Phase 2+
 - 일중 데이터 (분봉 / 틱) — Phase 0 ~ 0.10 = 일봉 (pykrx) only
 - 보존 (변경 금지, 회귀 invariant): `PriceDropStrategy` / `SupportLevelStrategy` /

@@ -502,12 +502,26 @@
 
 ---
 
-## Phase 1 (예정): KR 주식 실거래 - 소액
-- KIS API 연동
-- 100~500만원 소액
-- 차단기 비활성, 룰만 검증
-- 1~2개월 운영
-- 진입 게이트: Phase 0.10 종료 결정 박제 + ADR 0007 (가칭, 기존 ADR 0006 명명 변경 — ADR 0005 §11.5) 박제
+## Phase 1.x (진입 박제, 2026-05-30 — ADR 0023): 분봉(1m) 일괄 전환 — DGT-only
+
+- **본질**: backtest + dry-run + live 전 경로 의사결정 주기 일봉 → 1분봉 일괄 이동 + split 전략 라이브 동결 + DGT-only 운영
+- **결정 라운드 1차** (2026-05-30, 사용자 인터랙티브 Q1~Q19): D1~D19 박제 확정
+  - D1 일괄 전환 / D2 1분봉 / D3 KIS API / D4 cron 1분 단일 프로세스 보존 / D5 일봉 동결
+  - D6 분봉 sweep 우선 / D7 단기+누적 / D8 split 폐기 / D9 partial fill 차단 / D10 7세그 idempotency
+  - D11 ADR 0023 신규 / D12 G2 backtest↔dry-run / D13 4종 × 500만 / D14 dry-run 10영업일 / D15 5th ring `dgt_minute/` 재진입
+  - D16 정규장 1분 / D17 일봉 코드 존속 + 운영 차단 / D18 세그먼트 1.2.1~1.2.4 / D19 ADR-first
+- **G1~G5 게이트**: G1 회귀 zero / G2 backtest↔dry-run 동치 / G3 박제 완료 / G4 dry-run 10영업일 PASS / G5 live 사람 단일 게이트
+- **R1~R10 리스크**: 일봉 sweep 결론 분봉 invalid / cron lock 경합 / KIS quota / partial fill 빈도 / latency divergence / 일봉 사고 / DB schema / 데이터 hole / namespace / 단일 윈도 의존
+- **구현 단계**: 1.2.1 KIS 분봉 수집기 → 1.2.2 분봉 backtest engine + sweep → 1.2.3 dry-run → 1.2.4 live arming → 1.2.5 일봉 cross-link
+- **Cross-link**: ADR 0022 §13 D3 invalidate + §13 D24~D33 인프라 동결 + CLAUDE.md §10.1/§14 갱신 동시 박제
+
+## Phase 1 (보류 — ADR 0023 분봉 일괄 전환으로 split live 동결): KR 주식 실거래 - 소액
+- ~~KIS API 연동~~ (Phase 1.1 read/write 완료, write 미배선 상태)
+- ~~100~500만원 소액~~ (ADR 0023 D13 = 분봉 dry-run 4종 × 500만 = 2,000만 으로 확장)
+- ~~차단기 비활성, 룰만 검증~~
+- ~~1~2개월 운영~~
+- ~~진입 게이트: Phase 0.10 종료 결정 박제 + ADR 0007 (가칭) 박제~~
+- **현 상태**: Phase 1.1 Stage 8 split live runner = 코드 완성 + 운영 동결 (ADR 0023 D5/D17). 부활 = 별도 결정 라운드 (Phase 1 lifecycle 재결정).
 
 ## Phase 2 (예정): AI 차단기 추가
 - 차단기 신호 파이프라인
