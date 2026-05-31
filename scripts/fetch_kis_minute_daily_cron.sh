@@ -19,7 +19,10 @@
 #   FETCH_MINUTE_CODES        : 종목 코드 (공백 구분, 기본 = 4종 ADR 0023 D13)
 #   FETCH_MINUTE_DATE         : 강제 처리 date (YYYY-MM-DD). 기본 = 어제 KST
 #   FETCH_MINUTE_DATA_ROOT    : 데이터 루트 (기본 = data/historical)
-#   FETCH_MINUTE_SLEEP_SEC    : 종목 간 sleep 초 (기본 = 1.0, R3 mitigation)
+#   FETCH_MINUTE_SLEEP_SEC    : 종목 간 sleep 초 (기본 = 2.0, cron 보수성 강화 —
+#                               python default 1.0 보다 보수적, ADR 0023 R3
+#                               3차 실증 박제 2026-06-01: 1.0초 cron 에서
+#                               005930/035900 EGW00201 재발 → 2.0초 cron default)
 #
 # 동작:
 #   1. mkdir 기반 단일 인스턴스 lock (cron 중복 호출 시 즉시 종료).
@@ -46,7 +49,7 @@ FETCH_MINUTE_LOG_DIR="${FETCH_MINUTE_LOG_DIR:-logs}"
 FETCH_MINUTE_CODES="${FETCH_MINUTE_CODES:-069500 132030 005930 035900}"
 FETCH_MINUTE_DATE="${FETCH_MINUTE_DATE:-}"
 FETCH_MINUTE_DATA_ROOT="${FETCH_MINUTE_DATA_ROOT:-data/historical}"
-FETCH_MINUTE_SLEEP_SEC="${FETCH_MINUTE_SLEEP_SEC:-1.0}"
+FETCH_MINUTE_SLEEP_SEC="${FETCH_MINUTE_SLEEP_SEC:-2.0}"
 
 # uv 절대경로 (cron PATH 가 비어있을 수 있음)
 UV_BIN="${UV_BIN:-/opt/homebrew/bin/uv}"
