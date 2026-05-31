@@ -1,0 +1,317 @@
+{
+  "msg1": "정상처리 되었습니다.",
+  "msg_cd": "MCA00000",
+  "output1": {
+    "acml_tr_pbmn": "3412844547",
+    "acml_vol": "134020",
+    "hts_kor_isnm": "KODEX 골드선물(H)",
+    "prdy_ctrt": "3.01",
+    "prdy_vrss": "745",
+    "prdy_vrss_sign": "2",
+    "stck_prdy_clpr": "24790",
+    "stck_prpr": "25535"
+  },
+  "output2": [
+    {
+      "acml_tr_pbmn": "3368642022",
+      "cntg_vol": "1050",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "153000",
+      "stck_hgpr": "25535",
+      "stck_lwpr": "25535",
+      "stck_oprc": "25535",
+      "stck_prpr": "25535"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152900",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152800",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152700",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152600",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152500",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152400",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152300",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152200",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152100",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "152000",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3355236147",
+      "cntg_vol": "435",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151900",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3344137122",
+      "cntg_vol": "0",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151800",
+      "stck_hgpr": "25510",
+      "stck_lwpr": "25510",
+      "stck_oprc": "25510",
+      "stck_prpr": "25510"
+    },
+    {
+      "acml_tr_pbmn": "3344137122",
+      "cntg_vol": "1827",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151700",
+      "stck_hgpr": "25520",
+      "stck_lwpr": "25510",
+      "stck_oprc": "25520",
+      "stck_prpr": "25510"
+    },
+    {
+      "acml_tr_pbmn": "3297530292",
+      "cntg_vol": "3",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151600",
+      "stck_hgpr": "25520",
+      "stck_lwpr": "25520",
+      "stck_oprc": "25520",
+      "stck_prpr": "25520"
+    },
+    {
+      "acml_tr_pbmn": "3297453732",
+      "cntg_vol": "331",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151500",
+      "stck_hgpr": "25520",
+      "stck_lwpr": "25520",
+      "stck_oprc": "25520",
+      "stck_prpr": "25520"
+    },
+    {
+      "acml_tr_pbmn": "3289006612",
+      "cntg_vol": "100",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151400",
+      "stck_hgpr": "25510",
+      "stck_lwpr": "25505",
+      "stck_oprc": "25510",
+      "stck_prpr": "25505"
+    },
+    {
+      "acml_tr_pbmn": "3286456087",
+      "cntg_vol": "222",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151300",
+      "stck_hgpr": "25530",
+      "stck_lwpr": "25510",
+      "stck_oprc": "25510",
+      "stck_prpr": "25530"
+    },
+    {
+      "acml_tr_pbmn": "3280790867",
+      "cntg_vol": "790",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151200",
+      "stck_hgpr": "25520",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25520",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3260632567",
+      "cntg_vol": "172",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151100",
+      "stck_hgpr": "25530",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25530"
+    },
+    {
+      "acml_tr_pbmn": "3256243372",
+      "cntg_vol": "24",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "151000",
+      "stck_hgpr": "25515",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25515",
+      "stck_prpr": "25515"
+    },
+    {
+      "acml_tr_pbmn": "3255631012",
+      "cntg_vol": "347",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150900",
+      "stck_hgpr": "25545",
+      "stck_lwpr": "25515",
+      "stck_oprc": "25530",
+      "stck_prpr": "25545"
+    },
+    {
+      "acml_tr_pbmn": "3246773077",
+      "cntg_vol": "9",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150800",
+      "stck_hgpr": "25545",
+      "stck_lwpr": "25535",
+      "stck_oprc": "25535",
+      "stck_prpr": "25535"
+    },
+    {
+      "acml_tr_pbmn": "3246543212",
+      "cntg_vol": "237",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150700",
+      "stck_hgpr": "25545",
+      "stck_lwpr": "25535",
+      "stck_oprc": "25540",
+      "stck_prpr": "25535"
+    },
+    {
+      "acml_tr_pbmn": "3240490817",
+      "cntg_vol": "101",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150600",
+      "stck_hgpr": "25550",
+      "stck_lwpr": "25540",
+      "stck_oprc": "25540",
+      "stck_prpr": "25540"
+    },
+    {
+      "acml_tr_pbmn": "3237911077",
+      "cntg_vol": "234",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150500",
+      "stck_hgpr": "25545",
+      "stck_lwpr": "25540",
+      "stck_oprc": "25545",
+      "stck_prpr": "25545"
+    },
+    {
+      "acml_tr_pbmn": "3231934102",
+      "cntg_vol": "64",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150400",
+      "stck_hgpr": "25545",
+      "stck_lwpr": "25535",
+      "stck_oprc": "25535",
+      "stck_prpr": "25545"
+    },
+    {
+      "acml_tr_pbmn": "3230299542",
+      "cntg_vol": "194",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150300",
+      "stck_hgpr": "25540",
+      "stck_lwpr": "25540",
+      "stck_oprc": "25540",
+      "stck_prpr": "25540"
+    },
+    {
+      "acml_tr_pbmn": "3225344782",
+      "cntg_vol": "200",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150200",
+      "stck_hgpr": "25570",
+      "stck_lwpr": "25540",
+      "stck_oprc": "25545",
+      "stck_prpr": "25550"
+    },
+    {
+      "acml_tr_pbmn": "3220235597",
+      "cntg_vol": "71",
+      "stck_bsop_date": "20260529",
+      "stck_cntg_hour": "150100",
+      "stck_hgpr": "25570",
+      "stck_lwpr": "25540",
+      "stck_oprc": "25545",
+      "stck_prpr": "25540"
+    }
+  ],
+  "rt_cd": "0"
+}
