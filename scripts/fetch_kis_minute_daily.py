@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -43,7 +44,7 @@ from src.research.dgt_minute._storage import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from src.research.dgt_minute._kis_minute_downloader import _KISClientLike
     from src.research.dgt_minute._storage import _StorageResult
@@ -106,6 +107,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "manifest 파일 경로 (기본 {data-root}/minute/manifest.json)"
         ),
     )
+    parser.add_argument(
+        "--inter-asset-sleep-sec",
+        type=float,
+        default=1.0,
+        help=(
+            "종목 간 sleep 초 (KIS EGW00201 burst 회피, ADR 0023 R3 "
+            "mitigation). 0 = sleep 없음. 기본 1.0초 = 14호출/종목 burst "
+            "buffer 비움."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -147,10 +158,15 @@ def _run(
     *,
     client: _KISClientLike,
     now: datetime,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> _RunSummary:
     """주문되어 받은 args + 외부 client + now 로 cron 본체 실행 (testable).
 
     - 각 code 마다 `_download_and_persist` 호출.
+    - 종목 간 `args.inter_asset_sleep_sec` 초 sleep (ADR 0023 R3 — KIS
+      EGW00201 "초당 거래건수 초과" 회피). 1종목 = 14 anchor 호출 + KIS real
+      20/s burst window 가 가득 → 다음 종목 첫 호출에서 EGW00201 trigger
+      관찰됨 (2026-05-31 실증). 1초 sleep 으로 buffer 비움.
     - 예외 발생 시 해당 code 만 실패 처리 + 다음 code 진행 (운영 단일
       종목 실패가 전체 cron 을 중단시키지 않도록).
     - 결과 stdout 로깅 (DRY-RUN, KPI 알림은 후속).
@@ -163,7 +179,9 @@ def _run(
     results: list[_StorageResult] = []
     failures: list[str] = []
 
-    for code in args.codes:
+    for i, code in enumerate(args.codes):
+        if i > 0 and args.inter_asset_sleep_sec > 0:
+            sleep_fn(args.inter_asset_sleep_sec)
         try:
             result = _download_and_persist(
                 client,

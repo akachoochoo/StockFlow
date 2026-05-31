@@ -196,7 +196,13 @@ class TestUpdateAsset:
 
 
 class TestRepositoryManifest:
-    """`data/historical/minute/manifest.json` (박제된 초기 manifest) 검증."""
+    """`data/historical/minute/manifest.json` (gitignored, cron 산출) 검증.
+
+    Repo 의 manifest 는 `data/` gitignored 이라 사용자 환경별로 다름:
+    - 새 clone = 부재 (skip)
+    - cron 1회 이상 = 4종 갱신된 상태
+    본 test 는 schema 로딩 정합만 검증 — assets/updated_at 내용은 자유.
+    """
 
     def test_repo_manifest_loads(self) -> None:
         repo_path = (
@@ -210,6 +216,4 @@ class TestRepositoryManifest:
             pytest.skip("repo manifest not present (allowed in test envs)")
         m = _load_manifest(repo_path)
         assert m.version == "1.0"
-        # 초기 박제 = 빈 manifest.
-        assert m.assets == {}
-        assert m.updated_at is None
+        # assets / updated_at = 환경별 (cron 실행 여부에 따라) — 내용 free.

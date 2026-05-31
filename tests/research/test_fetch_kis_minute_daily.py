@@ -86,6 +86,7 @@ class TestParseArgs:
         assert args.date is None
         assert args.data_root == Path("data/historical")
         assert args.manifest is None
+        assert args.inter_asset_sleep_sec == 1.0
 
     def test_explicit_codes(self) -> None:
         m = _import_script()
@@ -144,7 +145,7 @@ class TestRun:
         args = m._parse_args(
             ["--date", "2026-05-29", "--data-root", str(tmp_path)]
         )
-        summary = m._run(args, client=client, now=now)
+        summary = m._run(args, client=client, now=now, sleep_fn=lambda _: None)
 
         assert summary.exit_code == 0
         assert len(summary.results) == 4
@@ -175,7 +176,7 @@ class TestRun:
              "--date", "2026-05-29",
              "--data-root", str(tmp_path)]
         )
-        summary = m._run(args, client=client, now=now)
+        summary = m._run(args, client=client, now=now, sleep_fn=lambda _: None)
 
         assert summary.exit_code == 1
         assert len(summary.results) == 1
@@ -195,7 +196,7 @@ class TestRun:
              "--date", "2026-05-30",  # 부처님오신날 휴장
              "--data-root", str(tmp_path)]
         )
-        summary = m._run(args, client=client, now=now)
+        summary = m._run(args, client=client, now=now, sleep_fn=lambda _: None)
 
         assert summary.exit_code == 0  # 휴장 = failure 아님
         assert summary.results[0].bars_count == 0
@@ -212,7 +213,7 @@ class TestRun:
         args = m._parse_args(
             ["--codes", "069500", "--data-root", str(tmp_path)]
         )
-        summary = m._run(args, client=client, now=now)
+        summary = m._run(args, client=client, now=now, sleep_fn=lambda _: None)
 
         assert summary.results[0].trade_date == date(2026, 5, 29)
         assert summary.results[0].bars_count == 30
@@ -230,7 +231,7 @@ class TestRun:
              "--data-root", str(tmp_path),
              "--manifest", str(manifest_path)]
         )
-        summary = m._run(args, client=client, now=now)
+        summary = m._run(args, client=client, now=now, sleep_fn=lambda _: None)
 
         assert summary.exit_code == 0
         assert manifest_path.exists()
@@ -251,3 +252,77 @@ class TestRunSummary:
         m = _import_script()
         s = m._RunSummary(results=(), failures=("X",))
         assert s.exit_code == 1
+
+
+# --------------------------------------------------------------------- #
+# Inter-asset sleep (ADR 0023 R3 mitigation — EGW00201 burst 회피)
+# --------------------------------------------------------------------- #
+class TestInterAssetSleep:
+    def test_sleep_called_n_minus_1_times_for_n_codes(
+        self, tmp_path: Path
+    ) -> None:
+        m = _import_script()
+        bodies = {code: _load_sample(code) for code in m._DEFAULT_CODES}
+        client = _FakeKISClient(bodies_by_code=bodies)
+        now = datetime(2026, 5, 30, 16, 0, tzinfo=KST)
+
+        sleeps: list[float] = []
+        args = m._parse_args(
+            ["--date", "2026-05-29", "--data-root", str(tmp_path)]
+        )
+        summary = m._run(
+            args, client=client, now=now, sleep_fn=lambda s: sleeps.append(s)
+        )
+
+        assert summary.exit_code == 0
+        # 4 codes → sleep 3회 (간격), 각 1.0초 (default).
+        assert sleeps == [1.0, 1.0, 1.0]
+
+    def test_sleep_zero_disables_pause(self, tmp_path: Path) -> None:
+        m = _import_script()
+        bodies = {"069500": _load_sample("069500")}
+        client = _FakeKISClient(bodies_by_code=bodies)
+        now = datetime(2026, 5, 30, 16, 0, tzinfo=KST)
+
+        sleeps: list[float] = []
+        args = m._parse_args(
+            ["--codes", "069500", "069500", "069500",
+             "--date", "2026-05-29",
+             "--data-root", str(tmp_path),
+             "--inter-asset-sleep-sec", "0"]
+        )
+        m._run(args, client=client, now=now,
+               sleep_fn=lambda s: sleeps.append(s))
+        assert sleeps == []
+
+    def test_custom_sleep_value_propagates(self, tmp_path: Path) -> None:
+        m = _import_script()
+        bodies = {"069500": _load_sample("069500")}
+        client = _FakeKISClient(bodies_by_code=bodies)
+        now = datetime(2026, 5, 30, 16, 0, tzinfo=KST)
+
+        sleeps: list[float] = []
+        args = m._parse_args(
+            ["--codes", "069500", "069500",
+             "--date", "2026-05-29",
+             "--data-root", str(tmp_path),
+             "--inter-asset-sleep-sec", "2.5"]
+        )
+        m._run(args, client=client, now=now,
+               sleep_fn=lambda s: sleeps.append(s))
+        assert sleeps == [2.5]
+
+    def test_single_code_no_sleep(self, tmp_path: Path) -> None:
+        m = _import_script()
+        bodies = {"069500": _load_sample("069500")}
+        client = _FakeKISClient(bodies_by_code=bodies)
+        now = datetime(2026, 5, 30, 16, 0, tzinfo=KST)
+
+        sleeps: list[float] = []
+        args = m._parse_args(
+            ["--codes", "069500", "--date", "2026-05-29",
+             "--data-root", str(tmp_path)]
+        )
+        m._run(args, client=client, now=now,
+               sleep_fn=lambda s: sleeps.append(s))
+        assert sleeps == []
