@@ -258,7 +258,7 @@ class TestRunSummary:
 # Inter-asset sleep (ADR 0023 R3 mitigation — EGW00201 burst 회피)
 # --------------------------------------------------------------------- #
 class TestInterAssetSleep:
-    def test_sleep_called_n_minus_1_times_for_n_codes(
+    def test_sleep_called_n_times_for_n_codes(
         self, tmp_path: Path
     ) -> None:
         m = _import_script()
@@ -275,8 +275,8 @@ class TestInterAssetSleep:
         )
 
         assert summary.exit_code == 0
-        # 4 codes → sleep 3회 (간격), 각 1.0초 (default).
-        assert sleeps == [1.0, 1.0, 1.0]
+        # 4 codes → sleep 4회 (첫 호출 포함, 연속 cron 호출 보호), 각 1.0초.
+        assert sleeps == [1.0, 1.0, 1.0, 1.0]
 
     def test_sleep_zero_disables_pause(self, tmp_path: Path) -> None:
         m = _import_script()
@@ -310,9 +310,10 @@ class TestInterAssetSleep:
         )
         m._run(args, client=client, now=now,
                sleep_fn=lambda s: sleeps.append(s))
-        assert sleeps == [2.5]
+        assert sleeps == [2.5, 2.5]
 
-    def test_single_code_no_sleep(self, tmp_path: Path) -> None:
+    def test_single_code_sleeps_once(self, tmp_path: Path) -> None:
+        """단발 종목도 첫 호출 전 1초 sleep — 연속 cron 호출 보호."""
         m = _import_script()
         bodies = {"069500": _load_sample("069500")}
         client = _FakeKISClient(bodies_by_code=bodies)
@@ -325,4 +326,4 @@ class TestInterAssetSleep:
         )
         m._run(args, client=client, now=now,
                sleep_fn=lambda s: sleeps.append(s))
-        assert sleeps == []
+        assert sleeps == [1.0]

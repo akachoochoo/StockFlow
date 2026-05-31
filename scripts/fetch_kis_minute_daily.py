@@ -163,10 +163,12 @@ def _run(
     """주문되어 받은 args + 외부 client + now 로 cron 본체 실행 (testable).
 
     - 각 code 마다 `_download_and_persist` 호출.
-    - 종목 간 `args.inter_asset_sleep_sec` 초 sleep (ADR 0023 R3 — KIS
-      EGW00201 "초당 거래건수 초과" 회피). 1종목 = 14 anchor 호출 + KIS real
-      20/s burst window 가 가득 → 다음 종목 첫 호출에서 EGW00201 trigger
-      관찰됨 (2026-05-31 실증). 1초 sleep 으로 buffer 비움.
+    - 매 종목 호출 전 `args.inter_asset_sleep_sec` 초 sleep (첫 호출 포함)
+      — ADR 0023 R3, KIS EGW00201 "초당 거래건수 초과" 회피. 1종목 = 14
+      anchor 호출 + KIS real 20/s burst window 가 가득 → 다음 종목 첫
+      호출에서 EGW00201 trigger 관찰 (2026-05-31 1차 실증). 또한 연속
+      cron 호출 시 직전 호출의 burst window 잔여 (~1초 미만) 가 첫 호출
+      을 trigger (2026-05-31 2차 실증) → 첫 호출 전에도 sleep 으로 보호.
     - 예외 발생 시 해당 code 만 실패 처리 + 다음 code 진행 (운영 단일
       종목 실패가 전체 cron 을 중단시키지 않도록).
     - 결과 stdout 로깅 (DRY-RUN, KPI 알림은 후속).
@@ -179,8 +181,8 @@ def _run(
     results: list[_StorageResult] = []
     failures: list[str] = []
 
-    for i, code in enumerate(args.codes):
-        if i > 0 and args.inter_asset_sleep_sec > 0:
+    for code in args.codes:
+        if args.inter_asset_sleep_sec > 0:
             sleep_fn(args.inter_asset_sleep_sec)
         try:
             result = _download_and_persist(
