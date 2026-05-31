@@ -57,6 +57,7 @@ def _download_and_persist(
     manifest_path: Path,
     now: datetime,
     holidays: frozenset[date] = frozenset(),
+    download_kwargs: dict[str, object] | None = None,
 ) -> _StorageResult:
     """단일 (asset_code, target_date) 다운로드 + CSV 저장 + manifest 갱신.
 
@@ -69,6 +70,9 @@ def _download_and_persist(
         manifest_path: manifest JSON 경로 (`data/historical/minute/manifest.json`).
         now: 현재 시각 (timezone-aware, 외부 주입 — CLAUDE.md §3.2).
         holidays: missing_dates 계산 시 제외할 휴장일.
+        download_kwargs: `_download_minute_bars` 추가 인자 (예:
+            `inter_anchor_sleep_sec` / `sleep_fn`). 기본 None = downloader
+            기본값 사용 (100ms anchor sleep + real time.sleep).
 
     Returns:
         `_StorageResult` — 호출자가 알림/로깅에 활용.
@@ -78,7 +82,10 @@ def _download_and_persist(
         - manifest 파일 갱신 (bars 가 비어있지 않은 경우).
     """
     bars = _download_minute_bars(
-        client, asset_code=asset_code, target_date=target_date
+        client,
+        asset_code=asset_code,
+        target_date=target_date,
+        **(download_kwargs or {}),  # type: ignore[arg-type]
     )
     csv_path = _csv_path_for(
         data_root=data_root, asset_code=asset_code, trade_date=target_date

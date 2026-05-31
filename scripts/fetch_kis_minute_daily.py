@@ -117,6 +117,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "buffer 비움."
         ),
     )
+    parser.add_argument(
+        "--inter-anchor-sleep-sec",
+        type=float,
+        default=0.1,
+        help=(
+            "anchor 호출 간 sleep 초 (ADR 0023 R3 4차 실증 박제 — "
+            "KISClient throttle 50ms 위 추가 50ms 안전 마진). 0 = "
+            "비활성. 기본 0.1초."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -192,6 +202,9 @@ def _run(
                 data_root=args.data_root,
                 manifest_path=manifest_path,
                 now=now,
+                download_kwargs={
+                    "inter_anchor_sleep_sec": args.inter_anchor_sleep_sec,
+                },
             )
         except Exception as exc:
             msg = f"{code}: {type(exc).__name__}: {exc}"

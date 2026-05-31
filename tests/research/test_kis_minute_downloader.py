@@ -160,6 +160,7 @@ class TestDownload:
             client,
             asset_code="069500",
             target_date=_SAMPLE_DATE,
+            sleep_fn=lambda _: None,
         )  # default 14 anchors
         assert len(bars) == 30
         assert len(client.calls) == 14
@@ -190,6 +191,7 @@ class TestDownload:
             client,
             asset_code="069500",
             target_date=date(2026, 5, 30),  # 휴장일
+            sleep_fn=lambda _: None,
         )
         assert bars == []
         # 호출은 정상 14회 (parser 가 행을 drop, 다운로더는 호출 자체는 skip 안 함).
@@ -220,6 +222,43 @@ class TestDownload:
         )
         assert len(bars) == 30
         assert {b.asset_code for b in bars} == {code}
+
+    def test_inter_anchor_sleep_called_n_minus_1_times(self) -> None:
+        """ADR 0023 R3 mitigation — anchor 간 sleep (첫 호출 후부터)."""
+        client = _FakeKISClient(bodies=[_load_sample("069500")])
+        sleeps: list[float] = []
+        _download_minute_bars(
+            client,
+            asset_code="069500",
+            target_date=_SAMPLE_DATE,
+            sleep_fn=lambda s: sleeps.append(s),
+        )  # default 14 anchors → 13 sleeps x 0.1s
+        assert sleeps == [0.1] * 13
+
+    def test_inter_anchor_sleep_zero_disables(self) -> None:
+        client = _FakeKISClient(bodies=[_load_sample("069500")])
+        sleeps: list[float] = []
+        _download_minute_bars(
+            client,
+            asset_code="069500",
+            target_date=_SAMPLE_DATE,
+            inter_anchor_sleep_sec=0.0,
+            sleep_fn=lambda s: sleeps.append(s),
+        )
+        assert sleeps == []
+
+    def test_inter_anchor_sleep_custom_value(self) -> None:
+        client = _FakeKISClient(bodies=[_load_sample("069500")])
+        sleeps: list[float] = []
+        _download_minute_bars(
+            client,
+            asset_code="069500",
+            target_date=_SAMPLE_DATE,
+            paging_anchors=("153000", "150000", "143000"),
+            inter_anchor_sleep_sec=0.25,
+            sleep_fn=lambda s: sleeps.append(s),
+        )
+        assert sleeps == [0.25, 0.25]
 
     def test_bar_ascending_invariant(self) -> None:
         client = _FakeKISClient(bodies=[_load_sample("069500")])

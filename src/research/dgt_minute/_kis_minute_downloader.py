@@ -20,12 +20,16 @@ CSV/manifest 통합은 1.2.1.b.3 산출 (별도 commit) — 본 모듈은 *raw K
 """
 from __future__ import annotations
 
+import time as _time
 from dataclasses import dataclass
 from datetime import date, time
 from decimal import Decimal  # noqa: TC003  -- dataclass field annotation runtime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from src.research.dgt_minute._kis_minute_models import _KISMinuteResponse
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # KIS endpoint constants (ADR 0020 §2.2 분봉 row 박제, 2026-05-31).
 _MINUTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
@@ -150,6 +154,8 @@ def _download_minute_bars(
     target_date: date,
     paging_anchors: tuple[str, ...] = _DEFAULT_PAGING_ANCHORS,
     include_past: bool = False,
+    inter_anchor_sleep_sec: float = 0.1,
+    sleep_fn: Callable[[float], None] = _time.sleep,
 ) -> list[_MinuteBar]:
     """`target_date` 의 1분봉 시계열 다운로드.
 
@@ -159,6 +165,10 @@ def _download_minute_bars(
         target_date: 다운로드할 거래일 (KST date).
         paging_anchors: HHMMSS anchor 시퀀스. 기본 14 anchor (15:30~09:00).
         include_past: `FID_PW_DATA_INCU_YN` ("Y"/"N"). 기본 "N".
+        inter_anchor_sleep_sec: anchor 호출 간 sleep 초 (ADR 0023 R3 mitigation,
+            EGW00201 burst 회피). 첫 호출 후부터 적용. 기본 100ms — KISClient
+            throttle 50ms (real) 위에 추가 50ms 안전 마진. 0 = 비활성.
+        sleep_fn: injectable for tests (noop 으로 빠른 검증).
 
     Returns:
         `(trade_date, trade_time)` ascending 정렬된 `_MinuteBar` 시퀀스.
@@ -169,7 +179,9 @@ def _download_minute_bars(
         pydantic.ValidationError: 응답 schema 위반 (KIS drift 알람).
     """
     seen: dict[tuple[date, time], _MinuteBar] = {}
-    for anchor in paging_anchors:
+    for i, anchor in enumerate(paging_anchors):
+        if i > 0 and inter_anchor_sleep_sec > 0:
+            sleep_fn(inter_anchor_sleep_sec)
         body = client.request(
             "GET",
             _MINUTE_PATH,

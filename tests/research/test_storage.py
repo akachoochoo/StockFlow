@@ -64,6 +64,7 @@ class TestDownloadAndPersist:
             data_root=tmp_path,
             manifest_path=manifest_path,
             now=now,
+            download_kwargs={"sleep_fn": lambda _: None},
         )
 
         assert result.bars_count == 30
@@ -102,6 +103,7 @@ class TestDownloadAndPersist:
             data_root=tmp_path,
             manifest_path=manifest_path,
             now=now,
+            download_kwargs={"sleep_fn": lambda _: None},
         )
 
         assert result.bars_count == 0
@@ -168,6 +170,7 @@ class TestDownloadAndPersist:
             data_root=tmp_path,
             manifest_path=manifest_path,
             now=now,
+            download_kwargs={"sleep_fn": lambda _: None},
         )
         # 다음 호출 — bodies 순환에 의해 mix 되지만 target_date 가 expected
         # date 와 매치되는 행만 추출 (parser 의 필터 동작 검증).
@@ -178,6 +181,7 @@ class TestDownloadAndPersist:
             data_root=tmp_path,
             manifest_path=manifest_path,
             now=now,
+            download_kwargs={"sleep_fn": lambda _: None},
         )
 
         m = _load_manifest(manifest_path)
