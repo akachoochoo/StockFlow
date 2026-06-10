@@ -77,6 +77,10 @@ Desktop.ini
 secrets/
 credentials/
 
+# KIS access_token disk cache (ADR 0012 R10 amendment, 2026-06-11).
+# chmod 0600 + auto-invalidate on perm violation. Never commit.
+.kis-token-cache*
+
 # ---------------------------------------------------------------------------
 # Project: data, logs, db
 # ---------------------------------------------------------------------------

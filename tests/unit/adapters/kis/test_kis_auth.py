@@ -246,3 +246,231 @@ class TestKisAuthSecretSafety:
         with pytest.raises(KISAuthError) as exc_info:
             auth.get_token()
         assert _SECRET_ACCESS_TOKEN not in str(exc_info.value)
+
+
+# ============================================================================
+# ADR 0012 R10 amendment (2026-06-11) — disk cache 보호장치 4건
+# ============================================================================
+import json
+import stat
+
+
+class TestKisAuthDiskCache:
+    """Disk cache opt-in (token_cache_path 인자). ADR 0012 R10 amendment 박제.
+
+    회귀 보호: cache path None 시 disk 동작 zero / in-memory 만.
+    """
+
+    @staticmethod
+    def _cache_path(tmp_path) -> object:  # noqa: ANN001  -- pytest fixture
+        return tmp_path / ".kis-token-cache.json"
+
+    def test_kis_cache_default_none_in_memory_only(self, tmp_path) -> None:  # noqa: ANN001
+        """token_cache_path 미지정 → 디스크 미사용 + 회귀 보장."""
+        http = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(config=_config(), http=http, clock=_MutableClock(_T0))
+        auth.get_token()
+        # cwd / tmp 어디에도 disk cache zero.
+        assert not (tmp_path / ".kis-token-cache.json").exists()
+
+    def test_kis_cache_save_on_issue_with_chmod_0600(self, tmp_path) -> None:  # noqa: ANN001
+        cache = self._cache_path(tmp_path)
+        http = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(
+            config=_config(),
+            http=http,
+            clock=_MutableClock(_T0),
+            token_cache_path=cache,
+        )
+        auth.get_token()
+        assert cache.exists()
+        mode = stat.S_IMODE(cache.stat().st_mode)
+        assert mode == 0o600, f"expected 0o600, got {mode:o}"
+        # 파일 내용 schema 검증.
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+        assert "access_token" in payload
+        assert "issued_at" in payload
+
+    def test_kis_cache_hit_zero_http(self, tmp_path) -> None:  # noqa: ANN001
+        """기존 cache 파일 → HTTP 호출 zero."""
+        cache = self._cache_path(tmp_path)
+        # First call: 발급 + write
+        http1 = _FakeHttp([_ok_token_response()])
+        auth1 = KISAuth(
+            config=_config(),
+            http=http1,
+            clock=_MutableClock(_T0),
+            token_cache_path=cache,
+        )
+        auth1.get_token()
+        assert len(http1.post_calls) == 1
+
+        # Second instance (process restart 시뮬) — 새 KISAuth, 같은 cache path.
+        http2 = _FakeHttp([])  # 응답 zero — HTTP 호출되면 IndexError
+        auth2 = KISAuth(
+            config=_config(),
+            http=http2,
+            clock=_MutableClock(_T0 + timedelta(minutes=5)),
+            token_cache_path=cache,
+        )
+        token = auth2.get_token()
+        assert token == _SECRET_ACCESS_TOKEN
+        assert len(http2.post_calls) == 0
+
+    def test_kis_cache_perm_enforced(self, tmp_path) -> None:  # noqa: ANN001
+        """0600 외 권한 → invalidate + 새 발급."""
+        cache = self._cache_path(tmp_path)
+        # 권한 0644 로 cache 위조.
+        payload = {
+            "access_token": "stolen",
+            "issued_at": _T0.isoformat(),
+            "wire_expired": None,
+        }
+        cache.write_text(json.dumps(payload), encoding="utf-8")
+        import os as _os
+        _os.chmod(cache, 0o644)
+
+        http = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(
+            config=_config(),
+            http=http,
+            clock=_MutableClock(_T0 + timedelta(minutes=5)),
+            token_cache_path=cache,
+        )
+        token = auth.get_token()
+        # stolen 토큰 거부 → 새 발급.
+        assert token == _SECRET_ACCESS_TOKEN
+        # 파일 invalidate (unlink) 됐을 것 → 새 발급 시 재생성 + 0600.
+        assert cache.exists()
+        assert stat.S_IMODE(cache.stat().st_mode) == 0o600
+
+    def test_kis_cache_ttl_expired_invalidates(self, tmp_path) -> None:  # noqa: ANN001
+        """TTL 만료된 cache → invalidate + 새 발급."""
+        cache = self._cache_path(tmp_path)
+        # cache 직접 작성 — TTL 초과 시점.
+        payload = {
+            "access_token": "expired_token",
+            "issued_at": _T0.isoformat(),
+            "wire_expired": None,
+        }
+        cache.write_text(json.dumps(payload), encoding="utf-8")
+        import os as _os
+        _os.chmod(cache, 0o600)
+
+        # Clock = _T0 + 23h+5min (TTL 초과)
+        http = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(
+            config=_config(),
+            http=http,
+            clock=_MutableClock(_T0 + timedelta(hours=23, minutes=5)),
+            token_cache_path=cache,
+        )
+        token = auth.get_token()
+        assert token == _SECRET_ACCESS_TOKEN
+        assert len(http.post_calls) == 1
+
+    def test_kis_cache_corrupt_json_invalidates(self, tmp_path) -> None:  # noqa: ANN001
+        """JSON 깨진 cache → invalidate + 새 발급."""
+        cache = self._cache_path(tmp_path)
+        cache.write_text("{not valid json", encoding="utf-8")
+        import os as _os
+        _os.chmod(cache, 0o600)
+
+        http = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(
+            config=_config(),
+            http=http,
+            clock=_MutableClock(_T0),
+            token_cache_path=cache,
+        )
+        token = auth.get_token()
+        assert token == _SECRET_ACCESS_TOKEN
+
+    def test_kis_cache_missing_field_invalidates(self, tmp_path) -> None:  # noqa: ANN001
+        """필수 필드 누락 → invalidate + 새 발급."""
+        cache = self._cache_path(tmp_path)
+        cache.write_text(json.dumps({"only": "this"}), encoding="utf-8")
+        import os as _os
+        _os.chmod(cache, 0o600)
+
+        http = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(
+            config=_config(),
+            http=http,
+            clock=_MutableClock(_T0),
+            token_cache_path=cache,
+        )
+        token = auth.get_token()
+        assert token == _SECRET_ACCESS_TOKEN
+
+    def test_kis_cache_naive_datetime_invalidates(self, tmp_path) -> None:  # noqa: ANN001
+        """timezone-aware 아닌 issued_at → invalidate."""
+        cache = self._cache_path(tmp_path)
+        payload = {
+            "access_token": "tok",
+            "issued_at": "2026-05-22T00:00:00",  # naive
+            "wire_expired": None,
+        }
+        cache.write_text(json.dumps(payload), encoding="utf-8")
+        import os as _os
+        _os.chmod(cache, 0o600)
+
+        http = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(
+            config=_config(),
+            http=http,
+            clock=_MutableClock(_T0),
+            token_cache_path=cache,
+        )
+        token = auth.get_token()
+        assert token == _SECRET_ACCESS_TOKEN
+
+    def test_kis_revoke_unlinks_cache_and_forces_reissue(self, tmp_path) -> None:  # noqa: ANN001
+        """revoke_cached_token → 파일 unlink + 다음 발급 강제."""
+        cache = self._cache_path(tmp_path)
+        # 1) 발급 + cache write
+        http1 = _FakeHttp([_ok_token_response()])
+        auth = KISAuth(
+            config=_config(),
+            http=http1,
+            clock=_MutableClock(_T0),
+            token_cache_path=cache,
+        )
+        auth.get_token()
+        assert cache.exists()
+
+        # 2) revoke
+        removed = auth.revoke_cached_token()
+        assert removed is True
+        assert not cache.exists()
+
+        # 3) 다음 get_token → 새 발급.
+        auth._http = _FakeHttp([_ok_token_response()])  # 새 응답 주입
+        token = auth.get_token()
+        assert token == _SECRET_ACCESS_TOKEN
+        assert cache.exists()
+
+    def test_kis_revoke_returns_false_when_nothing_cached(self, tmp_path) -> None:  # noqa: ANN001
+        cache = self._cache_path(tmp_path)
+        auth = KISAuth(
+            config=_config(),
+            http=_FakeHttp([]),
+            clock=_MutableClock(_T0),
+            token_cache_path=cache,
+        )
+        # 발급 zero, cache zero
+        assert auth.revoke_cached_token() is False
+
+
+class TestKisCachePathInGitignore:
+    """`.gitignore` 가 `.kis-token-cache*` 박제 (ADR 0012 R10 amendment 보호장치 #1)."""
+
+    def test_kis_cache_path_in_gitignore(self) -> None:
+        from pathlib import Path
+        gitignore = Path(__file__).resolve().parents[4] / ".gitignore"
+        assert gitignore.exists(), f".gitignore not found at {gitignore}"
+        text = gitignore.read_text(encoding="utf-8")
+        assert ".kis-token-cache" in text, (
+            ".gitignore must include .kis-token-cache* "
+            "(ADR 0012 R10 amendment 보호장치 #1)"
+        )

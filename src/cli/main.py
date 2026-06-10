@@ -1145,6 +1145,58 @@ def paper(
     )
 
 
+@main.command("kis-revoke-token")
+def kis_revoke_token() -> None:
+    """Revoke KIS access_token cache (disk + in-memory).
+
+    ADR 0012 R10 amendment (2026-06-11) — token leak 의심 시 첫 대응 도구.
+    Unlinks the disk cache (if `KIS_TOKEN_CACHE_PATH` env var is set) and
+    drops the in-memory copy. Next KIS call will re-issue from `/oauth2/tokenP`.
+
+    Output prints whether anything was removed; the token contents are NEVER
+    printed (CLAUDE.md §8.3 / ADR 0012 R10).
+    """
+    import os
+    from datetime import UTC, datetime
+
+    from src.adapters.kis._http import RequestsHttpClient
+    from src.adapters.kis.auth import KISAuth
+    from src.adapters.kis.config import KISConfig
+    from src.domain.exceptions import ConfigurationError
+
+    try:
+        config = KISConfig.from_env(os.environ)
+    except ConfigurationError as exc:
+        click.echo(
+            f"KIS config error — set credentials in .env: {exc}", err=True
+        )
+        raise click.exceptions.Exit(1) from exc
+
+    cache_path = composition._resolve_token_cache_path(os.environ)
+    if cache_path is None:
+        click.echo(
+            "KIS_TOKEN_CACHE_PATH not set — no disk cache to revoke.\n"
+            "(In-memory tokens are revoked at process exit. To enable disk\n"
+            "cache, set KIS_TOKEN_CACHE_PATH=.kis-token-cache.json in .env.)"
+        )
+        return
+
+    auth = KISAuth(
+        config=config,
+        http=RequestsHttpClient(),
+        clock=lambda: datetime.now(UTC),
+        token_cache_path=cache_path,
+    )
+    removed = auth.revoke_cached_token()
+    if removed:
+        click.echo(
+            f"KIS token cache revoked: {cache_path} "
+            f"(appkey={config.masked_appkey})"
+        )
+    else:
+        click.echo(f"No KIS token cache found at {cache_path} — nothing to revoke.")
+
+
 @main.command("kis-check")
 @click.option(
     "--code",

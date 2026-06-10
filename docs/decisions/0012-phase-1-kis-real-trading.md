@@ -294,6 +294,27 @@
   - **로그 출력 시 CLAUDE.md §8.3 "민감 정보 로깅 금지" 정합** — `appkey[:4]***` 형식 + access_token 전체 mask.
   - **Verification**: `pytest -k kis_credentials_not_logged` — 로그 출력에 appkey/appsecret/access_token 전체 노출 zero 검증. `pytest -k env_file_not_committed` — `.env` 가 `.gitignore` 등록 검증.
 
+  **Amendment (2026-06-11, ADR 0023 운영 발견 정합)** — access_token disk cache 옵션 허용 (defaultly off):
+  - **발견 배경**: cron backfill 운영에서 매 명령 = 새 process = 새 토큰 발급 → KIS "1분당 1회 토큰" 제한 + burst window cold start 비용 만성화 (2026-06-11 5회 fail 실증). 1일 1회 정상 cron 은 무영향이나 backfill / 디버깅 운영 안정성 zero.
+  - **허용 형태**: `KISAuth(token_cache_path: Path | None = None)`. `None` (기본) = 기존 in-memory only 동작 보존 — 회귀 zero. 명시 path 주입 시만 disk cache 활성.
+  - **보호장치 4건 (사용자 결정 라운드 박제, 2026-06-11)**:
+    1. **위치**: `.kis-token-cache.json` (repo root). `.gitignore` 박제 강제. macOS Time Machine 제외는 사용자 운영 책임.
+    2. **파일 권한**: chmod **0600** 강제 (owner read/write only). load 시 권한 검증 — 0600 아니면 거부 + 자동 invalidate (파일 unlink) + WARNING 로그.
+    3. **즉시 폐기 명령**: `trading kis-revoke-token` — 캐시 파일 unlink + 다음 호출 시 재발급. 토큰 leak 의심 시 첫 대응 도구.
+    4. **로깅 정합**: cache hit = silent / cache miss → 발급 = INFO + `appkey[:4]***` mask / invalidate = WARNING + 사유 (권한 위반 / 만료 / 명시 revoke). 토큰 내용 zero / 파일 path 외 메타데이터 zero.
+  - **TTL**: 기존 `_TOKEN_TTL = 23h` 보존. disk cache 도 동일 TTL — 만료 시 파일 unlink + 재발급.
+  - **§1.10 시나리오 E 정합 유지**: 토큰 갱신 실패 = hard halt 불변. disk cache load 실패 (권한/만료) = 새 발급 시도 → 실패 시 §1.6 #1 no-retry hard halt.
+  - **Verification 추가**:
+    - `pytest -k kis_cache_perm_enforced` — 0600 외 권한 파일 거부 + invalidate
+    - `pytest -k kis_cache_path_in_gitignore` — `.kis-token-cache*` 가 `.gitignore` 박제
+    - `pytest -k kis_cache_default_none` — `KISAuth(token_cache_path=None)` 기본 동작 회귀 zero
+    - `pytest -k kis_revoke_unlinks_cache` — revoke 명령이 파일 삭제 + 다음 발급 강제
+  - **Phase 1.1 Stage 8 영향**: live runner 도 disk cache 사용 가능 — 매 cron 토큰 발급 부담 zero. 다만 보호장치 4건 모두 활성 필수 (D16 추가 게이트).
+  - **거부된 대안**:
+    - (a) Daemon process 단일 보유 — §10.1 cron 단일 프로세스 패러다임 위반
+    - (b) chmod 0644 (other read) — ssh 공유 환경 leak 위험 (CLAUDE.md §9.3 정합 부족)
+    - (c) ~/Library/Application Support/StockFlow/ — macOS 종속, repo 경계 모호함
+
 ### 1.6 Phase 1 Operating Contract (CRITICAL strict — 0.11.e §1.6 패턴 + 실거래 추가, 정신 supersede 불가)
 
 본 phase 운영 중 모든 코드는 다음 contract 를 만족해야 함. **정신 (spirit) supersede 불가 — ADR 0011 D15 governance 정합**. Amendment 는 문구 정밀화 / 측정 가능 형태 추가만 허용.

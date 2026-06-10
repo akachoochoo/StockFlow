@@ -12,6 +12,7 @@ caller drives the two-step ``orchestrator.run_for_date`` →
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -210,6 +211,23 @@ class KISReadComponents:
     config: KISConfig
 
 
+def _resolve_token_cache_path(
+    environ: Mapping[str, str],
+) -> Path | None:
+    """ADR 0012 R10 amendment (2026-06-11) — env var resolver.
+
+    ``KIS_TOKEN_CACHE_PATH`` env var:
+    - 빈 문자열 / 미설정 → None (in-memory only, 회귀 zero, default).
+    - 명시 path → Path 객체. KISAuth 가 보호장치 4건 적용.
+
+    Path 가 relative 면 호출 cwd 기준 — 사용자 책임.
+    """
+    raw = environ.get("KIS_TOKEN_CACHE_PATH", "").strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
 def build_kis_read_components(
     environ: Mapping[str, str] | None = None,
     *,
@@ -247,7 +265,16 @@ def build_kis_read_components(
         clock if clock is not None else (lambda: datetime.now(UTC))
     )
 
-    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    # ADR 0012 R10 amendment (2026-06-11): opt-in disk token cache.
+    # 미지정 = None = in-memory only (회귀 zero). 명시 env var = path 사용.
+    cache_path = _resolve_token_cache_path(environ or os.environ)
+
+    auth = KISAuth(
+        config=config,
+        http=http_client,
+        clock=utc_clock,
+        token_cache_path=cache_path,
+    )
     client = KISClient(
         config=config, http=http_client, auth=auth, clock=utc_clock
     )
