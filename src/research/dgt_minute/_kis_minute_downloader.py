@@ -107,14 +107,21 @@ def _parse_kis_response(
     *,
     asset_code: str,
     expected_date: date,
-) -> list[_MinuteBar]:
-    """KIS raw body → 도메인 bar 시계열 (filtered, unordered).
+) -> tuple[list[_MinuteBar], frozenset[date]]:
+    """KIS raw body → (도메인 bar 시계열, dropped dates).
 
     - `rt_cd != "0"` → `_MinuteApiError` (msg1 surface).
-    - `stck_bsop_date != expected_date` 행 → drop (휴장일 호출 시 KIS 가
-      직전 거래일 반환; ADR 0023 §16 D16 + schema.md §5.3).
+    - `stck_bsop_date != expected_date` 행 → drop. KIS 가 휴장일 호출 시
+      직전 거래일 반환 (ADR 0023 §16 D16 + schema.md §5.3). 운영 관찰성
+      확보를 위해 (ADR 0023 R-신규, 2026-06-11 박제) dropped dates 를
+      frozenset 으로 반환 — caller 가 stderr WARN 등 디버깅 활용 가능.
     - schema 위반 → `pydantic.ValidationError` (caller 가 KIS schema drift
       알람용으로 catch 가능).
+
+    Returns:
+        (bars, dropped_dates) — bars 는 expected_date 일치 행만 포함.
+        dropped_dates = KIS 응답에 있었지만 expected_date 와 다른 일자 set.
+        휴장일 호출 = dropped_dates 가 직전 거래일 (1개 또는 그 이상).
     """
     response = _KISMinuteResponse.model_validate(body)
     if response.rt_cd != "0":
@@ -125,9 +132,10 @@ def _parse_kis_response(
 
     expected_str = expected_date.strftime("%Y%m%d")
     bars: list[_MinuteBar] = []
+    dropped_strs: set[str] = set()
     for raw in response.output2:
         if raw.stck_bsop_date != expected_str:
-            # 휴장일 호출 — KIS 가 직전 거래일 데이터 반환. 조용히 drop.
+            dropped_strs.add(raw.stck_bsop_date)
             continue
         hh = int(raw.stck_cntg_hour[0:2])
         mm = int(raw.stck_cntg_hour[2:4])
@@ -144,7 +152,10 @@ def _parse_kis_response(
                 volume=raw.cntg_vol,
             )
         )
-    return bars
+    dropped: frozenset[date] = frozenset(
+        date(int(s[0:4]), int(s[4:6]), int(s[6:8])) for s in dropped_strs
+    )
+    return bars, dropped
 
 
 def _download_minute_bars(
@@ -156,7 +167,7 @@ def _download_minute_bars(
     include_past: bool = False,
     inter_anchor_sleep_sec: float = 0.1,
     sleep_fn: Callable[[float], None] = _time.sleep,
-) -> list[_MinuteBar]:
+) -> tuple[list[_MinuteBar], frozenset[date]]:
     """`target_date` 의 1분봉 시계열 다운로드.
 
     Args:
@@ -171,14 +182,17 @@ def _download_minute_bars(
         sleep_fn: injectable for tests (noop 으로 빠른 검증).
 
     Returns:
-        `(trade_date, trade_time)` ascending 정렬된 `_MinuteBar` 시퀀스.
-        `target_date` 외 데이터는 필터됨 (휴장일 호출 시 빈 리스트).
+        (bars, dropped_dates) — bars 는 `(trade_date, trade_time)` ascending.
+        dropped_dates = 전체 anchor 호출에서 발견된, target_date 외의 모든
+        일자 union (ADR 0023 R-신규 — 운영 관찰성). 휴장일 호출 시 bars=[]
+        + dropped_dates 가 KIS 가 반환한 직전 거래일 정보.
 
     Raises:
         _MinuteApiError: KIS rt_cd != "0".
         pydantic.ValidationError: 응답 schema 위반 (KIS drift 알람).
     """
     seen: dict[tuple[date, time], _MinuteBar] = {}
+    all_dropped: set[date] = set()
     for i, anchor in enumerate(paging_anchors):
         if i > 0 and inter_anchor_sleep_sec > 0:
             sleep_fn(inter_anchor_sleep_sec)
@@ -194,10 +208,12 @@ def _download_minute_bars(
                 "FID_PW_DATA_INCU_YN": "Y" if include_past else "N",
             },
         )
-        page = _parse_kis_response(
+        page, dropped = _parse_kis_response(
             body, asset_code=asset_code, expected_date=target_date
         )
+        all_dropped.update(dropped)
         for bar in page:
             # setdefault = 첫 발견 유지 (보통 최신 anchor 가 최신 데이터).
             seen.setdefault((bar.trade_date, bar.trade_time), bar)
-    return sorted(seen.values(), key=lambda b: (b.trade_date, b.trade_time))
+    sorted_bars = sorted(seen.values(), key=lambda b: (b.trade_date, b.trade_time))
+    return sorted_bars, frozenset(all_dropped)

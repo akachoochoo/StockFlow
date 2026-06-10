@@ -91,7 +91,7 @@ class TestDownloadAndPersist:
         assert m.updated_at == now
 
     def test_holiday_call_zero_side_effect(self, tmp_path: Path) -> None:
-        """휴장일 호출 = CSV 미작성 + manifest 미갱신."""
+        """휴장일 호출 = CSV 미작성 + manifest 미갱신 + dropped_dates 기록."""
         client = _FakeKISClient(bodies=[_load_sample("069500")])
         now = datetime(2026, 5, 30, 16, 0, tzinfo=KST)
         manifest_path = tmp_path / "minute" / "manifest.json"
@@ -111,6 +111,27 @@ class TestDownloadAndPersist:
         assert not result.manifest_updated
         assert not result.csv_path.exists()
         assert not manifest_path.exists()
+        # ADR 0023 R-신규: KIS 가 반환한 직전 거래일 = dropped_dates 박제.
+        assert result.dropped_dates == (date(2026, 5, 29),)
+
+    def test_success_dropped_dates_empty(self, tmp_path: Path) -> None:
+        """정상 영업일 + 일치 응답 = dropped_dates 빈 tuple."""
+        client = _FakeKISClient(bodies=[_load_sample("069500")])
+        now = datetime(2026, 5, 30, 16, 0, tzinfo=KST)
+        manifest_path = tmp_path / "minute" / "manifest.json"
+
+        result = _download_and_persist(
+            client,
+            asset_code="069500",
+            target_date=_SAMPLE_DATE,
+            data_root=tmp_path,
+            manifest_path=manifest_path,
+            now=now,
+            download_kwargs={"sleep_fn": lambda _: None},
+        )
+
+        assert result.csv_written
+        assert result.dropped_dates == ()
 
     def test_idempotent_rerun(self, tmp_path: Path) -> None:
         """같은 (code, date) 재호출 = CSV overwrite, manifest 누적 zero."""

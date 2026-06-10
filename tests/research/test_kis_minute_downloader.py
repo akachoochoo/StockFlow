@@ -88,17 +88,18 @@ class _FakeKISClient:
 class TestParse:
     def test_parses_069500_sample_into_30_bars(self) -> None:
         body = _load_sample("069500")
-        bars = _parse_kis_response(
+        bars, dropped = _parse_kis_response(
             body, asset_code="069500", expected_date=_SAMPLE_DATE
         )
         assert len(bars) == 30
+        # 정상 일자 응답 → dropped 빈 set.
+        assert dropped == frozenset()
 
     def test_bar_fields_filled_from_sample(self) -> None:
         body = _load_sample("069500")
-        bars = _parse_kis_response(
+        bars, _ = _parse_kis_response(
             body, asset_code="069500", expected_date=_SAMPLE_DATE
         )
-        # First bar in returned list mirrors KIS output2[0] = 15:30.
         first = next(b for b in bars if b.trade_time.hour == 15 and b.trade_time.minute == 30)
         assert first.asset_code == "069500"
         assert first.trade_date == _SAMPLE_DATE
@@ -109,14 +110,27 @@ class TestParse:
         assert first.volume == 165274
 
     def test_target_date_mismatch_drops_all(self) -> None:
-        """휴장일 호출 시뮬 — KIS 가 직전 거래일 데이터 반환."""
+        """휴장일 호출 시뮬 — KIS 가 직전 거래일 데이터 반환, dropped 에 기록."""
         body = _load_sample("069500")
-        bars = _parse_kis_response(
+        bars, dropped = _parse_kis_response(
             body,
             asset_code="069500",
             expected_date=date(2026, 5, 30),  # 부처님오신날 휴장
         )
         assert bars == []
+        # KIS 가 반환한 일자 (sample 의 stck_bsop_date=20260529) = dropped 에 박제.
+        assert dropped == frozenset({_SAMPLE_DATE})
+
+    def test_dropped_contains_response_date_on_mismatch(self) -> None:
+        """KIS 응답 일자가 dropped set 에 정확히 박제 (운영 관찰성 핵심)."""
+        body = _load_sample("069500")
+        bars, dropped = _parse_kis_response(
+            body,
+            asset_code="069500",
+            expected_date=date(2026, 6, 4),  # 임시공휴 가정
+        )
+        assert bars == []
+        assert dropped == frozenset({date(2026, 5, 29)})
 
     def test_rt_cd_non_zero_raises(self) -> None:
         body = _load_sample("069500")
@@ -143,20 +157,21 @@ class TestParse:
 class TestDownload:
     def test_single_anchor_returns_30_bars_ascending(self) -> None:
         client = _FakeKISClient(bodies=[_load_sample("069500")])
-        bars = _download_minute_bars(
+        bars, dropped = _download_minute_bars(
             client,
             asset_code="069500",
             target_date=_SAMPLE_DATE,
             paging_anchors=("153000",),
         )
         assert len(bars) == 30
+        assert dropped == frozenset()
         times = [(b.trade_time.hour, b.trade_time.minute) for b in bars]
         assert times == sorted(times), "result must be ascending by trade_time"
 
     def test_multiple_anchors_dedup_to_30(self) -> None:
         """같은 sample 을 14 anchor 모두 반환 → dedup 후 30봉."""
         client = _FakeKISClient(bodies=[_load_sample("069500")])
-        bars = _download_minute_bars(
+        bars, _ = _download_minute_bars(
             client,
             asset_code="069500",
             target_date=_SAMPLE_DATE,
@@ -187,7 +202,7 @@ class TestDownload:
 
     def test_holiday_call_returns_empty(self) -> None:
         client = _FakeKISClient(bodies=[_load_sample("069500")])
-        bars = _download_minute_bars(
+        bars, dropped = _download_minute_bars(
             client,
             asset_code="069500",
             target_date=date(2026, 5, 30),  # 휴장일
@@ -196,6 +211,8 @@ class TestDownload:
         assert bars == []
         # 호출은 정상 14회 (parser 가 행을 drop, 다운로더는 호출 자체는 skip 안 함).
         assert len(client.calls) == 14
+        # ADR 0023 R-신규: KIS 가 반환한 직전 거래일 일자가 dropped 에 박제.
+        assert dropped == frozenset({_SAMPLE_DATE})
 
     def test_rt_cd_error_propagates(self) -> None:
         body = _load_sample("069500")
@@ -214,7 +231,7 @@ class TestDownload:
     def test_4_assets_all_parse(self, code: str) -> None:
         """4종 모두 동일 schema → 30봉 ascending 반환."""
         client = _FakeKISClient(bodies=[_load_sample(code)])
-        bars = _download_minute_bars(
+        bars, _ = _download_minute_bars(
             client,
             asset_code=code,
             target_date=_SAMPLE_DATE,
@@ -262,7 +279,7 @@ class TestDownload:
 
     def test_bar_ascending_invariant(self) -> None:
         client = _FakeKISClient(bodies=[_load_sample("069500")])
-        bars = _download_minute_bars(
+        bars, _ = _download_minute_bars(
             client,
             asset_code="069500",
             target_date=_SAMPLE_DATE,

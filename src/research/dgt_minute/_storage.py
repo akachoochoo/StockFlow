@@ -46,6 +46,10 @@ class _StorageResult:
     csv_path: Path
     csv_written: bool
     manifest_updated: bool
+    # KIS 가 응답에 포함했지만 target_date 와 mismatch 된 일자 union (ADR 0023
+    # R-신규, 2026-06-11). 휴장일 호출 시 직전 거래일 일자 = 운영 디버깅 단서.
+    # 정상 영업일 + 일치 응답 시 빈 tuple. caller 가 stderr WARN 등 활용.
+    dropped_dates: tuple[date, ...] = ()
 
 
 def _download_and_persist(
@@ -81,12 +85,13 @@ def _download_and_persist(
         - CSV 파일 작성 (bars 가 비어있지 않은 경우).
         - manifest 파일 갱신 (bars 가 비어있지 않은 경우).
     """
-    bars = _download_minute_bars(
+    bars, dropped_set = _download_minute_bars(
         client,
         asset_code=asset_code,
         target_date=target_date,
         **(download_kwargs or {}),  # type: ignore[arg-type]
     )
+    dropped_dates = tuple(sorted(dropped_set))
     csv_path = _csv_path_for(
         data_root=data_root, asset_code=asset_code, trade_date=target_date
     )
@@ -100,6 +105,7 @@ def _download_and_persist(
             csv_path=csv_path,
             csv_written=False,
             manifest_updated=False,
+            dropped_dates=dropped_dates,
         )
 
     _write_minute_csv(bars, csv_path)
@@ -122,4 +128,5 @@ def _download_and_persist(
         csv_path=csv_path,
         csv_written=True,
         manifest_updated=True,
+        dropped_dates=dropped_dates,
     )

@@ -213,14 +213,22 @@ def _run(
             continue
 
         results.append(result)
-        status = (
-            "OK"
-            if result.csv_written
-            else "SKIP (holiday or empty)"
-        )
+        # ADR 0023 R-신규 (2026-06-11): SKIP 시 KIS 가 반환한 다른 일자
+        # (dropped_dates) 를 stdout 에 명시 → 휴장 vs KIS stale data vs
+        # 운영 사고 진단 가능.
+        if result.csv_written:
+            status = "OK"
+            detail = f"bars={result.bars_count} csv={result.csv_path}"
+        else:
+            status = "SKIP (holiday or empty)"
+            dropped = ",".join(d.isoformat() for d in result.dropped_dates)
+            detail = (
+                f"bars=0 kis_returned_dates=[{dropped}] csv={result.csv_path}"
+                if dropped
+                else f"bars=0 csv={result.csv_path}"
+            )
         print(
-            f"{status} {code} {result.trade_date} "
-            f"bars={result.bars_count} csv={result.csv_path}",
+            f"{status} {code} {result.trade_date} {detail}",
             file=sys.stdout,
         )
 
