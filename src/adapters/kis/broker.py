@@ -37,6 +37,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
+from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from src.adapters.kis._client import KISClient
 
 _logger = logging.getLogger(__name__)
+_KST = ZoneInfo("Asia/Seoul")
 
 # inquire-balance endpoint + TR_ID (실; PAPER conversion happens in KISClient).
 _BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
@@ -335,7 +337,7 @@ class KISBroker:
             # Accepted-but-no-ODNO is not expected post-place; nothing to query.
             return existing
 
-        ymd = existing.submitted_at.date().strftime("%Y%m%d")
+        ymd = existing.submitted_at.astimezone(_KST).date().strftime("%Y%m%d")
         body = self._client.request(
             "GET",
             _CCLD_PATH,

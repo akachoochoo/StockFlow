@@ -60,15 +60,23 @@ mkdir -p "$GRID_DRYRUN_LOG_DIR"
 LOG_DATE="$(date '+%Y-%m-%d')"
 LOG_FILE="$GRID_DRYRUN_LOG_DIR/grid-dry-run-${LOG_DATE}.log"
 
-# --- 단일 인스턴스 (portable mkdir lock — macOS + Linux 동일) -------------
+# --- 단일 인스턴스 (portable mkdir lock + PID stale detection) ------------
 LOCK_DIR="$GRID_DRYRUN_LOG_DIR/grid-dry-run.lock.d"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] ⚠ 이미 실행 중 (lock=$LOCK_DIR) — skip" \
+    _lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [[ -n "$_lock_pid" ]] && kill -0 "$_lock_pid" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] ⚠ 이미 실행 중 (lock=$LOCK_DIR, pid=$_lock_pid) — skip" \
+            | tee -a "$LOG_FILE" >&2
+        exit 0
+    fi
+    echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] ⚠ Stale lock (pid=$_lock_pid dead) — clearing $LOCK_DIR" \
         | tee -a "$LOG_FILE" >&2
-    exit 0
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR" || { echo "lock 재획득 실패" | tee -a "$LOG_FILE" >&2; exit 1; }
 fi
+echo $$ > "$LOCK_DIR/pid"
 # trap: 종료 시 lock 해제 (정상 / 오류 모두).
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+trap 'rm -rf "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 # --- .env 로드 (KIS_PAPER_APPKEY 등) --------------------------------------
 if [[ -f .env ]]; then

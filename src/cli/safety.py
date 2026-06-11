@@ -100,24 +100,36 @@ def _is_pid_alive(pid: int) -> bool:
 
 
 def acquire_lock(path: Path | str | None = None) -> Path:
-    """Acquire the trading-system lock file.
+    """Acquire the trading-system lock file (atomic O_EXCL create).
 
     Returns the resolved path written. Raises ConcurrentRunError when a
     different live process already holds the lock; cleans stale lock files
     automatically when the recorded PID is dead.
+
+    Atomicity: ``O_CREAT|O_EXCL`` guarantees only one process creates the file;
+    the prior ``exists()`` → ``write_text()`` pattern had a TOCTOU race.
     """
     lock_path = Path(path) if path is not None else default_lock_path()
     our_pid = os.getpid()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if lock_path.exists():
+    for _ in range(2):  # at most one stale-clear retry
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "w") as f:
+                f.write(f"{our_pid}\n")
+            return lock_path
+
         try:
             existing_pid = int(lock_path.read_text().strip() or "0")
-        except ValueError:
-            existing_pid = 0  # garbage → treat as stale
+        except (ValueError, FileNotFoundError):
+            existing_pid = 0
 
         if existing_pid == our_pid:
-            # Same process re-acquiring (e.g. nested call) — idempotent.
-            return lock_path
+            return lock_path  # same process re-acquiring (idempotent)
 
         if _is_pid_alive(existing_pid):
             raise ConcurrentRunError(
@@ -128,11 +140,11 @@ def acquire_lock(path: Path | str | None = None) -> Path:
             "Stale lock file %s (pid=%s no longer alive) — clearing.",
             lock_path, existing_pid,
         )
-        lock_path.unlink()
+        lock_path.unlink(missing_ok=True)
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(f"{our_pid}\n")
-    return lock_path
+    raise ConcurrentRunError(
+        f"Failed to acquire lock {lock_path} after stale clear (race condition)."
+    )
 
 
 def release_lock(path: Path | str | None = None) -> None:
