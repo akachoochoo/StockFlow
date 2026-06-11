@@ -8,6 +8,7 @@ only — never float (§2.3). All datetimes are timezone-aware UTC (§3.1).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -436,6 +437,22 @@ class BrokerHolding(ValueObject):
     @classmethod
     def _coerce_decimal(cls, v: object) -> Decimal:
         return _to_decimal(v)
+
+
+@dataclass(frozen=True)
+class GridHolding:
+    """Slot-free aggregate for DGT grid trades (ADR 0022 §12 D19).
+
+    quantity + weighted avg_price + cost_basis for one asset.
+    Distinct from Position (slot-based) and BrokerHolding (broker read-only view).
+    Frozen — replace via dataclasses.replace().
+    """
+
+    asset: Asset
+    quantity: Decimal  # >= 0 (0 means removed from holdings dict)
+    avg_price: Decimal  # weighted average of BUY fills
+    cost_basis: Decimal  # quantity * avg_price
+    last_buy_at: datetime | None
 
 
 class OHLCV(ValueObject):

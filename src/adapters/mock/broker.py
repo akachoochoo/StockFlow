@@ -30,6 +30,7 @@ from src.domain.fills import apply_buy_fill, apply_sell_fill
 from src.domain.models import (
     Balance,
     BrokerHolding,
+    GridHolding,
     Money,
     Order,
     OrderResult,
@@ -44,22 +45,6 @@ if TYPE_CHECKING:
 
     from src.domain.models import Asset, OrderRequest, Position, SupportSlot
 
-
-@dataclass(frozen=True)
-class _GridHolding:
-    """Internal grid-strategy holding (ADR 0022 §12 D19).
-
-    Slot-free aggregate for DGT grid trades — quantity + weighted avg_price +
-    cost_basis (실현 P&L 계산은 GridRunner 책임, 본 holding 은 잔량만 추적).
-    Distinct from :class:`Position` (slot-based split) and :class:`BrokerHolding`
-    (read-only view, qty > 0 강제). Frozen — replace via :func:`replace`.
-    """
-
-    asset: Asset
-    quantity: Decimal  # >= 0 (0 면 dict 에서 제거)
-    avg_price: Decimal  # weighted avg of BUY fills
-    cost_basis: Decimal  # quantity * avg_price (정밀도 유지)
-    last_buy_at: datetime | None
 
 
 class MockBroker:
@@ -106,7 +91,7 @@ class MockBroker:
         self._positions: dict[str, Position] = {}
         # ADR 0022 §12 D19 — DGT grid holdings (slot 우회). split Position 과
         # 분리; 같은 asset 에 동시 holding 금지 (apply 단계 가드).
-        self._grid_holdings: dict[str, _GridHolding] = {}
+        self._grid_holdings: dict[str, GridHolding] = {}
         self._orders: dict[str, Order] = {}
         self._next_broker_order_id: int = 1
         self._clock = clock
@@ -131,7 +116,7 @@ class MockBroker:
         # Mirror of get_positions but as the aggregated BrokerHolding view
         # (code + quantity + avg_price, no split-slot structure) used for
         # reconciliation (CLAUDE.md §11.2). Only non-empty holdings (qty > 0).
-        # ADR 0022 §12 D19: combines split Position 과 grid _GridHolding —
+        # ADR 0022 §12 D19: combines split Position 과 grid GridHolding —
         # 두 dict 은 mutual exclusion (같은 asset_fqn 에 동시 존재 불가, apply
         # 단계 가드).
         split_holdings = [
@@ -393,7 +378,7 @@ class MockBroker:
             )
         existing = self._grid_holdings.get(asset.fqn)
         if existing is None:
-            self._grid_holdings[asset.fqn] = _GridHolding(
+            self._grid_holdings[asset.fqn] = GridHolding(
                 asset=asset,
                 quantity=filled_qty,
                 avg_price=filled_price,
@@ -448,7 +433,7 @@ class MockBroker:
             cost_basis=new_cost,
         )
 
-    def get_grid_holding(self, asset_fqn: str) -> _GridHolding | None:
+    def get_grid_holding(self, asset_fqn: str) -> GridHolding | None:
         """Return the current grid holding for ``asset_fqn`` (or None).
 
         ADR 0022 §12 D19. dry-run/paper composition 에서 GridRunner 가 다음
@@ -456,7 +441,7 @@ class MockBroker:
         """
         return self._grid_holdings.get(asset_fqn)
 
-    def set_grid_holding(self, holding: _GridHolding) -> None:
+    def set_grid_holding(self, holding: GridHolding) -> None:
         """Inject a grid holding (state restoration on cron resume).
 
         ADR §10.3 / §10.7 paper trading composition 정합 — set_position 와

@@ -11,7 +11,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.adapters.mock.broker import MockBroker, _GridHolding
+from src.adapters.mock.broker import MockBroker
 from src.domain.exceptions import BrokerConnectionError
 from src.domain.models import (
     Asset,
@@ -19,6 +19,7 @@ from src.domain.models import (
     Balance,
     Currency,
     Exchange,
+    GridHolding,
     Market,
     Money,
     OrderRequest,
@@ -220,7 +221,7 @@ class TestMutualExclusion:
         )
         with pytest.raises(BrokerConnectionError, match="mutual exclusion"):
             broker.set_grid_holding(
-                _GridHolding(
+                GridHolding(
                     asset=asset,
                     quantity=Decimal("5"),
                     avg_price=Decimal("29000"),
@@ -235,7 +236,7 @@ class TestStateInjection:
         broker = _broker()
         asset = _asset()
         broker.set_grid_holding(
-            _GridHolding(
+            GridHolding(
                 asset=asset,
                 quantity=Decimal("10"),
                 avg_price=Decimal("30000"),

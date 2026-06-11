@@ -28,7 +28,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from src.domain.cost_model import KoreanMarketCostModel
-from src.domain.models import Money, OrderRequest, OrderSide, OrderStatus, OrderType
+from src.domain.models import GridHolding, Money, OrderRequest, OrderSide, OrderStatus, OrderType
 from src.domain.order_keys import build_grid_order_key
 from src.domain.strategies.grid import (
     GridDecision,
@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
 
-    from src.adapters.mock.broker import _GridHolding
     from src.domain.models import OHLCV, Asset
     from src.domain.strategies.grid import GridConfig
     from src.ports.broker import BrokerPort
@@ -382,7 +381,7 @@ def reconstruct_grid_broker_state(
     initial_capital: Money,
     decisions: list[GridDecision],
     last_buy_at: datetime | None = None,
-) -> tuple[Money, _GridHolding | None]:
+) -> tuple[Money, GridHolding | None]:
     """Replay grid_decisions → (cash, grid_holding) for cron-mode state restore.
 
     Phase 0 dry-run/paper composition: MockBroker 가 in-memory 라 process 간
@@ -407,11 +406,6 @@ def reconstruct_grid_broker_state(
         - 매도 시 평균가 (avg_price) 유지 (FIFO 아님, average cost).
         - 시퀀스가 인과적으로 일관 (sell qty <= 보유 qty).
     """
-    # 지연 import — adapters 의존 (composition 경계 정합). use_case 가 adapter
-    # 의 private 클래스를 알아야 하는 이유: MockBroker 가 dry-run 의 정본
-    # broker 라 별도 GridHolding 도메인 모델 없이 직접 사용.
-    from src.adapters.mock.broker import _GridHolding as _GH  # noqa: PLC0415
-
     cash = initial_capital.amount
     quantity = Decimal("0")
     avg_price = Decimal("0")
@@ -447,7 +441,7 @@ def reconstruct_grid_broker_state(
     new_cash = Money(amount=cash, currency=initial_capital.currency)
     if quantity == 0:
         return new_cash, None
-    return new_cash, _GH(
+    return new_cash, GridHolding(
         asset=asset,
         quantity=quantity,
         avg_price=avg_price,

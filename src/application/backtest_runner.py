@@ -269,9 +269,7 @@ class BacktestRunner:
             assert value is not None, "BacktestRunner did not set the clock"
             return value
 
-        # Lazy import to avoid circular dependency
-        # (src.cli.__init__ → main → backtest_runner → composition).
-        from src.cli.composition import (
+        from src.application.strategy_factories import (  # noqa: PLC0415
             build_asset_contexts,
             create_buy_strategy,
             slot_model_for_buy_strategy,
