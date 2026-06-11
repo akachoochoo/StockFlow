@@ -119,9 +119,15 @@ if [ -d "src/research/dgt_minute" ]; then
   fi
 fi
 
+# NOTE (ADR 0023 §18.2 D21 — 2026-06-12): tests/ 는 의도적으로 이 검사에서 제외.
+# tests/unit/ 파일이 src.research.* 를 import 하는 것은 활성 연구 overlay 기간 중
+# 허용 (inner ring src/ 코드가 오염되지 않는 한). 아카이브 결정 라운드 시
+# 해당 overlay 를 import 하는 tests/ 파일을 tests/research/ 로 이동하거나
+# 삭제하는 것을 아카이브 작업의 일부로 수행.
+
 if [ "$violations" -gt 0 ]; then
   echo "FAIL: namespace discipline violated ($violations inner ring(s))"
   exit 1
 fi
 
-echo "OK: namespace discipline preserved (7-ring grep + dgt/visualization/dynamic_adjustment intra-research isolation)"
+echo "OK: namespace discipline preserved (7-ring grep + dgt/visualization/dynamic_adjustment/dgt_minute intra-research isolation)"
