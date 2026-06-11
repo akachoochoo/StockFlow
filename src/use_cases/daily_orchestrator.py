@@ -414,7 +414,23 @@ class DailyOrchestrator:
         except BrokerConnectionError as e:
             recovered = self._try_recover_order(buy_idem_key)
             if recovered is None:
-                return self._handle_no_buy(
+                # Persist a PENDING record so that the broker's dedup check
+                # (broker.py: PENDING+no-ODNO → StateMismatchError) blocks a
+                # same-day re-POST that could create a duplicate live order.
+                # The PendingSettler will flag this as lost if it stays PENDING
+                # into the next session (CLAUDE.md §4.3).
+                pending_result = OrderResult(
+                    idempotency_key=buy_idem_key,
+                    asset=request.asset,
+                    broker_order_id=None,
+                    status=OrderStatus.PENDING,
+                    filled_quantity=Decimal(0),
+                    filled_price=None,
+                    submitted_at=as_of,
+                    filled_at=None,
+                )
+                pending_order = Order.from_request_result(request, pending_result)
+                return self._handle_no_buy_with_order(
                     ctx=ctx,
                     as_of=as_of,
                     today=today,
@@ -431,6 +447,7 @@ class DailyOrchestrator:
                         "idempotency_key": buy_idem_key,
                         "error": str(e),
                     },
+                    extra_orders=[pending_order],
                 )
             order_result = recovered
         except BrokerOrderError as e:
@@ -581,9 +598,24 @@ class DailyOrchestrator:
             try:
                 result = self._broker.place_order(request)
             except BrokerConnectionError as e:
+                # Same rationale as BUY timeout: persist PENDING so that
+                # same-day re-POST is blocked at broker dedup (CLAUDE.md §4.3).
+                pending_sell_result = OrderResult(
+                    idempotency_key=sell_idem_key,
+                    asset=request.asset,
+                    broker_order_id=None,
+                    status=OrderStatus.PENDING,
+                    filled_quantity=Decimal(0),
+                    filled_price=None,
+                    submitted_at=self._clock(),
+                    filled_at=None,
+                )
+                pending_sell_order = Order.from_request_result(
+                    request, pending_sell_result
+                )
                 return _SellLoopOutcome(
                     sell_actions=sell_actions,
-                    sell_orders=sell_orders,
+                    sell_orders=[*sell_orders, pending_sell_order],
                     abort=(SkipReason.BROKER_TIMEOUT, str(e), sd.slot_number),
                 )
             except BrokerOrderError as e:

@@ -31,7 +31,7 @@ import pytest
 from src.adapters.kis._client import KISApiError
 from src.adapters.kis.broker import KISBroker
 from src.adapters.kis.config import KISConfig, TradingMode
-from src.domain.exceptions import BrokerConnectionError, BrokerOrderError
+from src.domain.exceptions import BrokerConnectionError, BrokerOrderError, StateMismatchError
 from src.domain.models import (
     Asset,
     AssetClass,
@@ -403,6 +403,31 @@ class TestKisWriteTimeoutNoRetry:
         with pytest.raises(BrokerConnectionError):
             broker.place_order(_buy_request())
         assert len(client.calls) == 1
+
+    def test_kis_write_pending_no_odno_raises_state_mismatch(self) -> None:
+        """PENDING record with broker_order_id=None → StateMismatchError (timeout limbo).
+
+        Caller already persisted a PENDING row after a prior timeout (CLAUDE.md §4.3).
+        A same-day re-POST must be blocked before touching the network.
+        """
+        store = _FakeOrderStore()
+        store.add(
+            OrderResult(
+                idempotency_key="idem-buy-1",
+                asset=_asset(),
+                broker_order_id=None,
+                status=OrderStatus.PENDING,
+                filled_quantity=Decimal(0),
+                filled_price=None,
+                submitted_at=_FIXED_NOW,
+                filled_at=None,
+            )
+        )
+        client = _FakeKISClient([_order_body()])
+        broker = _broker(client, store)
+        with pytest.raises(StateMismatchError, match="timeout limbo"):
+            broker.place_order(_buy_request(key="idem-buy-1"))
+        assert len(client.post_calls()) == 0  # no re-POST
 
 
 # ---------------------------------------------------------------------------

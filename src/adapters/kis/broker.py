@@ -47,7 +47,11 @@ from src.adapters.kis.models import (
     KISCcldResponse,
     KISOrderResponse,
 )
-from src.domain.exceptions import BrokerConnectionError, BrokerOrderError
+from src.domain.exceptions import (
+    BrokerConnectionError,
+    BrokerOrderError,
+    StateMismatchError,
+)
 from src.domain.models import (
     Balance,
     BrokerHolding,
@@ -235,15 +239,29 @@ class KISBroker:
         store = self._require_order_store("place_order")
 
         existing = store.find_by_idempotency_key(request.idempotency_key)
-        if existing is not None and existing.broker_order_id is not None:
-            # Already at the broker — re-fetch, never re-POST (idempotency).
-            result = self.get_order_status(request.idempotency_key)
-            if result is None:  # pragma: no cover - store invariant
-                raise BrokerOrderError(
-                    "place_order dedup: order_store has the key but "
-                    "get_order_status returned None (inconsistent store)"
+        if existing is not None:
+            if existing.broker_order_id is not None:
+                # Already at the broker — re-fetch, never re-POST (idempotency).
+                result = self.get_order_status(request.idempotency_key)
+                if result is None:  # pragma: no cover - store invariant
+                    raise BrokerOrderError(
+                        "place_order dedup: order_store has the key but "
+                        "get_order_status returned None (inconsistent store)"
+                    )
+                return result
+            if existing.status is OrderStatus.PENDING:
+                # Timeout limbo: a POST was attempted but we lost the broker
+                # response (BrokerConnectionError). broker_order_id is None so
+                # we cannot query KIS for the outcome. Do NOT re-POST — the
+                # order may have reached KIS already. Halt for manual review.
+                raise StateMismatchError(
+                    f"place_order: idempotency_key={request.idempotency_key!r} "
+                    "exists as PENDING with no broker_order_id — "
+                    "possible timeout limbo; manual reconciliation required "
+                    "before re-running (CLAUDE.md §4.3)."
                 )
-            return result
+            # status is REJECTED/UNKNOWN/CANCELED/EXPIRED — definitively not at
+            # broker; allow re-POST with the same deterministic key.
 
         if request.order_type is not OrderType.LIMIT:
             raise BrokerOrderError(

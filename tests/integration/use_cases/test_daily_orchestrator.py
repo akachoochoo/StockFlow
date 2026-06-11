@@ -997,8 +997,9 @@ class TestPersistence:
         assert uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30:buy:1") is None
         assert uow.positions.get(asset.fqn) is None
 
-    def test_broker_timeout_with_no_recovery_skips_order_save(self):
-        # BrokerConnectionError + recovery returns None → no Order persisted.
+    def test_broker_timeout_with_no_recovery_saves_pending_order(self):
+        # BrokerConnectionError + recovery returns None → PENDING Order IS persisted
+        # so same-day re-POST is blocked at broker dedup (CLAUDE.md §4.3).
         asset = _asset()
         clock_at = _utc_after_close(TODAY)
         bars = [_bar(asset, date(2026, 4, 29), "35000")]
@@ -1018,11 +1019,12 @@ class TestPersistence:
         decisions = orch.run_for_date(TODAY)
         decision = decisions[0]
         assert decision.skip_reason is SkipReason.BROKER_TIMEOUT
-        # Decision saved, but no Order or Position
         assert len(uow.decisions.list_by_date_range(TODAY, TODAY)) == 1
-        assert uow.orders.get_by_idempotency_key(
-            "KRX:069500:2026-04-30:buy:1"
-        ) is None
+        # PENDING Order is saved atomically with Decision (Fix 1 — duplicate-order guard).
+        saved_order = uow.orders.get_by_idempotency_key("KRX:069500:2026-04-30:buy:1")
+        assert saved_order is not None
+        assert saved_order.status is OrderStatus.PENDING
+        assert saved_order.broker_order_id is None
         assert uow.positions.get(asset.fqn) is None
 
     def test_broker_order_error_skips_order_save(self):
