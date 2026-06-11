@@ -321,7 +321,10 @@ def build_kis_market_data(
         clock if clock is not None else (lambda: datetime.now(UTC))
     )
 
-    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    cache_path = _resolve_token_cache_path(environ or os.environ)
+    auth = KISAuth(
+        config=config, http=http_client, clock=utc_clock, token_cache_path=cache_path
+    )
     client = KISClient(
         config=config, http=http_client, auth=auth, clock=utc_clock
     )
@@ -519,7 +522,10 @@ def build_live_components(
         clock if clock is not None else (lambda: datetime.now(UTC))
     )
 
-    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    cache_path = _resolve_token_cache_path(environ or os.environ)
+    auth = KISAuth(
+        config=config, http=http_client, clock=utc_clock, token_cache_path=cache_path
+    )
     client = KISClient(
         config=config, http=http_client, auth=auth, clock=utc_clock
     )
@@ -691,7 +697,10 @@ def build_grid_live_components(
         clock if clock is not None else (lambda: datetime.now(UTC))
     )
 
-    auth = KISAuth(config=config, http=http_client, clock=utc_clock)
+    cache_path = _resolve_token_cache_path(environ or os.environ)
+    auth = KISAuth(
+        config=config, http=http_client, clock=utc_clock, token_cache_path=cache_path
+    )
     client = KISClient(
         config=config, http=http_client, auth=auth, clock=utc_clock
     )
