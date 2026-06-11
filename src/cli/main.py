@@ -1664,6 +1664,12 @@ def grid_dry_run(
         reconstruct_grid_broker_state,
     )
 
+    if os.environ.get("ALLOW_DAILY_LIVE") != "1":
+        raise click.ClickException(
+            "일봉 인프라 운영 동결 (ADR 0023 D5/D17). "
+            "ALLOW_DAILY_LIVE=1 없이 trading grid-dry-run 실행 불가."
+        )
+
     notifier = build_notifier(os.environ)
 
     # 1. config → N enabled 종목 (multi-asset 지원, ADR 0022 §12 follow-up)
@@ -2115,6 +2121,12 @@ def live(
         StateMismatchError,
     )
 
+    if os.environ.get("ALLOW_DAILY_LIVE") != "1":
+        raise click.ClickException(
+            "일봉 인프라 운영 동결 (ADR 0023 D5/D17). "
+            "ALLOW_DAILY_LIVE=1 없이 trading live 실행 불가."
+        )
+
     # Phase 1.1 default: 매도 +15% in flag-only mode unless explicitly overridden
     # (config mode takes the YAML value verbatim). Mirrors dry-run.
     if config_path is None:
@@ -2417,6 +2429,12 @@ def grid_live(
         MarketDataUnavailableError,
         StateMismatchError,
     )
+
+    if os.environ.get("ALLOW_DAILY_LIVE") != "1":
+        raise click.ClickException(
+            "일봉 인프라 운영 동결 (ADR 0023 D5/D17). "
+            "ALLOW_DAILY_LIVE=1 없이 trading grid-live 실행 불가."
+        )
 
     # 1. config → N enabled 종목 + grid params
     bundles = load_grid_config(config_path)

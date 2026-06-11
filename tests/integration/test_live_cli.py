@@ -117,6 +117,7 @@ def _isolated_safety(tmp_path, monkeypatch):
 
 
 def _patch_build(monkeypatch, fake: _FakeHttp) -> None:
+    monkeypatch.setenv("ALLOW_DAILY_LIVE", "1")  # pass daily-infra gate (ADR 0023 R6)
     real_build = composition.build_live_components
 
     def _patched(**kwargs: object):
