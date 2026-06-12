@@ -470,9 +470,11 @@ def _resolve_per_asset_overrides(
 # Group + subcommands
 # ---------------------------------------------------------------------------
 # Operator-recovery commands must stay reachable while halted, otherwise a
-# halt would lock out its own resume. Everything else (trading + utilities) is
-# blocked by the entry-time halt check (fail-safe default).
-_HALT_EXEMPT_SUBCOMMANDS: frozenset[str] = frozenset({"halt", "resume"})
+# halt would lock out its own resume — and `status` is how the operator
+# inspects WHY the system is halted (read-only, no orders). Everything else
+# (trading + utilities) is blocked by the entry-time halt check (fail-safe
+# default).
+_HALT_EXEMPT_SUBCOMMANDS: frozenset[str] = frozenset({"halt", "resume", "status"})
 
 
 @click.group()
@@ -2595,6 +2597,100 @@ def grid_live(
     # Mark UTC import as used (linter pacification — actually used in
     # composition._ts_for_bar via closure, but linter sees only local scope).
     _ = UTC
+
+
+@main.command("status")
+@click.option(
+    "--db",
+    "db_path",
+    default="trading.db",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="조회할 상태 SQLite DB path (read-only).",
+)
+def status(db_path: Path) -> None:
+    """시스템 상태 한눈에 보기 — read-only, 네트워크/주문/lock zero.
+
+    halt 상태(env kill switch + 영속 sentinel) / DB 포지션 / grid 순보유 /
+    PENDING 주문 / 마지막 snapshot 을 한 화면에 출력한다.
+
+    실계좌 잔고 조회는 ``trading kis-check``, DB-실계좌 대조는
+    ``trading reconcile`` (둘 다 KIS read 호출). 이 커맨드는 로컬 정보만 본다.
+    lock 을 잡지 않으므로 cron 실행 중에도 안전하게 조회 가능.
+
+    halt sentinel 이 있어도 실행된다 (halt-exempt — halted 상태를 조사하는
+    커맨드이므로). 단 env kill switch ``TRADING_HALT=1`` 은 group 레벨에서
+    모든 커맨드와 동일하게 즉시 종료시킨다 (§11.1).
+    """
+    from src.infrastructure.db import connect as _db_connect
+    from src.infrastructure.sqlite_unit_of_work import (
+        SqliteUnitOfWork as _SqliteUoW,
+    )
+
+    # 1. halt 상태 (CLAUDE.md §11.2 영속 sentinel)
+    click.echo("=== halt ===")
+    halt_path = safety.default_halt_path()
+    if safety.is_halted(path=halt_path):
+        click.echo(f"🛑 HALTED (sentinel: {halt_path})")
+        click.echo(f"  reason: {safety.halt_reason(path=halt_path)}")
+        click.echo("  재개: 원인 조사 후 `trading resume`")
+    else:
+        click.echo("sentinel: 없음 (정상)")
+
+    # 2. DB 상태
+    click.echo(f"\n=== DB: {db_path} ===")
+    if not db_path.exists():
+        click.echo("DB 파일 없음 — 아직 한 번도 실행되지 않았거나 경로 확인 필요.")
+        return
+
+    conn = _db_connect(db_path)
+    try:
+        uow = _SqliteUoW(conn)
+
+        positions = uow.positions.list_all()
+        held = [p for p in positions if p.quantity > 0]
+        click.echo(f"split 포지션: {len(held)} 종목")
+        for p in held:
+            click.echo(
+                f"  {p.asset.fqn}  qty={p.quantity}  avg={_won(p.avg_price)}  "
+                f"split_level={p.split_level}"
+            )
+
+        grid_net = uow.grid_decisions.list_net_quantities()
+        grid_held = {fqn: q for fqn, q in grid_net.items() if q != 0}
+        click.echo(f"grid 순보유: {len(grid_held)} 종목")
+        for fqn, qty in sorted(grid_held.items()):
+            click.echo(f"  {fqn}  net_qty={qty}")
+
+        pending = uow.orders.list_pending()
+        if pending:
+            click.echo(f"\n⚠️ PENDING 주문: {len(pending)} 건 — 미확정 상태")
+            for o in pending:
+                click.echo(
+                    f"  {o.idempotency_key}  {o.side.value} {o.quantity} @ "
+                    f"{_won(o.target_price)}  submitted={o.submitted_at.isoformat()}  "
+                    f"broker_order_id={o.broker_order_id}"
+                )
+            click.echo(
+                "  → settle 흐름(live runner 선두)에서 확정되며, broker_order_id "
+                "없는 PENDING 은 사람 확인 필요 (CLAUDE.md §4.3)."
+            )
+        else:
+            click.echo("\nPENDING 주문: 없음")
+
+        snap = uow.snapshots.get_last()
+        if snap is not None:
+            click.echo(
+                f"\n마지막 snapshot: {snap.snapshot_date} "
+                f"(at {snap.snapshot_at.isoformat()})\n"
+                f"  total={_won(snap.total_value.amount)}  "
+                f"cash={_won(snap.cash.amount)}  "
+                f"unrealized={_won(snap.total_unrealized_pnl.amount)}"
+            )
+        else:
+            click.echo("\n마지막 snapshot: 없음")
+    finally:
+        conn.close()
 
 
 @main.command("halt")
