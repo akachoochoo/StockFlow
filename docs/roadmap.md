@@ -1,6 +1,8 @@
 # Roadmap
 
-> 마지막 업데이트: 2026-05-21 (Phase 0.11.k 정식 종료 — ADR 0018 §1+§3 박제, G1/G3/G4 PASS / G2 REGIME-SPLIT (5y 분산 멀티 risk-adjusted PASS / 1y 강세장 FAIL), lifecycle = 5th ring 영구, DGT On-Breach + entry controls (profit_guard + ADR-k + flat alloc + 75% cap) + `--strategy-set breach` + 멀티 버그 2건 수정, 12 new tests 1716→1728)
+> 마지막 업데이트: 2026-06-12 (현행화 — Phase 1 진입 / Phase 1.1 완료+운영
+> 동결 / Phase 1.x 분봉 일괄 전환 진행 중 (ADR 0023) 반영. 0.9 계열 stale
+> "진행 중" 표기 정정. 직전 갱신 2026-05-21 = Phase 0.11.k 종료, ADR 0018)
 
 ## 현재 상태
 
@@ -14,9 +16,9 @@
 | Phase 0.7 종료 결정 | ✅ 완료 (2026-05-05) — 라운드 #9 ADR 0003 §19 | |
 | Phase 0.8.1 | 완료 (2026-05-06) — 게이트 2/3 PASS (H3 FAIL, 본질적 trade-off) | ADR 0004 §1~§7 / `phase-0.8.1.md` + `phase-0.8.1-results.md` + `phase-0.8.md` |
 | Phase 0.8 종료 결정 | ✅ 완료 (2026-05-06) — 라운드 #11 ADR 0004 §7 (시리즈 종료 + cooldown 거부 + Phase 0.9 직진) | |
-| **Phase 0.9** | **진행 중 (2026-05-06 진입)** — 개별 주식 검증 (PriceDropStrategy default, ADR 0004 §7.4.2) | 진입 결정 라운드 #12 박제 완료 (2026-05-07) — ADR 0005 §1 |
-| **Phase 0.9.1** | **진행 중 (2026-05-07 sub-step 0.9.c PASS)** — 005930 삼성전자 + 005380 현대차 (2 종, 인프라 검증). 사전 검증 lookback 246 + 백테스트 데이터 충족 | ADR 0005 §1.6.2 / §2 |
-| **Phase 0.9.2** | **진행 중 (2026-05-07 진입 결정 라운드 #14 박제)** — 005930 + 005380 + 055550 + 097950 + 015760 (5 종, 업종 분산). 가설: 분산 효과 회복 → 시나리오 C → A/B 변경 가능 여부 검증 | ADR 0005 §8 (라운드 #14 — Phase 0.9.2 진입 결정) |
+| Phase 0.9 | 완료 (2026-05-08) — 개별 주식 검증 (PriceDropStrategy default, ADR 0004 §7.4.2) | ADR 0005 §1 / `phase-0.9.md` |
+| Phase 0.9.1 | 완료 (2026-05-08) — 005930 삼성전자 + 005380 현대차 (2 종, 인프라 검증) | ADR 0005 §1.6.2 / §2 |
+| Phase 0.9.2 | 완료 (2026-05-08) — 5 종 업종 분산 검증. 핵심 학습: **자산군 분산 = H3 회복의 충분 조건** (ADR 0005 §9.6.2) | ADR 0005 §8~§9 |
 | Phase 0.10 | 완료 (2026-05-08, 라운드 #17 종료) — Backtest Reporting Enhancement, AC 5/5 충족 | ADR 0006 §1 ~ §13 |
 | Phase 0.10.x | 완료 (2026-05-09, 라운드 #18) — Episode HTML readability, AC 10/10 충족, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §14 |
 | Phase 0.10.y | 완료 (2026-05-09, 라운드 #19) — Chart legend + Strategy info, AC 12/12 충족, Protocol §4.2 + slot §4.3.1 보존, 박제 zero / 의존성 zero / 도메인 zero | ADR 0006 §15 |
@@ -35,7 +37,9 @@
 | **Phase 0.11.i** | 완료 (2026-05-17) — Interactive DGT Charts (lightweight-charts). **게이트 4/4 PRIMARY PASS** (G1 report.html interactive 14/14 / G2 fmt kwarg + static contract preserved 12/12 / G3 ADR 0016 + 회고 + figures / G4 namespace + regression zero + plotly removed). Lifecycle = permanent (interactive) + archival-with-sunset (static matplotlib). vendored `lightweight-charts.standalone.production.js` (~50 KB, offline P5) + `_interactive_chart.py` (HTML builder) + `kakao_dgt_backtest.py` + `_dgt_renderer.py` interactive 전환 + `fmt` kwarg Protocol Option (iii). ADR 0006 §14.4 Option C + ADR 0009 D4(b) 역전 (research-scoped). plotly/narwhals uninstalled. 75 new tests (1575→1650, regression zero). Inner ring 변경 zero | ADR 0016 §1+§3 / `phase-0.11.i.md` |
 | **Phase 0.11.j** | 완료 (2026-05-18) — DGT Interactive Chart Improvements (time-varying grid envelope + `#grid-toggles` per-strategy + Trade Logs cum columns + headless Playwright gate + ADR-measure correction). **게이트 4/4 PRIMARY PASS** (G1 headless Playwright 6/6 / G2 toggles+10-col 동작 / G3 ADR 0017 + 회고 + 2 figures / G4 namespace + regression zero). Lifecycle = 5th ring 영구. 신규 `src/research/dgt/_grid_reconstruction.py` (`_reconstruct_grid_envelope` 공유 helper — ATR/ADR branch, Decimal-only, bh→[]) + `_interactive_chart.py` + `kakao_dgt_backtest.py` 수정. ADR-measure correction: `adaptive_cfgs` 맵 gap 버그 (ADR-Base/ADR+Vol k never varied) → Step 1b 수정. ADR 0016 §12.4 #6 CLOSED. 64 new tests (1652→1716, regression zero). Inner ring 변경 zero | ADR 0017 §1+§3 / `phase-0.11.j.md` |
 | **Phase 0.11.k** | 완료 (2026-05-21) — DGT On-Breach 전략 + Entry Controls (option A). G1/G3/G4 PASS / **G2 REGIME-SPLIT** (5y 분산 멀티 risk-adjusted PASS — On-Breach-5%+D+B 가 처음으로 B&H 를 Sharpe 0.292>0.247·Calmar 0.122>0.084·MDD -24% vs -35% 로 상회 / 1y 강세장 FAIL — B&H +186% vs DGT +38% 구조적 패배). Lifecycle = 5th ring 영구 (registry 미합류). `_DGTDynamicRunner` opt-in 플래그 4종 (profit_guard / adaptive+volatility_measure / flat_allocation / max_invested_pct, 기본 off → 회귀 zero) + `--strategy-set breach` (6전략: 고정 k 2/3/5% + ADR k 2/3/5%) + 멀티 인터랙티브/누적실현 버그 2건 수정 + `_build_asset` 폴백. 핵심: 재중심(daily/on_breach)이 평단 이하 매도 원인 / ADR k 가 069500(ADR≈2%)에서 고정 넓은 k 에 열위 / D+B 는 분산 멀티에서 효과(단일 V자엔 역효과) / DGT = MDD 방어·횡보 수확 도구, 추세장 수익 아님 (ADR 0014 정합). 12 new tests (1716→1728, regression zero). Inner ring 변경 zero | ADR 0018 §1+§3 / `phase-0.11.k.md` |
-| Phase 1 | 예정 — KR 주식 실거래 (KIS API 소액). 진입 시점 = ADR 0012 D16 (i)~(vi) 6 조건 모두 충족 후 (Phase 0.11.b/c/d/e sub-step .2~.5 실행 + 별도 2 commit + paper trading + NTP). **현 진척 = D16 (ii) 5/6** (Phase 0.11.b/c/d/e + 별도 2 commit 모두 완료, 잔여 = paper trading + NTP 운영 측면) | ADR 0012 §1 (`e066554`, ralplan #28) — D1~D20 + G1~G4 + R1~R10 + §1.6 Operating Contract 7 invariant + §1.10 Pre-mortem 5 시나리오 |
+| Phase 1 | 진입 (ADR 0012 D16 6조건 충족, `e066554`) — KR 주식 실거래 준비 | ADR 0012 §1 — D1~D20 + G1~G4 + §1.6 Operating Contract |
+| Phase 1.1 | 코드 완성 + **운영 동결** (ADR 0023 D5/D17) — DB 마이그레이션 + KIS API read/write + 자산 registry + Stage 8 split live runner (매도 +15% / 손절 -20% 박제). DGT 실거래 승격 라운드 포함. 부활 = 별도 결정 라운드 | ADR 0019 / 0020 / 0021 / 0022 |
+| **Phase 1.x** | **진행 중 (2026-05-30 진입)** — backtest/dry-run/live **분봉(1m) 일괄 전환** + split 동결 + DGT-only. 일봉 인프라 = 코드 보존 + 운영 동결 (`ALLOW_DAILY_LIVE=1` 강제). 세그먼트 1.2.1 KIS 분봉 수집기 (cron 운영 중) 완료 + 1.2.2 분봉 grid backtest 엔진 구현 진행 | ADR 0023 — D1~D21 + §18 amendment |
 | Phase 2 | 예정 — AI 차단기 추가 | |
 | Phase 3 | 예정 — US 주식 추가 | |
 | Phase 4 | 예정 — BTC 추가 | |
@@ -246,7 +250,7 @@
 
 ---
 
-## Phase 0.10 (진행 중, 2026-05-08 진입): Backtest Reporting Enhancement
+## Phase 0.10 (완료, 2026-05-08~05-11 — 라운드 #17~#22): Backtest Reporting Enhancement
 
 ### 진입 결정 라운드 #16 (완료, 2026-05-08) — ADR 0006 §1 박제
 - 사용자 명시 결정: Phase 1 이전 백테스트 진단 도구 강화 (Phase 0.9 결과의 시각적·구조적 진단 + 다중 전략 운용 대비)
@@ -280,7 +284,7 @@
   * 0.10.f: 회고 (`docs/retrospectives/phase-0.10.md`) + Acceptance Criteria 검증 박제 (ADR 0006 §12, 5/5 충족) ✅
   * 0.10.g: Phase 0.10 종료 결정 라운드 #17 — Phase 1 진입 보류 + 분석 phase 시작 (Q1=C / Q2=B / Q3=B, ADR 0006 §13) ✅
 
-### 분석 phase (진행 중, 2026-05-08 시작) — 사용자 분석 보류
+### 분석 phase (정리 종료, 2026-05-08~05-11) — Phase 0.11.a 진입으로 종결
 - 본질: Phase 0.10 결과 (Phase 0.9.2 4 episodes 리포트 + AC 5/5 검증 결과) 검토 후 다음 trajectory 결정
 - 코드 변경 zero (Phase 0.10 박제 보존). **라운드 #18 (2026-05-09)
   에서 Phase 0.10.x readability 채택 + 즉시 종결, 라운드 #19 (2026-05-09)
