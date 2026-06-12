@@ -480,7 +480,11 @@ _HALT_EXEMPT_SUBCOMMANDS: frozenset[str] = frozenset({"halt", "resume", "status"
 @click.group()
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """SevenSplit trading CLI (Phase 0, single-asset)."""
+    """StockFlow trading CLI — Phase 1.x 분봉 전환 중, 일봉 운영 동결 (ADR 0023).
+
+    🧊 표시 커맨드 (live / grid-live / grid-dry-run) 는 일봉 인프라 —
+    ``ALLOW_DAILY_LIVE=1`` 없이 실행 불가. 상태 확인 = ``trading status``.
+    """
     safety.check_kill_switch()
     if ctx.invoked_subcommand not in _HALT_EXEMPT_SUBCOMMANDS:
         safety.check_halt()
@@ -1628,8 +1632,13 @@ def grid_dry_run(
     trade_date: datetime | None,
     as_json: bool,
 ) -> None:
-    """DGT grid dry-run — 1 cron = 1 영업일 처리 + 영속 상태 (multi-asset).
+    """[운영 동결 — ADR 0023] 일봉 DGT grid dry-run. ALLOW_DAILY_LIVE=1 필요.
 
+    🧊 일봉 인프라 운영 동결 (ADR 0023 D5/D17) — env ``ALLOW_DAILY_LIVE=1``
+    없이 실행 불가. 분봉 전환 (Phase 1.x) 완료 전 일봉 운영 부활은 별도
+    결정 라운드 필요.
+
+    DGT grid dry-run — 1 cron = 1 영업일 처리 + 영속 상태 (multi-asset).
     Phase 1.x DGT live promotion (ADR 0022 §12 follow-up). N enabled 종목
     config 를 받아 종목별 ``GridDryRunOrchestrator.step_today`` 호출.
     자본 = 총자본 / N 균등 분할 (§11.21 권고 A), per-asset 격리 (한 종목 실패
@@ -2087,7 +2096,12 @@ def live(
     reentry_strategy: str,
     cooldown_days: int,
 ) -> None:
-    """실거래 일일 runner — settle → reconcile → arm → decide (Phase 1.1 Stage 8).
+    """[운영 동결 — ADR 0023] ⚠️ 일봉 split 실거래 runner. ALLOW_DAILY_LIVE=1 필요.
+
+    🧊 일봉 인프라 운영 동결 (ADR 0023 D5/D17) — env ``ALLOW_DAILY_LIVE=1``
+    없이 실행 불가. split live 운영 재개는 별도 결정 라운드 필요.
+
+    실거래 일일 runner — settle → reconcile → arm → decide (Phase 1.1 Stage 8).
 
     ⚠️ **실주문 진입점.** Real orders go out ONLY when armed: pass
     ``--arm-live <tier>`` AND set ``TRADING_ARM_LIVE=<tier>`` in the env
@@ -2389,7 +2403,12 @@ def grid_live(
     max_loss_pct: str,
     supervised_first_order: bool,
 ) -> None:
-    """DGT grid 실거래 일일 runner — settle → reconcile → arm → decide (§13 D30).
+    """[운영 동결 — ADR 0023] ⚠️ 일봉 DGT grid 실거래 runner. ALLOW_DAILY_LIVE=1 필요.
+
+    🧊 일봉 인프라 운영 동결 (ADR 0023 D5/D17) — env ``ALLOW_DAILY_LIVE=1``
+    없이 실행 불가. 일봉 grid-live 운영 부활은 별도 결정 라운드 필요.
+
+    DGT grid 실거래 일일 runner — settle → reconcile → arm → decide (§13 D30).
 
     ⚠️ **실주문 진입점 (그리드 전용).** Real orders go out ONLY when armed:
     ``--arm-grid-live <tier>`` AND ``TRADING_ARM_GRID_LIVE=<tier>`` env
