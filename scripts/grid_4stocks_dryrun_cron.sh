@@ -41,6 +41,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STOCKFLOW_ROOT="${STOCKFLOW_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
+# shellcheck source=lib_heartbeat.sh
+source "$SCRIPT_DIR/lib_heartbeat.sh"
+
 GRID_DRYRUN_CONFIG="${GRID_DRYRUN_CONFIG:-config/grid-4stocks-dryrun.yaml}"
 GRID_DRYRUN_DB="${GRID_DRYRUN_DB:-grid-4stocks-dryrun.db}"
 GRID_DRYRUN_CAPITAL="${GRID_DRYRUN_CAPITAL:-20000000}"
@@ -129,5 +132,8 @@ EXIT_CODE=$?
 {
     echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] grid-4stocks-dryrun cron 종료 — exit=$EXIT_CODE"
 } >> "$LOG_FILE"
+
+# --- heartbeat (dead man's switch — scripts/lib_heartbeat.sh) --------------
+send_heartbeat "grid-4stocks-dryrun" "$EXIT_CODE" "$LOG_FILE"
 
 exit "$EXIT_CODE"

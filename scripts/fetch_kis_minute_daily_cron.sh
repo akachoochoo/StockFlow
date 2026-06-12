@@ -46,6 +46,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STOCKFLOW_ROOT="${STOCKFLOW_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
+# shellcheck source=lib_heartbeat.sh
+source "$SCRIPT_DIR/lib_heartbeat.sh"
+
 FETCH_MINUTE_LOG_DIR="${FETCH_MINUTE_LOG_DIR:-logs}"
 FETCH_MINUTE_CODES="${FETCH_MINUTE_CODES:-069500 132030 005930 035900}"
 FETCH_MINUTE_DATE="${FETCH_MINUTE_DATE:-}"
@@ -126,5 +129,8 @@ EXIT_CODE=$?
 {
     echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] fetch-kis-minute cron 종료 — exit=$EXIT_CODE"
 } >> "$LOG_FILE"
+
+# --- heartbeat (dead man's switch — scripts/lib_heartbeat.sh) --------------
+send_heartbeat "fetch-kis-minute" "$EXIT_CODE" "$LOG_FILE"
 
 exit "$EXIT_CODE"
