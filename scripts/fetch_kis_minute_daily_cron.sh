@@ -68,6 +68,11 @@ mkdir -p "$FETCH_MINUTE_LOG_DIR"
 LOG_DATE="$(date '+%Y-%m-%d')"
 LOG_FILE="$FETCH_MINUTE_LOG_DIR/fetch-kis-minute-${LOG_DATE}.log"
 
+# 보존 기한 지난 로그 삭제 (기본 90일, LOG_RETENTION_DAYS 로 조정).
+# 자기 prefix 만 대상 — 다른 job 로그/파일은 건드리지 않는다.
+find "$FETCH_MINUTE_LOG_DIR" -name 'fetch-kis-minute-*.log' -type f \
+    -mtime +"${LOG_RETENTION_DAYS:-90}" -delete 2>/dev/null || true
+
 # --- 단일 인스턴스 (portable mkdir lock + PID stale detection) ------------
 LOCK_DIR="$FETCH_MINUTE_LOG_DIR/fetch-kis-minute.lock.d"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then

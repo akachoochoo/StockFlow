@@ -60,6 +60,11 @@ cd "$STOCKFLOW_ROOT" || {
 
 # --- 로그 디렉토리 + 파일 -------------------------------------------------
 mkdir -p "$GRID_DRYRUN_LOG_DIR"
+
+# 보존 기한 지난 로그 삭제 (기본 90일, LOG_RETENTION_DAYS 로 조정).
+# 자기 prefix 만 대상 — 다른 job 로그/파일은 건드리지 않는다.
+find "$GRID_DRYRUN_LOG_DIR" -name 'grid-dry-run-*.log' -type f \
+    -mtime +"${LOG_RETENTION_DAYS:-90}" -delete 2>/dev/null || true
 LOG_DATE="$(date '+%Y-%m-%d')"
 LOG_FILE="$GRID_DRYRUN_LOG_DIR/grid-dry-run-${LOG_DATE}.log"
 
