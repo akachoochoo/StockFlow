@@ -1,0 +1,49 @@
+# DGT grid config — scripts/manage_strategies.py grid-wizard 로 생성 (ADR 0022
+# §11). 'trading grid-backtest --config <이파일> --csv CODE=path' 로 구동.
+# grid_parameters = GridConfig 필드 (생략 시 기본값). backtest/paper 전용.
+# 그리드 파라미터 (Enter=기본값):
+#   ↳ 그리드 레벨 수 n(≥2, 보통 11). 클수록 촘촘히 매매(회당 소량·거래 잦음), 작을수록 듬성.
+#   grid_count (int ≥2) [필수]: 11
+#   ↳ 변동성 산출 불가 시 격자 간격 비율(예 0.05=5%). 격자 한 칸 폭.
+#   fallback_k (decimal >0) [필수]: 0.03
+#   ↳ 격자 재중심 방식. daily=매일 현재가 기준 재중심 / on_breach=격자 이탈 시에만.
+#   rebalance_mode (on_breach/daily*) [daily]: on_breach
+#   ↳ 격자 폭 산출 지표. adr=일중 범위(갭 무시, 상승장 거래↑) / atr=갭 포함 변동성.
+#   volatility_measure (atr/adr*) [adr]: adr
+#   ↳ 변동성(ADR/ATR) 산출 기간(일, 기본 14). 길수록 격자 폭이 천천히 변함.
+#   atr_period (int ≥1) [기본 14]: 14
+#   ↳ 변동성 x 이 배수 = 격자 간격 k. 클수록 넓어짐(거래 뜸·큰 변동만), 작을수록 촘촘.
+#   multiplier (decimal >0) [기본 1.5]: 1.5
+#   ↳ 격자 간격 하한(예 0.005=0.5%). 너무 촘촘한 과매매 방지.
+#   k_min (decimal >0) [기본 0.02]: 0.02
+#   ↳ 격자 간격 상한(예 0.05=5%). 너무 넓어 기회 놓침 방지.
+#   k_max (decimal >0) [기본 0.10]: 0.05 
+#   ↳ 추세 게이트 on/off. on이면 급등 시 매도·급락 시 매수 스킵(역행 억제).
+#   slope_gate [y/N]: y
+#   ↳ 추세 게이트 기울기 산출 기간(일).
+#   slope_gate_period (int ≥1) [기본 5]: 5
+#   ↳ 추세 게이트 발동 기울기 임계치.
+#   slope_gate_threshold (decimal >0) [기본 0.05]: 
+#   ↳ 거래량 게이트 on/off. on이면 거래량 급증+상승 시 매도 스킵(수익 보유 연장), 급증+하락 시 매수 스킵.
+#   volume_gate [y/N]: n
+#   ↳ 거래량 평균 산출 기간(일, 기본 10/20).
+#   volume_gate_period (int ≥1) [기본 20]: 
+#   ↳ 평균 거래량 x 이 배수 초과 시 '급증' 판정(예 1.5).
+#   volume_gate_multiplier (decimal >0) [기본 2.0]: 
+# 포함할 종목 (쉼표 구분, 'all'=전체) [all]: 
+# 생성됨 ✓ config/strategies-backtest.yaml — 10 종목 (DGT grid).
+
+version: '1.0'
+assets:
+  095660:
+    name: 네오위즈
+    enabled: true
+    grid_parameters:
+      grid_count: 6
+      fallback_k: 0.01
+      rebalance_mode: on_breach
+      k_min: 0.005
+      k_max: 0.02
+      slope_gate: false
+      profit_guard: true
+      sell_cooldown_bars: 5
