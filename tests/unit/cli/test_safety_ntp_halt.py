@@ -128,6 +128,39 @@ class TestPersistentHalt:
         safety.clear_halt(path=path)
         assert safety.is_halted(path=path) is False
 
+    def test_clear_halt_appends_resume_audit_history(self, tmp_path):
+        path = tmp_path / ".trading-system.halt"
+        halt_clock = _fixed_clock(datetime(2026, 6, 11, 1, 0, tzinfo=UTC))
+        resume_clock = _fixed_clock(datetime(2026, 6, 12, 9, 0, tzinfo=UTC))
+        safety.write_halt("reconciliation mismatch", path=path, clock=halt_clock)
+        safety.clear_halt(path=path, clock=resume_clock)
+
+        history = tmp_path / ".trading-system.halt.history"
+        assert history.exists()
+        line = history.read_text().splitlines()[0]
+        assert line.startswith("resumed_at=2026-06-12T09:00:00+00:00")
+        # halt 사유 + halt 시각 모두 보존 (sentinel 삭제 후 유일한 기록)
+        assert "reconciliation mismatch" in line
+        assert "2026-06-11T01:00:00+00:00" in line
+
+    def test_clear_halt_history_accumulates_across_cycles(self, tmp_path):
+        path = tmp_path / ".trading-system.halt"
+        safety.write_halt("first", path=path)
+        safety.clear_halt(path=path)
+        safety.write_halt("second", path=path)
+        safety.clear_halt(path=path)
+
+        history = tmp_path / ".trading-system.halt.history"
+        lines = history.read_text().splitlines()
+        assert len(lines) == 2
+        assert "first" in lines[0]
+        assert "second" in lines[1]
+
+    def test_clear_halt_without_sentinel_writes_no_history(self, tmp_path):
+        path = tmp_path / ".trading-system.halt"
+        safety.clear_halt(path=path)
+        assert not (tmp_path / ".trading-system.halt.history").exists()
+
     def test_is_halted_false_when_absent(self, tmp_path):
         path = tmp_path / ".trading-system.halt"
         assert safety.is_halted(path=path) is False

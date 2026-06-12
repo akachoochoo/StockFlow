@@ -257,9 +257,32 @@ def write_halt(
     return halt_path
 
 
-def clear_halt(*, path: Path | str | None = None) -> None:
-    """Remove the halt sentinel (explicit human resume). Idempotent."""
+def clear_halt(
+    *,
+    path: Path | str | None = None,
+    clock: Callable[[], datetime] = _utc_now,
+) -> None:
+    """Remove the halt sentinel (explicit human resume). Idempotent.
+
+    Audit: sentinel 삭제 전에 ``<sentinel>.history`` 에 한 줄 append —
+    halt 사유/시각은 sentinel 과 함께 사라지므로, "언제 무엇 때문에 halt
+    됐고 언제 풀었는지"의 영속 기록은 이 history 파일이 유일하다.
+    history 기록 실패가 resume 자체를 막지는 않는다 (기록은 부가 기능,
+    halted 상태에서 빠져나오는 길은 항상 열려 있어야 함).
+    """
     halt_path = Path(path) if path is not None else default_halt_path()
+    if halt_path.exists():
+        try:
+            original = halt_path.read_text().replace("\n", " | ").strip()
+            history_path = halt_path.with_suffix(halt_path.suffix + ".history")
+            with history_path.open("a") as f:
+                f.write(f"resumed_at={clock().isoformat()} :: {original}\n")
+        except OSError:
+            _logger.warning(
+                "Halt resume audit write failed (%s) — proceeding with resume.",
+                halt_path,
+                exc_info=True,
+            )
     halt_path.unlink(missing_ok=True)
 
 
